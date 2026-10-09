@@ -21,3 +21,12 @@ A cue payload names one of those commands and its arguments. Dispatch waits for 
 vMix, OBS, and any mixer with a developer API are another adapter behind the same cue. The rundown stores `room` and `command`. It does not store a CoreVideo method name.
 
 The first adapter is CoreVideo Pro. The next adapter is whichever mixer the show is already on.
+
+## Built
+
+`control/volt/rooms.py` has the room interface, a scripted `FakeRoom`, and `CoreVideoProRoom`, which speaks `POST /invoke` and `GET /snapshot` on the control API (port 8011, optional bearer token). `control/volt/live.py` records against a room:
+
+- `start_recording` sends `transport.record.set [true]`, then mints only once the snapshot shows `recording.lifecycle.state` producing, fresh, not failed, with an `artifactPath`. The asset key is `cv:<sessionId>`, so a replay does not mint twice.
+- `finish_recording` sends `[false]`, then wraps only on `completed` with `finalized` true for the same session. `failed`, `interrupted` and unknown states never wrap.
+
+The wire shape comes from CoreVideoPro source. It has not been run against a live core yet.
