@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS version (
   created_at TEXT NOT NULL,
   UNIQUE (asset_id, span_id, kind)
 );
+
+CREATE TABLE IF NOT EXISTS cue (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES item(id),
+  position INTEGER NOT NULL,
+  target TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 
