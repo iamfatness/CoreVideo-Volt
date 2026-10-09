@@ -6,6 +6,7 @@ This repository holds the product plan, the architecture, and the first brand pa
 
 ## Read this first
 
+- [Start here](docs/start-here.md) — what to build first, and the feature specs
 - [Product brief](docs/product-brief.md) — who it is for, what it owns, what it refuses
 - [Architecture](docs/architecture.md) — planes, objects, session, adapters
 - [Data model](docs/data-model.md) — asset, essence, span, item, cue, version
