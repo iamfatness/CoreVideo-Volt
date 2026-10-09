@@ -1,26 +1,35 @@
 # CoreVideo Volt
 
-Volt is the show. CoreVideo is the switcher. Volt is the software wing that takes a recording from the moment it starts to air and publish, under one asset ID, for a crew that cannot buy a legacy broadcast suite and will not stitch five tools together.
+Volt is the show session for CoreVideo. It orchestrates the rundown, stores the media, transcodes proxies and deliverables, indexes the library, and distributes finished versions.
 
-This repository holds the product plan, the architecture, and the first brand pass. It is not the application.
+## Now
 
-## Read this first
+- MAM: an asset ID minted at record start or card ingest. Essence, span, rights, idempotent jobs.
+- Storage: quarantine until checksum and parse, then a located essence. Open files stay open until wrap.
+- Transcoding: a proxy essence on the same asset, refreshable while the ISO is open.
+- Library: transcript words stored as spans. Search returns the span.
+- Orchestration: a rundown of items pointing at spans. Cues stored on the item. A take arms them.
+- Distribution: an approved span becomes house, OTT, and social versions. URLs write back onto the item.
 
-- [Start here](docs/start-here.md) — what to build first, and the feature specs
-- [Product brief](docs/product-brief.md) — who it is for, what it owns, what it refuses
-- [Architecture](docs/architecture.md) — planes, objects, session, adapters
-- [Data model](docs/data-model.md) — asset, essence, span, item, cue, version
-- [Roadmap](docs/roadmap.md) — what has to be boring before the clock goes to air
-- [Brand guide](docs/brand-guide.md) — name, color, type, logo proposals, UI direction
+## Next
 
-## Position
+- MAM: speech worker writing those word spans. Premiere panel that imports a span.
+- Storage: Postgres as the running store. Object store for essence.
+- Transcoding: deliverable workers that write the house, OTT, and social files.
+- Orchestration: cue dispatch into CoreVideo. Software playout of the rundown. As-run on the item.
+- Distribution: real publish URLs from those workers.
 
-Legacy MAM and broadcast suites are one contract and five products, priced like an airframe and sold like one. Point tools are cheaper and leave the glue to the crew. Volt is the gap: one session that mints an ID when the file is still growing and is still that ID when the item is cued, aired, and published.
+## Read
 
-## Owns
+- [Areas](docs/areas.md)
+- [Architecture](docs/architecture.md)
+- [Data model](docs/data-model.md)
+- [Roadmap](docs/roadmap.md)
+- [Brand](docs/brand-guide.md)
 
-Ingest, library, rundown, software playout, cues into CoreVideo, publish.
+Run the control plane from `control/`:
 
-## Does not own
-
-An MXF muxer, an LTO driver, a loudness library, IMF packaging, or a 200-channel network origination desk. Those are engines and adapters.
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m volt.serve
+```
