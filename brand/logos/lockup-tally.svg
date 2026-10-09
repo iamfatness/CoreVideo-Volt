@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" role="img" aria-label="Volt tally lockup">
+  <rect width="640" height="200" fill="#141414"/>
+  <rect x="78" y="52" width="10" height="96" rx="2" fill="#F0B429"/>
+  <text x="108" y="132" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="4">VOLT</text>
+</svg>

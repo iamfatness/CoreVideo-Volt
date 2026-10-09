@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" role="img" aria-label="Volt ring lockup">
+  <rect width="640" height="200" fill="#141414"/>
+  <text x="70" y="132" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="4">V</text>
+  <circle cx="248" cy="100" r="34" fill="none" stroke="#F0B429" stroke-width="12"/>
+  <text x="300" y="132" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="4">LT</text>
+</svg>
