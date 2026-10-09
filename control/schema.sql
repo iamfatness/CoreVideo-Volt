@@ -66,3 +66,14 @@ CREATE TABLE IF NOT EXISTS item (
   span_id TEXT REFERENCES span(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS version (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  span_id TEXT NOT NULL REFERENCES span(id),
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (asset_id, span_id, kind)
+);
