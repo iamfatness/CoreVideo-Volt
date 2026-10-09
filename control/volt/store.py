@@ -1,4 +1,4 @@
-"""Volt control plane. SQLite for the contract. Postgres later, same objects."""
+"""Volt control plane. SQLite runs the contract. Postgres is the same objects."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS asset (
   show_name TEXT,
   room TEXT,
   camera TEXT,
+  source_key TEXT UNIQUE,
   created_at TEXT NOT NULL
 );
 
@@ -87,6 +88,7 @@ class Asset:
     show_name: Optional[str]
     room: Optional[str]
     camera: Optional[str]
+    source_key: Optional[str] = None
 
 
 @dataclass
@@ -116,9 +118,9 @@ class Store:
         asset_id = _id()
         self.conn.execute(
             """INSERT INTO asset
-               (id, owner, retention_class, legal_hold, cleared, show_name, room, camera, created_at)
-               VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)""",
-            (asset_id, owner, retention_class, show_name, room, camera, _now()),
+               (id, owner, retention_class, legal_hold, cleared, show_name, room, camera, source_key, created_at)
+               VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?)""",
+            (asset_id, owner, retention_class, show_name, room, camera, None, _now()),
         )
         self.conn.commit()
         return self.get_asset(asset_id)
@@ -136,7 +138,36 @@ class Store:
             show_name=row["show_name"],
             room=row["room"],
             camera=row["camera"],
+            source_key=row["source_key"],
         )
+
+    def find_by_source(self, source_key: str) -> Optional[Asset]:
+        row = self.conn.execute(
+            "SELECT id FROM asset WHERE source_key = ?", (source_key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get_asset(row["id"])
+
+    def mint_source(
+        self,
+        source_key: str,
+        owner: str,
+        retention_class: str = "show",
+        show_name: Optional[str] = None,
+        room: Optional[str] = None,
+        camera: Optional[str] = None,
+    ) -> Asset:
+        existing = self.find_by_source(source_key)
+        if existing is not None:
+            return existing
+        asset = self.mint_asset(owner, retention_class, show_name, room, camera)
+        self.conn.execute(
+            "UPDATE asset SET source_key = ? WHERE id = ?",
+            (source_key, asset.id),
+        )
+        self.conn.commit()
+        return self.get_asset(asset.id)
 
     def set_hold(self, asset_id: str, held: bool) -> None:
         self.conn.execute(
@@ -243,6 +274,13 @@ class Store:
         self.conn.commit()
         row = self.conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
         return _job(row)
+
+    def complete_job(self, job_id: str) -> None:
+        self.conn.execute(
+            "UPDATE job SET status = 'done', error = NULL, updated_at = ? WHERE id = ?",
+            (_now(), job_id),
+        )
+        self.conn.commit()
 
     def fail_job(self, job_id: str, error: str) -> None:
         self.conn.execute(

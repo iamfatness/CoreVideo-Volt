@@ -1,10 +1,12 @@
 # Control plane
 
-The first code. Asset, essence, span, job. SQLite so the contract runs without a database server. Postgres is a later store, not a different model.
+The first code. Asset, essence, span, job. SQLite runs the contract. Postgres is the same objects, in `schema.sql`.
 
 ```bash
 cd control
-python3 -m unittest tests/test_store.py
+python3 -m unittest discover -s tests -v
 ```
 
 Mint happens when the recording starts. A proxy is a second essence, not a second asset. Replaying a failed job increments the attempt and does not mint. A hold blocks delete. An uncleared asset cannot publish. A span stores timecode, not a path.
+
+Ingest copies a card into quarantine. ffprobe gates the promote. The same source key returns the same asset and does not add a second essence.
