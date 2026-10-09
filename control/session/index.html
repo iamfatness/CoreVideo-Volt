@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Volt</title>
+  <style>
+    body { margin: 0; background: #141414; color: #e2e2e2; font: 14px/1.4 Arial, sans-serif; }
+    header { display: flex; gap: 16px; align-items: center; padding: 16px 20px; border-bottom: 1px solid #303030; }
+    .mark { color: #f0b429; letter-spacing: 2px; }
+    input { background: #1c1c1c; color: #e2e2e2; border: 1px solid #303030; border-radius: 4px; padding: 8px 10px; width: 280px; }
+    main { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 58px); }
+    aside, section { padding: 16px 20px; }
+    aside { border-right: 1px solid #303030; }
+    li { list-style: none; margin: 0 0 8px; }
+    ul { padding: 0; }
+    .hit { color: #f0b429; }
+    video { width: 100%; max-height: 70vh; background: #000; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="mark">////</span>
+    <strong>VOLT</strong>
+    <input id="q" placeholder="Search a word" autofocus>
+  </header>
+  <main>
+    <aside>
+      <div id="assets">No assets</div>
+    </aside>
+    <section>
+      <p id="seek">A hit seeks the proxy.</p>
+      <video id="player" controls></video>
+    </section>
+  </main>
+  <script>
+    async function load() {
+      const assets = await fetch("/assets").then(r => r.json());
+      document.getElementById("assets").innerHTML = assets.length
+        ? "<ul>" + assets.map(a => `<li>${a.camera || "asset"} ${a.open ? "· open" : ""}</li>`).join("") + "</ul>"
+        : "No assets";
+    }
+    document.getElementById("q").addEventListener("change", async (event) => {
+      const hit = await fetch("/seek?q=" + encodeURIComponent(event.target.value)).then(r => r.json());
+      const line = document.getElementById("seek");
+      if (!hit.proxy) { line.textContent = "No span"; return; }
+      line.innerHTML = `<span class="hit">${hit.text}</span> at ${hit.tc_in}`;
+      const player = document.getElementById("player");
+      player.src = "/media?path=" + encodeURIComponent(hit.proxy);
+    });
+    load();
+  </script>
+</body>
+</html>
