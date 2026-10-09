@@ -16,11 +16,11 @@ class CueContract(unittest.TestCase):
         show_id = open_show(store, "Final Four")
         item_id = add_item(store, show_id, "Steal")
         attach(store, item_id, span_id)
-        cue_id = add_cue(store, item_id, "corevideo.input", "camera-2")
+        cue_id = add_cue(store, item_id, "corevideo.pro", "show-input.take", "camera-2")
         armed = arm(store, item_id)
         self.assertEqual(armed[0].id, cue_id)
         self.assertEqual(armed[0].status, "armed")
-        self.assertEqual(cues(store, item_id)[0].payload, "camera-2")
+        self.assertEqual(cues(store, item_id)[0].command, "show-input.take")
         self.assertEqual(store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"], "on air")
 
     def test_uncleared_span_does_not_arm_the_cue(self):
@@ -31,7 +31,7 @@ class CueContract(unittest.TestCase):
         show_id = open_show(store, "Final Four")
         item_id = add_item(store, show_id, "Steal")
         attach(store, item_id, span_id)
-        add_cue(store, item_id, "corevideo.input", "camera-2")
+        add_cue(store, item_id, "vmix", "Input", "2")
         with self.assertRaises(NotClearedError):
             arm(store, item_id)
         self.assertEqual(cues(store, item_id)[0].status, "stored")

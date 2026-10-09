@@ -57,4 +57,4 @@ The session is at http://127.0.0.1:8765. Open a show with `?show=<id>`.
 | `control/volt/session.py` | List, seek, attach, publish |
 | `control/session/index.html` | Session shell |
 
-More in [docs/areas.md](docs/areas.md), [docs/architecture.md](docs/architecture.md), and [docs/data-model.md](docs/data-model.md).
+More in [docs/areas.md](docs/areas.md), [docs/rooms.md](docs/rooms.md), [docs/architecture.md](docs/architecture.md), and [docs/data-model.md](docs/data-model.md).

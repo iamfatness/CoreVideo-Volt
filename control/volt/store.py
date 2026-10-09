@@ -100,7 +100,8 @@ CREATE TABLE IF NOT EXISTS cue (
   id TEXT PRIMARY KEY,
   item_id TEXT NOT NULL REFERENCES item(id),
   position INTEGER NOT NULL,
-  target TEXT NOT NULL,
+  room TEXT NOT NULL,
+  command TEXT NOT NULL,
   payload TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL
