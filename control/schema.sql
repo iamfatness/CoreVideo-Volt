@@ -49,3 +49,20 @@ CREATE TABLE IF NOT EXISTS job (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (asset_id, type, idempotency_key)
 );
+
+CREATE TABLE IF NOT EXISTS show (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS item (
+  id TEXT PRIMARY KEY,
+  show_id TEXT NOT NULL REFERENCES show(id),
+  position INTEGER NOT NULL,
+  slug TEXT NOT NULL,
+  script TEXT,
+  status TEXT NOT NULL,
+  span_id TEXT REFERENCES span(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
