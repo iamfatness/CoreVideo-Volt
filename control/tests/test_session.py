@@ -3,7 +3,7 @@ import unittest
 from volt.library import index_words
 from volt.publish import publish
 from volt.rundown import add_item, attach, open_show
-from volt.session import list_assets, rundown, seek_hit
+from volt.session import attach_hit, list_assets, publish_item, rundown, seek_hit
 from volt.store import Store
 
 
@@ -36,6 +36,19 @@ class SessionContract(unittest.TestCase):
         self.assertEqual(rows[0].slug, "Steal")
         self.assertEqual(len(rows[0].urls), 3)
         self.assertTrue(all(url.startswith("volt://") for url in rows[0].urls))
+
+    def test_search_hit_can_be_attached_and_published(self):
+        store = Store()
+        asset = store.mint_asset(owner="desk")
+        store.set_cleared(asset.id, True)
+        index_words(store, asset.id, [("steal", "01:12:08:12", "01:12:09:00")])
+        show_id = open_show(store, "Final Four")
+        item_id = add_item(store, show_id, "Steal")
+        attach_hit(store, item_id, "steal")
+        urls = publish_item(store, item_id)
+        self.assertEqual(len(urls), 3)
+        self.assertEqual(len(rundown(store, show_id)[0].urls), 3)
+        self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
 
     def test_missing_word_does_not_invent_a_hit(self):
         store = Store()

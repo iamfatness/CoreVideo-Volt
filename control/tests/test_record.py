@@ -55,6 +55,22 @@ class RecordContract(unittest.TestCase):
             self.assertTrue(all(row["open"] == 0 for row in opens))
             self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
 
+    def test_refreshing_an_open_proxy_does_not_mint(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iso = root / "iso-3.mp4"
+            _clip(iso)
+            store = Store()
+            started = record_start(store, "cv:iso-3", iso, owner="desk")
+            first = build_proxy(store, started.asset_id, root / "proxy")
+            second = build_proxy(store, started.asset_id, root / "proxy")
+            self.assertEqual(first, second)
+            self.assertEqual(
+                store.conn.execute("SELECT COUNT(*) FROM essence WHERE role = 'proxy'").fetchone()[0],
+                1,
+            )
+            self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._send(200, "application/json", json.dumps(rows).encode())
             return
+        if parsed.path == "/seek":
             query = parse_qs(parsed.query).get("q", [""])[0]
             hit = seek_hit(STORE, query)
             payload = {} if hit is None else {

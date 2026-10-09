@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from volt.library import search
+from volt.publish import publish
+from volt.rundown import attach
 from volt.store import Store
 
 
@@ -80,3 +82,18 @@ def seek_hit(store: Store, query: str) -> Optional[Seek]:
     if proxy is None:
         return None
     return Seek(hit.asset_id, hit.span_id, hit.tc_in, hit.text, proxy["location"])
+
+
+def attach_hit(store: Store, item_id: str, query: str) -> str:
+    hit = search(store, query)
+    if not hit:
+        raise KeyError(query)
+    attach(store, item_id, hit[0].span_id)
+    return hit[0].span_id
+
+
+def publish_item(store: Store, item_id: str) -> list[str]:
+    row = store.conn.execute("SELECT span_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    if row is None or row["span_id"] is None:
+        raise KeyError(item_id)
+    return [version.url for version in publish(store, row["span_id"]) if version.url]
