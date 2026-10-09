@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +57,17 @@ def build_proxy(store: Store, asset_id: str, proxy_dir: Path) -> str:
         raise RecordError(f"no hi-res for {asset_id}")
     proxy_dir.mkdir(parents=True, exist_ok=True)
     dest = proxy_dir / f"{asset_id}.mp4"
+    current = store.conn.execute(
+        "SELECT id FROM essence WHERE asset_id = ? AND role = 'proxy'",
+        (asset_id,),
+    ).fetchone()
+    if (
+        current is not None
+        and not source["open"]
+        and dest.exists()
+        and dest.stat().st_mtime >= Path(source["location"]).stat().st_mtime
+    ):
+        return current["id"]
     probe = subprocess.run(
         [
             "ffmpeg", "-y", "-i", source["location"],
@@ -66,10 +78,9 @@ def build_proxy(store: Store, asset_id: str, proxy_dir: Path) -> str:
         text=True,
     )
     if probe.returncode != 0 or not dest.exists():
-        store.fail_job(
-            _proxy_job(store, asset_id),
-            probe.stderr[-400:] or "proxy failed",
-        )
+        job_id = _proxy_job(store, asset_id)
+        if job_id:
+            store.fail_job(job_id, probe.stderr[-400:] or "proxy failed")
         raise RecordError("proxy failed")
     existing = store.conn.execute(
         "SELECT id FROM essence WHERE asset_id = ? AND role = 'proxy'",
@@ -87,13 +98,20 @@ def build_proxy(store: Store, asset_id: str, proxy_dir: Path) -> str:
     return essence_id
 
 
-def wrap(store: Store, asset_id: str) -> str:
+def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     source = store.conn.execute(
-        "SELECT id, location FROM essence WHERE asset_id = ? AND role = 'hi-res'",
+        "SELECT id, location, open, checksum FROM essence WHERE asset_id = ? AND role = 'hi-res'",
         (asset_id,),
     ).fetchone()
     if source is None:
         raise RecordError(f"no hi-res for {asset_id}")
+    if not source["open"] and source["checksum"]:
+        return source["checksum"]
+    path = Path(source["location"])
+    size = path.stat().st_size
+    time.sleep(settle)
+    if path.stat().st_size != size:
+        raise RecordError(f"{path.name} is still growing")
     digest = sha256(Path(source["location"]))
     store.wrap_essence(source["id"], digest)
     store.conn.execute(
@@ -108,8 +126,11 @@ def wrap(store: Store, asset_id: str) -> str:
 
 
 def _proxy_job(store: Store, asset_id: str) -> str:
+    asset = store.get_asset(asset_id)
+    if asset.source_key is None:
+        return ""
     row = store.conn.execute(
-        "SELECT id FROM job WHERE asset_id = ? AND type = 'proxy'",
-        (asset_id,),
+        "SELECT id FROM job WHERE asset_id = ? AND type = 'proxy' AND idempotency_key = ?",
+        (asset_id, f"proxy:{asset.source_key}"),
     ).fetchone()
     return row["id"] if row else ""
