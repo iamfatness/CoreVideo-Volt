@@ -1,6 +1,6 @@
 # Control plane
 
-Asset, essence, span, item, cue, version, job.
+MAM, storage, transcoding, orchestration, and distribution on one asset ID.
 
 ```bash
 cd control
