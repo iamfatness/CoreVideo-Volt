@@ -11,11 +11,18 @@ from volt.session import list_assets, rundown, seek_hit
 from volt.store import Store
 
 ROOT = Path(__file__).resolve().parents[1] / "session"
-STORE = Store(str(Path(__file__).resolve().parents[1] / "volt.db"))
+DB_PATH = str(Path(__file__).resolve().parents[1] / "volt.db")
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        store = Store(DB_PATH)
+        try:
+            self._route(store)
+        finally:
+            store.close()
+
+    def _route(self, STORE):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             body = (ROOT / "index.html").read_bytes()

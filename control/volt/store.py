@@ -142,9 +142,14 @@ class Job:
 
 class Store:
     def __init__(self, path: str = ":memory:"):
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=10)
         self.conn.row_factory = sqlite3.Row
+        if path != ":memory:":
+            self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+
+    def close(self) -> None:
+        self.conn.close()
 
     def mint_asset(
         self,
@@ -153,13 +158,14 @@ class Store:
         show_name: Optional[str] = None,
         room: Optional[str] = None,
         camera: Optional[str] = None,
+        source_key: Optional[str] = None,
     ) -> Asset:
         asset_id = _id()
         self.conn.execute(
             """INSERT INTO asset
                (id, owner, retention_class, legal_hold, cleared, show_name, room, camera, source_key, created_at)
                VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?)""",
-            (asset_id, owner, retention_class, show_name, room, camera, None, _now()),
+            (asset_id, owner, retention_class, show_name, room, camera, source_key, _now()),
         )
         self.conn.commit()
         return self.get_asset(asset_id)
@@ -200,13 +206,16 @@ class Store:
         existing = self.find_by_source(source_key)
         if existing is not None:
             return existing
-        asset = self.mint_asset(owner, retention_class, show_name, room, camera)
-        self.conn.execute(
-            "UPDATE asset SET source_key = ? WHERE id = ?",
-            (source_key, asset.id),
-        )
-        self.conn.commit()
-        return self.get_asset(asset.id)
+        try:
+            return self.mint_asset(
+                owner, retention_class, show_name, room, camera, source_key=source_key
+            )
+        except sqlite3.IntegrityError:
+            self.conn.rollback()
+            winner = self.find_by_source(source_key)
+            if winner is None:
+                raise
+            return winner
 
     def set_hold(self, asset_id: str, held: bool) -> None:
         self.conn.execute(
