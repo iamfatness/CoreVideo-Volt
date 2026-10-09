@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" role="img" aria-label="Volt four-slash lockup">
+  <rect width="720" height="200" fill="#141414"/>
+  <g fill="#F0B429">
+    <rect x="86" y="58" width="8" height="84" rx="1" transform="rotate(-18 90 100)"/>
+    <rect x="108" y="58" width="8" height="84" rx="1" transform="rotate(-18 112 100)"/>
+    <rect x="130" y="58" width="8" height="84" rx="1" transform="rotate(-18 134 100)"/>
+    <rect x="152" y="58" width="8" height="84" rx="1" transform="rotate(-18 156 100)"/>
+  </g>
+  <text x="196" y="132" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="700" letter-spacing="6">VOLT</text>
+</svg>

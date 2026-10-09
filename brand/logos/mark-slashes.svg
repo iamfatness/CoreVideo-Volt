@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Volt four-slash mark">
+  <rect width="128" height="128" fill="#141414"/>
+  <g fill="#F0B429">
+    <rect x="28" y="34" width="6" height="60" rx="1" transform="rotate(-18 31 64)"/>
+    <rect x="46" y="34" width="6" height="60" rx="1" transform="rotate(-18 49 64)"/>
+    <rect x="64" y="34" width="6" height="60" rx="1" transform="rotate(-18 67 64)"/>
+    <rect x="82" y="34" width="6" height="60" rx="1" transform="rotate(-18 85 64)"/>
+  </g>
+</svg>

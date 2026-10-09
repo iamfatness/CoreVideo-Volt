@@ -38,29 +38,18 @@ Geometric grotesque for the wordmark. Product UI uses the system UI font CoreVid
 
 Short. Operational. "The clip is in Volt." Not "unlock your media supply chain."
 
-## Logo proposals
+## Logo
 
-Three directions. None is locked.
+Locked direction: four amber slashes, then VOLT.
 
-### 1. Bolt mark
+The mark is four short parallel strokes, leaning forward, in signal amber `#F0B429`, set before the word. White geometric VOLT. Charcoal ground. No bolt. No ring. The slashes are the tally and the voltage, without drawing a lightning cliché.
 
-A V cut as a single bolt. App icon, favicon, tally-adjacent mark. Strongest at small size. Risk: every energy app has a bolt. Use only if the wordmark is always nearby.
+- Wordmark: [brand/logos/lockup-slashes.svg](../brand/logos/lockup-slashes.svg)
+- Mark only, for the app icon: [brand/logos/mark-slashes.svg](../brand/logos/mark-slashes.svg)
 
-File: [brand/logos/mark-bolt.jpg](../brand/logos/mark-bolt.jpg) and [brand/logos/mark-bolt.svg](../brand/logos/mark-bolt.svg)
+Rules: always four. Same angle, same gap, same weight. Do not add a fifth, do not connect them, do not turn them into a Z. At icon size the four strokes stand alone. Beside the word they sit left of the V, optically centered on the cap height.
 
-### 2. Tally lockup — recommended
-
-VOLT in a geometric sans, white, with a short amber tally tick before the V. Reads as on-air without drawing a lightning cliché. Works on a truck label and a price sheet.
-
-File: [brand/logos/lockup-tally.jpg](../brand/logos/lockup-tally.jpg) and [brand/logos/lockup-tally.svg](../brand/logos/lockup-tally.svg)
-
-### 3. Ring lockup
-
-The O is the tally ring. Memorable, and worse at small sizes because the ring collapses. Secondary, not the icon.
-
-File: [brand/logos/lockup-ring.jpg](../brand/logos/lockup-ring.jpg) and [brand/logos/lockup-ring.svg](../brand/logos/lockup-ring.svg)
-
-Recommendation: tally lockup as the wordmark, bolt as the app icon only after it is redrawn simpler than the concept render.
+Earlier passes, not the logo: a bolt V, a single tally tick, and an O drawn as a ring. Kept in `brand/logos/` as rejected studies.
 
 ## UI direction
 
