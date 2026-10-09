@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt.session import list_assets, seek_hit
+from volt.session import list_assets, rundown, seek_hit
 from volt.store import Store
 
 ROOT = Path(__file__).resolve().parents[1] / "session"
@@ -28,7 +28,14 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._send(200, "application/json", json.dumps(rows).encode())
             return
-        if parsed.path == "/seek":
+        if parsed.path == "/rundown":
+            show_id = parse_qs(parsed.query).get("show", [""])[0]
+            rows = [
+                {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls}
+                for row in rundown(STORE, show_id)
+            ]
+            self._send(200, "application/json", json.dumps(rows).encode())
+            return
             query = parse_qs(parsed.query).get("q", [""])[0]
             hit = seek_hit(STORE, query)
             payload = {} if hit is None else {

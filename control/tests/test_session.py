@@ -1,7 +1,9 @@
 import unittest
 
 from volt.library import index_words
-from volt.session import list_assets, seek_hit
+from volt.publish import publish
+from volt.rundown import add_item, attach, open_show
+from volt.session import list_assets, rundown, seek_hit
 from volt.store import Store
 
 
@@ -19,6 +21,21 @@ class SessionContract(unittest.TestCase):
         self.assertEqual(hit.tc_in, "01:12:08:12")
         self.assertEqual(hit.proxy, "proxy/iso-3.mp4")
         self.assertNotIn("mxf", hit.proxy)
+
+    def test_rundown_item_shows_the_published_url(self):
+        store = Store()
+        asset = store.mint_asset(owner="desk")
+        store.set_cleared(asset.id, True)
+        index_words(store, asset.id, [("steal", "01:12:08:12", "01:12:09:00")])
+        span_id = store.conn.execute("SELECT id FROM span").fetchone()["id"]
+        publish(store, span_id)
+        show_id = open_show(store, "Final Four")
+        item_id = add_item(store, show_id, "Steal")
+        attach(store, item_id, span_id)
+        rows = rundown(store, show_id)
+        self.assertEqual(rows[0].slug, "Steal")
+        self.assertEqual(len(rows[0].urls), 3)
+        self.assertTrue(all(url.startswith("volt://") for url in rows[0].urls))
 
     def test_missing_word_does_not_invent_a_hit(self):
         store = Store()

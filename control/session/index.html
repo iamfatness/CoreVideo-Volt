@@ -26,6 +26,7 @@
   <main>
     <aside>
       <div id="assets">No assets</div>
+      <div id="rundown"></div>
     </aside>
     <section>
       <p id="seek">A hit seeks the proxy.</p>
@@ -38,6 +39,12 @@
       document.getElementById("assets").innerHTML = assets.length
         ? "<ul>" + assets.map(a => `<li>${a.camera || "asset"} ${a.open ? "· open" : ""}</li>`).join("") + "</ul>"
         : "No assets";
+      const show = new URLSearchParams(location.search).get("show");
+      if (!show) return;
+      const items = await fetch("/rundown?show=" + encodeURIComponent(show)).then(r => r.json());
+      document.getElementById("rundown").innerHTML = items.map(item =>
+        `<p>${item.slug} · ${item.status}${item.urls.length ? "<br>" + item.urls.join("<br>") : ""}</p>`
+      ).join("");
     }
     document.getElementById("q").addEventListener("change", async (event) => {
       const hit = await fetch("/seek?q=" + encodeURIComponent(event.target.value)).then(r => r.json());

@@ -38,6 +38,36 @@ def list_assets(store: Store) -> list[AssetRow]:
     return [AssetRow(row["id"], row["show_name"], row["camera"], bool(row["open"])) for row in rows]
 
 
+@dataclass
+class ItemRow:
+    id: str
+    slug: str
+    status: str
+    span_id: Optional[str]
+    urls: list[str]
+
+
+def rundown(store: Store, show_id: str) -> list[ItemRow]:
+    rows = store.conn.execute(
+        """SELECT i.id, i.slug, i.status, i.span_id
+           FROM item i WHERE i.show_id = ? ORDER BY i.position""",
+        (show_id,),
+    ).fetchall()
+    items = []
+    for row in rows:
+        urls = []
+        if row["span_id"]:
+            urls = [
+                hit["url"]
+                for hit in store.conn.execute(
+                    "SELECT url FROM version WHERE span_id = ? AND url IS NOT NULL ORDER BY kind",
+                    (row["span_id"],),
+                ).fetchall()
+            ]
+        items.append(ItemRow(row["id"], row["slug"], row["status"], row["span_id"], urls))
+    return items
+
+
 def seek_hit(store: Store, query: str) -> Optional[Seek]:
     hits = search(store, query)
     if not hits:
