@@ -38,9 +38,14 @@ class Observation:
 class FakeRoom:
     """Plays a scripted run of observations. The last one repeats."""
 
-    def __init__(self, script: list[Observation]):
+    def __init__(self, script: list[Observation], senders: Optional[list[list[str]]] = None,
+                 states: Optional[list[dict]] = None):
         self._script = list(script)
         self._at = 0
+        self._senders = senders or [[]]
+        self._sender_at = 0
+        self._states = states or [{}]
+        self._state_at = 0
         self.calls: list[tuple[str, list]] = []
 
     def invoke(self, action: str, args: list) -> None:
@@ -52,6 +57,17 @@ class FakeRoom:
     def observe(self) -> Observation:
         item = self._script[min(self._at, len(self._script) - 1)]
         self._at += 1
+        return item
+
+
+    def senders_observed(self) -> list[Observation]:
+        item = self._senders[min(self._sender_at, len(self._senders) - 1)]
+        self._sender_at += 1
+        return [Observation(st, "healthy", False, f"sender-{n}", None) for n, st in enumerate(item)]
+
+    def state(self) -> dict:
+        item = self._states[min(self._state_at, len(self._states) - 1)]
+        self._state_at += 1
         return item
 
 
@@ -84,6 +100,24 @@ class CoreVideoProRoom:
         result = self._request("POST", "/invoke", {"action": action, "args": args})
         if not result.get("ok"):
             raise LiveError(f"{action} refused: {result.get('error')}")
+
+    def state(self) -> dict:
+        return self._request("GET", "/state")
+
+    def senders_observed(self) -> list[Observation]:
+        env = self._request("GET", "/snapshot")
+        stale = bool(env.get("stale")) or not env.get("available")
+        senders = ((env.get("snapshot") or {}).get("outputSenders") or {}).get("senders") or []
+        out = []
+        for sender in senders:
+            life = sender.get("lifecycle")
+            if isinstance(life, dict):
+                out.append(Observation(str(life.get("state", "unknown")), str(life.get("health", "unknown")),
+                                       bool(life.get("finalized", False)), life.get("sessionId"), None,
+                                       stale=stale, error=life.get("error")))
+            else:
+                out.append(Observation("unknown", "unknown", False, None, None, stale=stale))
+        return out
 
     def observe(self) -> Observation:
         env = self._request("GET", "/snapshot")

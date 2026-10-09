@@ -30,3 +30,15 @@ The first adapter is CoreVideo Pro. The next adapter is whichever mixer the show
 - `finish_recording` sends `[false]`, then wraps only on `completed` with `finalized` true for the same session. `failed`, `interrupted` and unknown states never wrap.
 
 The wire shape comes from CoreVideoPro source. It has not been run against a live core yet.
+
+## Cue dispatch
+
+`control/volt/dispatch.py` sends an item's armed cues to the room in order and marks each `fired` only when the room shows the effect. It stops at the first cue that does not land. That cue stays `armed`, and fired cues are skipped on replay.
+
+| Cue command | Control action | Evidence |
+|---|---|---|
+| `record.start` | `transport.record.set [true]` | `recording.lifecycle` producing, fresh, with an artifact path. Mints the asset. |
+| `stream.start` | `transport.stream.set [true]` | A sender in `outputSenders.senders[].lifecycle` producing and fresh |
+| `overlay.take` | `graphics.lowerThird.set [on]` | `GET /state` `lowerThirdOnAir` matches |
+
+`show-input.take`, `record.arm`, `audio.snapshot` and every other room are reported `unsupported` and stay armed. Each needs a control action and a piece of evidence that are known before it gets a handler. Same status as above: wire shapes come from source and have not run against a live core.

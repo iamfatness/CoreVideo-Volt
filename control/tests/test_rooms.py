@@ -103,9 +103,18 @@ class _Core(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    state = {"lowerThirdOnAir": True, "streaming": False}
+    senders = [{"lifecycle": {"sessionId": "x1", "desiredActive": True, "state": "producing",
+                              "health": "healthy", "finalized": False}}]
+
     def do_GET(self):
-        body = json.dumps({"available": True, "stale": False, "ageMs": 5,
-                           "snapshot": {"recording": self.recording}}).encode()
+        if self.path == "/state":
+            payload = _Core.state
+        else:
+            payload = {"available": True, "stale": False, "ageMs": 5,
+                       "snapshot": {"recording": self.recording,
+                                    "outputSenders": {"senders": _Core.senders}}}
+        body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -152,6 +161,11 @@ class CoreVideoProWire(unittest.TestCase):
         o = CoreVideoProRoom(self.base).observe()
         self.assertEqual(o.state, "unknown")
         self.assertFalse(o.usable())
+
+    def test_state_and_senders(self):
+        room = CoreVideoProRoom(self.base)
+        self.assertTrue(room.state()["lowerThirdOnAir"])
+        self.assertEqual([o.state for o in room.senders_observed()], ["producing"])
 
     def test_unreachable_core_raises(self):
         with self.assertRaises(LiveError):
