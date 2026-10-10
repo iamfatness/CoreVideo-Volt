@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS item (
   script TEXT,
   status TEXT NOT NULL,
   span_id TEXT REFERENCES span(id),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  as_run_in TIMESTAMPTZ,
+  as_run_out TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS version (

@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS item (
   script TEXT,
   status TEXT NOT NULL,
   span_id TEXT REFERENCES span(id),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  as_run_in TEXT,
+  as_run_out TEXT
 );
 
 CREATE TABLE IF NOT EXISTS version (
@@ -147,6 +149,14 @@ class Store:
         if path != ":memory:":
             self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(item)")}
+        for column in ("as_run_in", "as_run_out"):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE item ADD COLUMN {column} TEXT")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

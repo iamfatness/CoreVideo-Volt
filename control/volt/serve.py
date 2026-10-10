@@ -38,7 +38,8 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/rundown":
             show_id = parse_qs(parsed.query).get("show", [""])[0]
             rows = [
-                {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls}
+                {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
+                 "asRunIn": row.as_run_in, "asRunOut": row.as_run_out}
                 for row in rundown(STORE, show_id)
             ]
             self._send(200, "application/json", json.dumps(rows).encode())
