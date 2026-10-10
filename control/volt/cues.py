@@ -51,11 +51,15 @@ def cues(store: Store, item_id: str) -> list[Cue]:
     return [Cue(row["id"], row["room"], row["command"], row["payload"], row["status"]) for row in rows]
 
 
-def arm(store: Store, item_id: str) -> list[Cue]:
-    take(store, item_id)
+def arm_cues(store: Store, item_id: str) -> None:
     store.conn.execute(
         "UPDATE cue SET status = 'armed' WHERE item_id = ? AND status = 'stored'",
         (item_id,),
     )
     store.conn.commit()
+
+
+def arm(store: Store, item_id: str) -> list[Cue]:
+    take(store, item_id)
+    arm_cues(store, item_id)
     return cues(store, item_id)

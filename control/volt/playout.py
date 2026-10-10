@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from volt.rundown import take
@@ -20,8 +21,35 @@ def on_air(store: Store, show_id: str) -> Optional[str]:
     return row["id"] if row else None
 
 
+@dataclass
+class Advance:
+    target: Optional[str]
+    previous: Optional[str]
+    passed: list[str] = field(default_factory=list)
+
+
 def go(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Optional[str]:
-    """Take the next item. Returns its id, or None when the show is over.
+    """Take the next item. Returns its id, or None when the show is over."""
+    return advance(store, show_id, clock).target
+
+
+def rewind(store: Store, adv: Advance) -> None:
+    """Undo an advance: the target is ready again, the outgoing item back on air."""
+    if adv.target is not None:
+        store.conn.execute(
+            "UPDATE item SET status = 'ready', as_run_in = NULL WHERE id = ?", (adv.target,)
+        )
+    if adv.previous is not None:
+        store.conn.execute(
+            "UPDATE item SET status = 'on air', as_run_out = NULL WHERE id = ?", (adv.previous,)
+        )
+    for item_id in adv.passed:
+        store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
+    store.conn.commit()
+
+
+def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Advance:
+    """Take the next item and say what changed.
 
     The outgoing item gets its as-run out and the incoming item its as-run in from
     the same clock read. A killed item that is passed over is recorded as skipped.
@@ -56,7 +84,7 @@ def go(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Optional[
     if target is not None:
         store.conn.execute("UPDATE item SET as_run_in = ? WHERE id = ?", (now, target))
     store.conn.commit()
-    return target
+    return Advance(target, current, passed)
 
 
 def skip(store: Store, item_id: str) -> None:
