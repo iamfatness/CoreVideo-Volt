@@ -47,11 +47,13 @@ class ItemRow:
     status: str
     span_id: Optional[str]
     urls: list[str]
+    as_run_in: Optional[str] = None
+    as_run_out: Optional[str] = None
 
 
 def rundown(store: Store, show_id: str) -> list[ItemRow]:
     rows = store.conn.execute(
-        """SELECT i.id, i.slug, i.status, i.span_id
+        """SELECT i.id, i.slug, i.status, i.span_id, i.as_run_in, i.as_run_out
            FROM item i WHERE i.show_id = ? ORDER BY i.position""",
         (show_id,),
     ).fetchall()
@@ -66,7 +68,8 @@ def rundown(store: Store, show_id: str) -> list[ItemRow]:
                     (row["span_id"],),
                 ).fetchall()
             ]
-        items.append(ItemRow(row["id"], row["slug"], row["status"], row["span_id"], urls))
+        items.append(ItemRow(row["id"], row["slug"], row["status"], row["span_id"], urls,
+                             row["as_run_in"], row["as_run_out"]))
     return items
 
 
