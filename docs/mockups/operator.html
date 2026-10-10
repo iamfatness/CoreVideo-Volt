@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Volt operator mockups</title>
+<style>
+:root{--ground:#141414;--panel:#1c1c1c;--hair:#303030;--text:#e2e2e2;--muted:#9a9a9a;--blue:#1d6dc2;--signal:#f0b429;--air:#ff4d4d;--ok:#3ddc97}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--hair);flex-wrap:wrap}
+.mark{color:var(--signal);font-weight:700;letter-spacing:1px;font-style:italic}
+nav{display:flex;gap:4px;margin-left:24px}
+nav button{background:none;border:1px solid transparent;color:var(--muted);padding:6px 14px;border-radius:4px;font:inherit;cursor:pointer}
+nav button[aria-selected=true]{color:var(--text);border-color:var(--hair);background:var(--panel)}
+nav button:focus-visible,.btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.clock{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
+.screen{display:none;padding:16px 20px}.screen.on{display:block}
+.note{color:var(--muted);margin:0 0 12px;max-width:80ch}
+.grid{display:grid;grid-template-columns:minmax(260px,1fr) minmax(300px,1.2fr) minmax(260px,1fr);gap:16px}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:6px}
+.panel h2{margin:0;padding:10px 14px;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--hair)}
+.row{padding:10px 14px;border-bottom:1px solid var(--hair);display:flex;justify-content:space-between;gap:10px;align-items:center}
+.row:last-child{border-bottom:0}
+.row small{display:block;color:var(--muted)}
+.chip{font-size:11px;font-weight:700;letter-spacing:1px;padding:3px 8px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
+.air{background:var(--air);color:#1a0000}.next{background:var(--signal);color:#1a1200}
+.ready{background:#3a3a3a;color:var(--text)}.aired{color:var(--muted);border:1px solid var(--hair)}
+.skipped{color:var(--muted);text-decoration:line-through}
+.fired{color:var(--ok);border:1px solid var(--ok)}.armed{color:var(--signal);border:1px solid var(--signal)}
+.failed{background:var(--air);color:#1a0000}.unsup{color:var(--muted);border:1px dashed var(--muted)}
+.banner{border:1px solid var(--air);border-left:4px solid var(--air);background:#2a1616;padding:10px 14px;border-radius:4px;margin-bottom:12px}
+.banner strong{color:var(--air)}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:4px;padding:12px 22px;font:inherit;font-weight:700;letter-spacing:1px;cursor:pointer}
+.btn.ghost{background:none;border:1px solid var(--hair);color:var(--text)}
+.btn[disabled]{background:#2a2a2a;color:var(--muted);cursor:not-allowed}
+.bar{display:flex;gap:10px;padding:14px;align-items:center;flex-wrap:wrap}
+.bar small{color:var(--muted)}
+.steps{display:flex;gap:0;padding:14px;flex-wrap:wrap}
+.step{flex:1;min-width:110px;padding:8px 10px;border:1px solid var(--hair);color:var(--muted);text-align:center;font-size:12px;text-transform:uppercase;letter-spacing:1px}
+.step.done{color:var(--text);border-color:var(--ok)}.step.now{background:var(--signal);color:#1a1200;border-color:var(--signal);font-weight:700}
+dl{margin:0;padding:12px 14px;display:grid;grid-template-columns:150px 1fr;gap:6px 12px}
+dt{color:var(--muted)}dd{margin:0;font-family:Consolas,monospace;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:var(--muted);font-weight:600;padding:8px 14px;border-bottom:1px solid var(--hair);font-size:12px;text-transform:uppercase;letter-spacing:1px}
+td{padding:10px 14px;border-bottom:1px solid var(--hair)}
+.ok{color:var(--ok)}.no{color:var(--air)}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <span class="mark" aria-hidden="true">////</span><strong>VOLT</strong><span>Final Four Watch</span>
+  <nav role="tablist" aria-label="Screens">
+    <button role="tab" aria-selected="true" aria-controls="show" id="t-show">Show</button>
+    <button role="tab" aria-selected="false" aria-controls="record" id="t-record">Record</button>
+    <button role="tab" aria-selected="false" aria-controls="rights" id="t-rights">Rights</button>
+  </nav>
+  <span class="clock">01:12:08:14</span>
+</header>
+
+<main>
+<section class="screen on" id="show" role="tabpanel" aria-labelledby="t-show">
+  <p class="note">State: a take was held. The second cue did not land, so the rundown stayed on Open. Cue 1 had already fired in the room and stays fired.</p>
+  <div class="banner" role="alert"><strong>Take held.</strong> Game action did not go on air. Cue 2 of 3, stream.start: no sender observed producing. Open is still on air.</div>
+  <div class="grid">
+    <div class="panel"><h2>Rundown</h2>
+      <div class="row"><div>Open / theme<small>as-run 20:00:09 to now</small></div><span class="chip air">On air</span></div>
+      <div class="row"><div>Game action<small>take held</small></div><span class="chip next">Next</span></div>
+      <div class="row"><div>Under review<small>clip 01:22:30 to 01:24:30</small></div><span class="chip ready">Ready</span></div>
+      <div class="row"><div>Tough call<small>killed by desk, will be skipped</small></div><span class="chip aired">Killed</span></div>
+      <div class="row"><div>Player spotlight<small>clip 01:26:30 to 01:28:30</small></div><span class="chip ready">Ready</span></div>
+      <div class="row"><div class="skipped">Commercial break</div><span class="chip aired">Skipped</span></div>
+      <div class="row"><div>Pre-show<small>20:00:01 to 20:00:09</small></div><span class="chip aired">Aired</span></div>
+    </div>
+    <div class="panel"><h2>Cues on Game action</h2>
+      <div class="row"><div>Lower third on<small>overlay.take · seen on air</small></div><span class="chip fired">Fired</span></div>
+      <div class="row"><div>Start stream<small>stream.start · no sender producing after 10 s</small></div><span class="chip failed">Failed</span></div>
+      <div class="row"><div>Camera 2<small>show-input.take · no verified adapter yet</small></div><span class="chip unsup">Unsupported</span></div>
+      <div class="bar"><button class="btn">TAKE AGAIN</button><button class="btn ghost">Skip item</button>
+        <small>Take resumes at Start stream. Fired cues are not sent twice.</small></div>
+    </div>
+    <div class="panel"><h2>Room · CoreVideo Pro</h2>
+      <dl><dt>Control</dt><dd>127.0.0.1:8011 · reachable</dd><dt>Snapshot age</dt><dd>120 ms · fresh</dd><dt>Program</dt><dd>Open / theme</dd><dt>Stream</dt><dd>requested · not producing</dd><dt>Lower third</dt><dd>on air</dd></dl>
+    </div>
+  </div>
+</section>
+
+<section class="screen" id="record" role="tabpanel" aria-labelledby="t-record">
+  <p class="note">State: finalizing. The asset ID exists from the moment output was observed. Wrap stays disabled until the room reports completed and finalized.</p>
+  <div class="panel"><h2>Recording · iso-3</h2>
+    <div class="steps" role="list" aria-label="Lifecycle">
+      <div class="step done" role="listitem">Requested</div><div class="step done" role="listitem">Preparing</div>
+      <div class="step done" role="listitem">Producing</div><div class="step done" role="listitem">Stopping</div>
+      <div class="step now" role="listitem" aria-current="step">Finalizing</div><div class="step" role="listitem">Completed</div>
+    </div>
+    <dl>
+      <dt>Asset</dt><dd>c907b671-000e-4749-a7a5-ebf54523350d</dd>
+      <dt>Session</dt><dd>cv:s1</dd>
+      <dt>File</dt><dd>C:\iso\iso-3.mp4 · open</dd>
+      <dt>Snapshot</dt><dd>fresh · 90 ms</dd>
+      <dt>Finalized</dt><dd>no</dd>
+      <dt>Proxy</dt><dd>refreshed 8 s ago · open</dd>
+    </dl>
+    <div class="bar"><button class="btn" disabled>WRAP AND CHECKSUM</button><small>Waiting for completed and finalized from the room. Never wraps on a stop ack.</small></div>
+  </div>
+</section>
+
+<section class="screen" id="rights" role="tabpanel" aria-labelledby="t-rights">
+  <p class="note">Publish refuses anything not cleared or on legal hold. The reason is shown where the operator is blocked.</p>
+  <div class="panel"><h2>Assets</h2>
+    <table><thead><tr><th>Asset</th><th>Camera</th><th>Cleared</th><th>Legal hold</th><th>Can publish</th></tr></thead><tbody>
+      <tr><td>c907b671</td><td>iso-3</td><td class="ok">Cleared</td><td>No</td><td class="ok">Yes</td></tr>
+      <tr><td>5be1a02f</td><td>iso-1</td><td class="no">Not cleared</td><td>No</td><td class="no">No · not cleared</td></tr>
+      <tr><td>77d09c3e</td><td>iso-2</td><td class="ok">Cleared</td><td class="no">On hold</td><td class="no">No · legal hold</td></tr>
+    </tbody></table>
+    <div class="bar"><button class="btn ghost">Clear selected</button><button class="btn ghost">Place hold</button></div>
+  </div>
+</section>
+</main>
+<script>
+const tabs=[...document.querySelectorAll('[role=tab]')];
+tabs.forEach(t=>t.addEventListener('click',()=>{
+  tabs.forEach(x=>{const on=x===t;x.setAttribute('aria-selected',on);document.getElementById(x.getAttribute('aria-controls')).classList.toggle('on',on)});
+}));
+</script>
+</body>
+</html>
