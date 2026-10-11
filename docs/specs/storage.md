@@ -46,7 +46,11 @@ S3 makes a PUT, or a completed multipart upload, visible all at once, so there i
 
 ## Expiring URLs
 
-Without `VOLT_S3_PUBLIC_URL_BASE` the stored `version.url` is a presigned URL and expires (default 7 days; with temporary role credentials it dies when the session does, whichever is first). `publish.refresh_url(store, version_id, expires=None)` makes a new one from the stored backend and key and writes it back. It refuses when the configured bucket and prefix differ from the ones the version was stored under. Nothing calls it on a schedule yet. A presigned URL embeds the access key id (not the secret); treat it as a bearer link.
+Without `VOLT_S3_PUBLIC_URL_BASE` the stored `version.url` is a presigned URL and expires (default 7 days; with temporary role credentials it dies when the session does, whichever is first). `publish.refresh_url(store, version_id, expires=None)` makes a new one from the stored backend and key and writes it back. It refuses when the configured bucket and prefix differ from the ones the version was stored under. A presigned URL embeds the access key id (not the secret); treat it as a bearer link.
+
+`publish.refresh_expiring(store, backend=None, within_seconds=86400, expires=None, now=None)` is the opt-in pass that calls it for you. It re-signs every `done` version stored under the configured bucket and prefix (`version.storage_backend == backend.id`; versions under another bucket or prefix are not touched) whose URL expires within `within_seconds`, or already has. It does nothing for the local backend or when `VOLT_S3_PUBLIC_URL_BASE` is set (those URLs do not expire). It returns a `RefreshReport` (`refreshed` ids, `skipped` count, `failed` as `(version id, reason)`); one version that fails to sign is recorded and the pass carries on.
+
+The issue time is not stored (no schema change). The expiry is read from the URL: SigV4 `X-Amz-Date` + `X-Amz-Expires`, or SigV2 `Expires` (absolute epoch). A URL with neither is counted as skipped, never guessed at. Run it from cron: `python -m volt.publish refresh-urls <db> --within 86400 [--expires SECONDS]` (storage from the usual `VOLT_STORAGE` / `VOLT_S3_*` variables). It prints `refreshed= skipped= failed=` and exits 1 if any version failed. Pick `--within` larger than the cron interval plus the URL lifetime you can tolerate losing; nothing runs it unless you schedule it.
 
 ## IAM
 

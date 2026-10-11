@@ -433,8 +433,8 @@
       if (!cs.length) return el('p', { class: 'empty', text: 'No cues on this item. Taking it only changes the rundown.' });
       return [cs.map((c) => el('div', { class: 'cue' },
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
-          el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (S.cueDetail[c.id] && c.status !== 'fired' ? ' · last take: ' + S.cueDetail[c.id] : '') })),
-        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : c.status))),
+          el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
+        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)))),
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
     });
 
