@@ -34,6 +34,10 @@ Idempotent. Type: ingest, proxy, ASR, conform, publish. Replaying a failed job m
 
 The same asset as a MOS objID, a Premiere media path, a CoreVideo recording, a publish URL. The ref is not a copy.
 
+## Storage
+
+Same objects on SQLite (default) and Postgres. Timestamps are ISO-8601 UTC text to callers on both. See `docs/architecture.md` for what is proven on Postgres.
+
 ## Rights
 
 Every asset has an owner, a retention class, and a legal hold flag on day one. Publish refuses a span that is not cleared. Deletion is a job, not a filesystem rm.

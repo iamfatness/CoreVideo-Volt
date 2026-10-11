@@ -50,7 +50,7 @@ Each is a job on an existing asset. Idempotency and the job table are already in
 
 - Speech worker that writes transcript word spans. Today `index_words` is fed by hand.
 - Deliverable transcodes: house, OTT, social. Publish URLs are placeholders.
-- Postgres as the running store. `schema.sql` exists and a test keeps it matched, but `Store` is SQLite only.
+- Postgres as the running store. `Store` accepts a `postgres://` DSN and the contract suite passes against Postgres 16. Left: pooling, Postgres migrations, concurrent-write tests.
 - Hold in playout, and a clock that fires on a schedule.
 - Done when: a recorded clip becomes searchable text and three files with real URLs.
 

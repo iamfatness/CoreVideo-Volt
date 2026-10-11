@@ -115,7 +115,7 @@ def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     digest = sha256(Path(source["location"]))
     store.wrap_essence(source["id"], digest)
     store.conn.execute(
-        "UPDATE essence SET open = 0 WHERE asset_id = ? AND role = 'proxy'",
+        "UPDATE essence SET open = FALSE WHERE asset_id = ? AND role = 'proxy'",
         (asset_id,),
     )
     store.conn.commit()

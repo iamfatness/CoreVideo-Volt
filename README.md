@@ -12,7 +12,7 @@ Next: a speech worker that writes the word spans, and a Premiere panel that impo
 
 A card stays in quarantine until it parses and the checksum matches. A CoreVideo ISO is an open essence until wrap. Hi-res and proxy are two essences of the same asset.
 
-Next: Postgres as the running store, and an object store for the bytes. The tables are in `control/schema.sql`.
+Postgres runs the same store: pass a `postgres://` DSN (`VOLT_DB` for the session server; needs `psycopg`). Tables are in `control/schema.sql`. Next: an object store for the bytes.
 
 ## Transcoding
 
