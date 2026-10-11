@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from volt import operator_state
 from volt.live import finish_recording, start_recording
+from volt import pg
 from volt.pg import is_dsn
 from volt.playout import HeldError, PlayoutError, advance, hold, hold_state, release, skip
 from volt.publish import publish_files
@@ -563,10 +564,25 @@ def main():
         check_bind(host, TOKEN)
     except ConfigError as exc:
         raise SystemExit(f"volt: {exc}")
-    Store(DB_PATH).close()  # bootstrap the schema once
-    server = ThreadingHTTPServer((host, port), Handler)
-    print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN else ""))
-    server.serve_forever()
+    # Optional Postgres pool (VOLT_PG_POOL_MAX > 0; see volt/pg.py). Opened before the bootstrap so it fails
+    # at startup if the database is unreachable, and so requests borrow instead of connecting.
+    try:
+        pool = pg.configure_pool_from_env(DB_PATH)
+    except Exception as exc:  # noqa: BLE001 - bad option, missing psycopg_pool, unreachable database
+        raise SystemExit(f"volt: postgres pool: {exc}")
+    try:
+        Store(DB_PATH).close()  # bootstrap the schema once
+        server = ThreadingHTTPServer((host, port), Handler)
+        print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN else "")
+              + (f" (postgres pool of up to {pool.max_size})" if pool else ""))
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+    finally:
+        pg.close_pools()
 
 
 if __name__ == "__main__":

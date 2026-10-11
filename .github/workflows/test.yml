@@ -21,3 +21,35 @@ jobs:
       - name: Contract tests
         working-directory: control
         run: python -m unittest discover -s tests -v
+
+  # The same suite again with VOLT_TEST_PG_DSN set, so the live Postgres tests (races, pool, migrations)
+  # run and the ordinary tests are exercised against SQLite as before. Linux only: GitHub's Windows
+  # runners cannot host service containers. psycopg and psycopg_pool are installed here and nowhere else,
+  # so the contract jobs above keep proving the stdlib-only SQLite path.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VOLT_TEST_PG_DSN: postgresql://postgres:pw@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Install the Postgres drivers
+        run: python -m pip install "psycopg[binary]==3.3.6" "psycopg_pool==3.3.3"
+      - name: Contract tests on Postgres
+        working-directory: control
+        run: python -m unittest discover -s tests -v
