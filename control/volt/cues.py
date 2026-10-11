@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from volt.rundown import take
 from volt.store import Store, _id, _now
@@ -24,6 +25,9 @@ class Cue:
     command: str
     payload: str
     status: str
+    # The last dispatch failure ("failed" | "unsupported") and its reason. None once the cue fires.
+    fail_status: Optional[str] = None
+    fail_detail: Optional[str] = None
 
 
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> str:
@@ -45,10 +49,25 @@ def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -
 
 def cues(store: Store, item_id: str) -> list[Cue]:
     rows = store.conn.execute(
-        "SELECT id, room, command, payload, status FROM cue WHERE item_id = ? ORDER BY position",
+        "SELECT id, room, command, payload, status, fail_status, fail_detail "
+        "FROM cue WHERE item_id = ? ORDER BY position",
         (item_id,),
     ).fetchall()
-    return [Cue(row["id"], row["room"], row["command"], row["payload"], row["status"]) for row in rows]
+    return [Cue(row["id"], row["room"], row["command"], row["payload"], row["status"],
+                row["fail_status"], row["fail_detail"]) for row in rows]
+
+
+def record_failure(store: Store, cue_id: str, status: str, detail: str) -> None:
+    """Remember why a cue did not land. The cue stays armed; this only adds the reason."""
+    store.conn.execute("UPDATE cue SET fail_status = ?, fail_detail = ? WHERE id = ?",
+                       (status, detail, cue_id))
+    store.conn.commit()
+
+
+def clear_failure(store: Store, cue_id: str) -> None:
+    """Forget a recorded failure without firing the cue. Firing clears it too."""
+    store.conn.execute("UPDATE cue SET fail_status = NULL, fail_detail = NULL WHERE id = ?", (cue_id,))
+    store.conn.commit()
 
 
 def arm_cues(store: Store, item_id: str) -> None:

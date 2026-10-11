@@ -164,6 +164,35 @@ class Take(Api):
         self.assertEqual([i["status"] for i in p["rundown"]["items"]], ["on air", "ready"])
         self.assertEqual(self.statuses(show), [(a, "on air"), (b, "ready")])
 
+    def test_failed_cue_is_remembered_until_it_fires(self):
+        show, (a, b) = _cue_show(self.store, [[], [("overlay.take", "on"), ("stream.start", "")]])
+        serve.ROOM = FakeRoom([obs("idle")], senders=[["requested"]], states=[{"lowerThirdOnAir": True}])
+        self.assertEqual(self.post(f"/api/shows/{show}/take")[0], 200)
+        self.refused(409, "cue_failed", f"/api/shows/{show}/take")
+
+        def cue_rows():
+            s, state, _ = self.call("GET", f"/api/state?show={show}")
+            self.assertEqual(s, 200)
+            return state["cues"][b]
+
+        fired, failed = cue_rows()
+        self.assertEqual((fired["status"], fired["failure"]), ("fired", None))
+        self.assertEqual((failed["status"], failed["failure"]["status"]), ("armed", "failed"))
+        self.assertIn("no sender observed producing", failed["failure"]["detail"])
+        # a later, unrelated read still reports it
+        self.assertEqual(cue_rows()[1]["failure"]["status"], "failed")
+        # retried and fired: the failure is gone and the cue is fired
+        serve.ROOM = FakeRoom([obs("idle")], senders=[["producing"]])
+        self.assertEqual(self.post(f"/api/shows/{show}/take")[0], 200)
+        self.assertEqual([(c["status"], c["failure"]) for c in cue_rows()], [("fired", None), ("fired", None)])
+
+    def test_unsupported_cue_is_remembered_too(self):
+        show, (a,) = _cue_show(self.store, [[("audio.snapshot", "walk-in")]])
+        serve.ROOM = FakeRoom([obs("idle")])
+        self.refused(409, "cue_unsupported", f"/api/shows/{show}/take")
+        cue = self.call("GET", f"/api/state?show={show}")[1]["cues"][a][0]
+        self.assertEqual((cue["status"], cue["failure"]["status"]), ("armed", "unsupported"))
+
     def test_unsupported_cue_has_its_own_code(self):
         show, (a,) = _cue_show(self.store, [[("audio.snapshot", "walk-in")]])
         serve.ROOM = FakeRoom([obs("idle")])
@@ -410,6 +439,14 @@ class Existing(Api):
         self.assertEqual((s, sorted(body)), (200, ["hold", "items"]))
         self.assertEqual(sorted(body["items"][0]), ["asRunIn", "asRunOut", "id", "slug", "status", "urls"])
         self.assertEqual(self.call("GET", "/nope")[0], 404)
+
+    def test_get_rundown_unknown_show_is_a_404_json_error(self):
+        s, body, _ = self.call("GET", "/rundown?show=no-such-show")
+        self.assertEqual(s, 404)
+        self.assertEqual(body["ok"], False)
+        self.assertEqual(body["error"]["code"], "not_found")
+        self.assertIn("no-such-show", body["error"]["reason"])
+        self.assertEqual(self.call("GET", "/rundown")[1], {"hold": None, "items": []})
 
 
 class Concurrency(Api):

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from volt.cues import cues
+from volt.cues import cues, record_failure
 from volt.live import start_recording
 from volt.rooms import LiveError
 from volt.show_input import show_input_take
@@ -98,15 +98,18 @@ def dispatch_item(
             continue
         handler = HANDLERS.get(cue.command) if cue.room == ROOM else None
         if handler is None:
-            results.append(Result(cue.id, cue.command, "unsupported",
-                                  f"no verified adapter for {cue.room}/{cue.command}"))
+            detail = f"no verified adapter for {cue.room}/{cue.command}"
+            record_failure(store, cue.id, "unsupported", detail)
+            results.append(Result(cue.id, cue.command, "unsupported", detail))
             break
         try:
             handler(store, room, cue, ctx)
         except LiveError as exc:
+            record_failure(store, cue.id, "failed", str(exc))
             results.append(Result(cue.id, cue.command, "failed", str(exc)))
             break
-        store.conn.execute("UPDATE cue SET status = 'fired' WHERE id = ?", (cue.id,))
+        store.conn.execute(
+            "UPDATE cue SET status = 'fired', fail_status = NULL, fail_detail = NULL WHERE id = ?", (cue.id,))
         store.conn.commit()
         results.append(Result(cue.id, cue.command, "fired"))
     return results

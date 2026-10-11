@@ -78,7 +78,9 @@ def item_cues(store: Store, show_id: str) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for row in store.conn.execute("SELECT id FROM item WHERE show_id = ? ORDER BY position", (show_id,)):
         out[row["id"]] = [{"id": c.id, "room": c.room, "command": c.command,
-                           "payload": c.payload, "status": c.status} for c in cues(store, row["id"])]
+                           "payload": c.payload, "status": c.status,
+                           "failure": None if c.fail_status is None
+                           else {"status": c.fail_status, "detail": c.fail_detail}} for c in cues(store, row["id"])]
     return out
 
 

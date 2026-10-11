@@ -61,7 +61,7 @@ IDs are path segments. All are `POST`.
 
 ## Other codes
 
-`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `422 bad_input`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `422 bad_input`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 

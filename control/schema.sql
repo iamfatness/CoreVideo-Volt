@@ -126,5 +126,7 @@ CREATE TABLE IF NOT EXISTS cue (
   command TEXT NOT NULL,
   payload TEXT NOT NULL,
   status TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  fail_status TEXT,
+  fail_detail TEXT
 );

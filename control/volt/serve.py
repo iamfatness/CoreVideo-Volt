@@ -404,6 +404,12 @@ class Handler(BaseHTTPRequestHandler):
         store = Store(DB_PATH, init=not is_dsn(DB_PATH))
         try:
             self._route(store)
+        except ApiError as err:
+            self._error(err)
+        except Exception:  # same rule as POST: no leaked internals, and the client always gets a response
+            import traceback
+            traceback.print_exc()
+            self._error(ApiError(500, "internal", "internal error"))
         finally:
             store.close()
 
@@ -477,14 +483,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/rundown":
             show_id = parse_qs(parsed.query).get("show", [""])[0]
-            held = hold_state(STORE, show_id) if show_id else None
-            items = [
-                {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
-                 "asRunIn": row.as_run_in, "asRunOut": row.as_run_out}
-                for row in rundown(STORE, show_id)
-            ]
-            hold_json = None if held is None else {"reason": held.reason, "heldAt": held.held_at}
-            self._send(200, "application/json", json.dumps({"hold": hold_json, "items": items}).encode())
+            if not show_id:
+                self._json(200, {"hold": None, "items": []})
+                return
+            try:
+                payload = rundown_payload(STORE, show_id)
+            except KeyError:
+                raise ApiError(404, "not_found", f"no such show: {show_id}") from None
+            self._json(200, payload)
             return
         if parsed.path == "/seek":
             query = parse_qs(parsed.query).get("q", [""])[0]

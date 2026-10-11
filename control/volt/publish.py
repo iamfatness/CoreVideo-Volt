@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import os
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import url2pathname
 
 from volt import deliverables, storage
@@ -224,3 +225,94 @@ def refresh_url(store: Store, version_id: str, backend: Optional[Backend] = None
     store.conn.execute("UPDATE version SET url = ? WHERE id = ?", (url, version_id))
     store.conn.commit()
     return url
+
+
+def url_expiry(url: Optional[str]) -> Optional[datetime]:
+    """When a presigned URL stops working, read from the URL itself (the issue time is not stored).
+
+    SigV4: `X-Amz-Date` (YYYYMMDDTHHMMSSZ) plus `X-Amz-Expires` seconds. SigV2: `Expires` is an absolute epoch.
+    None when the URL carries neither (a public or placeholder URL, or a shape this does not know)."""
+    if not url:
+        return None
+    query = parse_qs(urlparse(url).query)
+
+    def one(name):
+        got = query.get(name)
+        return got[0] if got else None
+
+    try:
+        issued, lifetime = one("X-Amz-Date"), one("X-Amz-Expires")
+        if issued and lifetime:
+            start = datetime.strptime(issued, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            return start + timedelta(seconds=int(lifetime))
+        absolute = one("Expires")
+        if absolute:
+            return datetime.fromtimestamp(int(absolute), tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return None
+
+
+@dataclass
+class RefreshReport:
+    refreshed: list = field(default_factory=list)   # version ids given a new URL
+    skipped: int = 0                                # fresh enough, or a different bucket/prefix, or no expiry
+    failed: list = field(default_factory=list)      # (version id, reason); the pass went on past each
+
+
+def refresh_expiring(store: Store, backend: Optional[Backend] = None, within_seconds: int = 86400,
+                     expires: Optional[int] = None, now: Optional[datetime] = None) -> RefreshReport:
+    """Re-sign every done version whose presigned URL expires within `within_seconds` (or already has).
+
+    Only versions stored under `backend` (same bucket and prefix) are looked at. Nothing happens for the local
+    backend or an S3 backend with a public URL base: those URLs do not expire. A URL whose expiry cannot be
+    read is counted as skipped, not guessed at. One bad version is recorded in `failed` and the loop goes on."""
+    report = RefreshReport()
+    backend = backend if backend is not None else storage.from_env()
+    if isinstance(backend, LocalBackend) or getattr(getattr(backend, "config", None), "public_url_base", None):
+        return report
+    now = now or datetime.now(timezone.utc)
+    horizon = now + timedelta(seconds=within_seconds)
+    rows = store.conn.execute(
+        """SELECT id, url FROM version
+           WHERE status = 'done' AND storage_backend = ? AND storage_key IS NOT NULL ORDER BY id""",
+        (backend.id,)).fetchall()
+    for row in rows:
+        try:
+            expiry = url_expiry(row["url"])
+            if expiry is None or expiry > horizon:
+                report.skipped += 1
+                continue
+            refresh_url(store, row["id"], backend=backend, expires=expires)
+            report.refreshed.append(row["id"])
+        except Exception as exc:  # noqa: BLE001 - one bad version must not stop the pass
+            report.failed.append((row["id"], str(exc) or type(exc).__name__))
+    return report
+
+
+def main(argv: list[str]) -> int:
+    """`python -m volt.publish refresh-urls DB --within SECONDS`: one pass, for cron. Exit 1 if any failed."""
+    import argparse
+    import os
+    ap = argparse.ArgumentParser(prog="python -m volt.publish", description="Publish maintenance.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("refresh-urls", help="re-sign presigned URLs that expire soon (storage from VOLT_STORAGE)")
+    r.add_argument("db", nargs="?", default=os.environ.get("VOLT_DB"), help="SQLite path or postgres:// DSN (or VOLT_DB)")
+    r.add_argument("--within", type=int, default=86400, help="refresh URLs expiring within this many seconds (default 86400)")
+    r.add_argument("--expires", type=int, default=None, help="lifetime of the new URLs in seconds (default VOLT_S3_URL_EXPIRES)")
+    args = ap.parse_args(argv)
+    if not args.db:
+        ap.error("a database path or DSN is required")
+    store = Store(args.db)
+    try:
+        report = refresh_expiring(store, within_seconds=args.within, expires=args.expires)
+    finally:
+        store.close()
+    print(f"refreshed={len(report.refreshed)} skipped={report.skipped} failed={len(report.failed)}")
+    for version_id, reason in report.failed:
+        print(f"failed {version_id}: {reason}", file=sys.stderr)
+    return 1 if report.failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

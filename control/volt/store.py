@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS cue (
   command TEXT NOT NULL,
   payload TEXT NOT NULL,
   status TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  fail_status TEXT,
+  fail_detail TEXT
 );
 """
 
