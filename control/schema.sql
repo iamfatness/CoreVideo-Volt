@@ -85,7 +85,11 @@ CREATE TABLE IF NOT EXISTS item (
   span_id TEXT REFERENCES span(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   as_run_in TIMESTAMPTZ,
-  as_run_out TIMESTAMPTZ
+  as_run_out TIMESTAMPTZ,
+  scheduled_at TIMESTAMPTZ,
+  schedule_state TEXT,
+  schedule_note TEXT,
+  schedule_claimed_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS version (

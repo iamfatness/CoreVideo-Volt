@@ -21,6 +21,10 @@ _SCHEMA_LOCK = 0x566F6C74
 _ADDED_COLUMNS = (
     ("item", "as_run_in", "TIMESTAMPTZ"),
     ("item", "as_run_out", "TIMESTAMPTZ"),
+    ("item", "scheduled_at", "TIMESTAMPTZ"),
+    ("item", "schedule_state", "TEXT"),
+    ("item", "schedule_note", "TEXT"),
+    ("item", "schedule_claimed_at", "TIMESTAMPTZ"),
     ("show", "hold_reason", "TEXT"),
     ("show", "held_at", "TIMESTAMPTZ"),
     ("job", "claimed_by", "TEXT"),

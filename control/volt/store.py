@@ -105,7 +105,11 @@ CREATE TABLE IF NOT EXISTS item (
   span_id TEXT REFERENCES span(id),
   created_at TEXT NOT NULL,
   as_run_in TEXT,
-  as_run_out TEXT
+  as_run_out TEXT,
+  scheduled_at TEXT,
+  schedule_state TEXT,
+  schedule_note TEXT,
+  schedule_claimed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS version (
@@ -186,7 +190,8 @@ class Store:
 
     def _migrate(self) -> None:
         have = {row["name"] for row in self.conn.execute("PRAGMA table_info(item)")}
-        for column in ("as_run_in", "as_run_out"):
+        for column in ("as_run_in", "as_run_out", "scheduled_at", "schedule_state", "schedule_note",
+                       "schedule_claimed_at"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE item ADD COLUMN {column} TEXT")
         have = {row["name"] for row in self.conn.execute("PRAGMA table_info(show)")}
