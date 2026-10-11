@@ -28,6 +28,7 @@ def take_item(
     attempts: int = 40,
     interval: float = 0.25,
     sleep: Callable[[float], None] = time.sleep,
+    show_input_actions: Optional[list] = None,
 ) -> TakeResult:
     """Advance the rundown, then dispatch the new item's cues.
 
@@ -40,7 +41,8 @@ def take_item(
         return TakeResult(True, None)
     arm_cues(store, adv.target)
     results = dispatch_item(
-        store, room, adv.target, owner=owner, attempts=attempts, interval=interval, sleep=sleep
+        store, room, adv.target, owner=owner, attempts=attempts, interval=interval, sleep=sleep,
+        show_input_actions=show_input_actions,
     )
     if any(r.status != "fired" for r in results):
         rewind(store, adv)

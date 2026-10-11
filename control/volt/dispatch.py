@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from volt.cues import cues
 from volt.live import start_recording
 from volt.rooms import LiveError
+from volt.show_input import show_input_take
 from volt.store import Store
 
 ROOM = "corevideo.pro"
@@ -59,8 +60,14 @@ def _record_start(store, room, cue, ctx) -> None:
     )
 
 
+def _show_input_take(store, room, cue, ctx) -> None:
+    show_input_take(room, cue.payload, ctx["attempts"], ctx["interval"], ctx["sleep"],
+                    actions=ctx.get("show_input_actions"))
+
+
 # Only commands with a known control action AND a known piece of evidence belong here.
 HANDLERS = {
+    "show-input.take": _show_input_take,
     "record.start": _record_start,
     "stream.start": _stream_start,
     "overlay.take": _overlay_take,
@@ -75,12 +82,16 @@ def dispatch_item(
     attempts: int = 40,
     interval: float = 0.25,
     sleep: Callable[[float], None] = time.sleep,
+    show_input_actions: Optional[list] = None,
 ) -> list[Result]:
     """Send the item's armed cues in order. Stop at the first one that does not land.
 
     A cue that fails or is unsupported stays armed. Fired cues are skipped on replay.
+    `show_input_actions` is the configurable list of {action, args} steps that run
+    before transport.take for show-input.take (default: scene.select).
     """
-    ctx = {"owner": owner, "attempts": attempts, "interval": interval, "sleep": sleep}
+    ctx = {"owner": owner, "attempts": attempts, "interval": interval, "sleep": sleep,
+           "show_input_actions": show_input_actions}
     results: list[Result] = []
     for cue in cues(store, item_id):
         if cue.status == "fired":
