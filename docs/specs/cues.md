@@ -6,6 +6,8 @@ CoreVideo Pro is the first room. Its commands come from the typed control contra
 
 A take arms the cue. Dispatch sends it to that room's adapter and waits for the acknowledgement, then the snapshot. A failed cue stays armed and the rundown does not advance.
 
+**Failures are remembered.** When a cue fails or is unsupported, the status and reason are stored on the cue (`cue.fail_status`, `cue.fail_detail`; migration 8). `status` stays `armed`, so replay is unchanged: fired cues are skipped, the failed one is retried, later cues wait. The record survives later takes and server restarts and is cleared when the cue fires (or by `cues.clear_failure`). `GET /api/state` reports it per cue as `failure: {status, detail}`, or `null`.
+
 See [rooms](../rooms.md).
 
 ## show-input.take

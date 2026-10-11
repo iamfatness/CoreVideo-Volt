@@ -6,7 +6,7 @@ Run it against a fake room, no core needed: `cd control && python -m tests.opera
 
 ## Data
 
-- `GET /api/state?show=<id>` (new, read-only, token-gated). One poll every 2 s (6 s when the tab is hidden). Returns `shows`, `show`, `rundown` (the `/rundown` shape `{hold, items}`, unchanged), `cues` and `media` per item, `assets` (cleared, legal hold, `blockedBy`, file, checksum), `spans` with `versions`, and `room` (the room's recording lifecycle, or why it is unreachable). No show given, or an unknown one, means the newest.
+- `GET /api/state?show=<id>` (new, read-only, token-gated). One poll every 2 s (6 s when the tab is hidden). Returns `shows`, `show`, `rundown` (the `/rundown` shape `{hold, items}`, unchanged), `cues` (each with `failure: {status, detail}` or `null`, the last dispatch failure kept until the cue fires) and `media` per item, `assets` (cleared, legal hold, `blockedBy`, file, checksum), `spans` with `versions`, and `room` (the room's recording lifecycle, or why it is unreachable). No show given, or an unknown one, means the newest.
 - The page parses the rundown in one function, `parseRundown`, so a change of shape is one edit.
 - Actions are the A2 POST endpoints. The page shows the state the server returns and, on refusal, the stable `code` and `reason`. Nothing is shown optimistically. A poll that began before an action finished is discarded.
 - A failed cue stays `armed` on the server (taking again resumes there), so the page overlays "Failed" from the last take response until the next take succeeds.

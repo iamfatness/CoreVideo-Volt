@@ -389,6 +389,69 @@ class PublishThroughStorage(unittest.TestCase):
         with self.assertRaisesRegex(StorageError, "stored in s3:b/pre"):
             refresh_url(self.store, row["id"], backend=other)
 
+    def _sigv4_client(self, stamp, bad_key=None):
+        """A fake whose presigned URLs carry X-Amz-Date / X-Amz-Expires like real SigV4 ones."""
+        class Signed(FakeS3Client):
+            def generate_presigned_url(self, op, Params, ExpiresIn):
+                if bad_key and bad_key in Params["Key"]:
+                    raise RuntimeError("signer down")
+                return (f"https://fake.invalid/{Params['Bucket']}/{Params['Key']}"
+                        f"?X-Amz-Date={stamp[0]}&X-Amz-Expires={ExpiresIn}&X-Amz-Signature=abc")
+        return Signed()
+
+    def test_refresh_expiring_only_touches_urls_near_expiry_under_this_bucket_and_prefix(self):
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        stamp = [t0.strftime("%Y%m%dT%H%M%SZ")]
+        backend = _s3(self._sigv4_client(stamp), url_expires=1000)
+        publish_files(self.store, self.span, None, backend=backend, scratch=self.root / "s")
+        v = self.versions()
+        self.store.conn.execute("UPDATE version SET storage_backend = 's3:b/elsewhere' WHERE id = ?", (v["social"]["id"],))
+        self.store.conn.commit()
+        before = {k: r["url"] for k, r in self.versions().items()}
+        # 500s in, 100s window: nothing is close to expiry
+        report = publish_mod.refresh_expiring(self.store, backend, 100, now=t0 + timedelta(seconds=500))
+        self.assertEqual((report.refreshed, report.failed), ([], []))
+        self.assertEqual({k: r["url"] for k, r in self.versions().items()}, before)
+        # 950s in: house and ott are inside the window and get new URLs; the other prefix does not
+        stamp[0] = (t0 + timedelta(seconds=950)).strftime("%Y%m%dT%H%M%SZ")
+        report = publish_mod.refresh_expiring(self.store, backend, 100, now=t0 + timedelta(seconds=950))
+        self.assertEqual(sorted(report.refreshed), sorted([v["house"]["id"], v["ott"]["id"]]))
+        self.assertEqual(report.failed, [])
+        after = {k: r["url"] for k, r in self.versions().items()}
+        self.assertNotEqual(after["house"], before["house"])
+        self.assertIn(stamp[0], after["ott"])
+        self.assertEqual(after["social"], before["social"])
+
+    def test_refresh_expiring_records_a_bad_version_and_carries_on(self):
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        stamp = [t0.strftime("%Y%m%dT%H%M%SZ")]
+        publish_files(self.store, self.span, None, backend=_s3(self._sigv4_client(stamp), url_expires=1000),
+                      scratch=self.root / "s")
+        flaky = _s3(self._sigv4_client(stamp, bad_key="-ott"), url_expires=1000)
+        report = publish_mod.refresh_expiring(self.store, flaky, 100, now=t0 + timedelta(seconds=990))
+        self.assertEqual(len(report.refreshed), 2)
+        self.assertEqual([vid for vid, _ in report.failed], [self.versions()["ott"]["id"]])
+        self.assertIn("signer down", report.failed[0][1])
+
+    def test_refresh_expiring_skips_local_and_public_url_versions(self):
+        from datetime import datetime, timezone
+        publish_files(self.store, self.span, self.root / "out", backend=LocalBackend(self.root / "out"))
+        now = datetime(2100, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(publish_mod.refresh_expiring(self.store, LocalBackend(self.root / "out"), 10**9, now=now).refreshed, [])
+        public = _s3(FakeS3Client(), public_url_base="https://cdn.example/v")
+        self.assertEqual(publish_mod.refresh_expiring(self.store, public, 10**9, now=now).refreshed, [])
+
+    def test_url_expiry_reads_sigv4_and_sigv2_and_ignores_the_rest(self):
+        from datetime import datetime, timezone
+        got = publish_mod.url_expiry("https://h/k?X-Amz-Date=20260101T000000Z&X-Amz-Expires=60&X-Amz-Signature=a")
+        self.assertEqual(got, datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+        self.assertEqual(publish_mod.url_expiry("https://h/k?Expires=1767225600&Signature=a"),
+                         datetime(2026, 1, 1, tzinfo=timezone.utc))
+        for url in (None, "", "file:///x.mp4", "volt://house/a/s", "https://cdn/k.mp4", "https://h/k?X-Amz-Date=bad&X-Amz-Expires=x"):
+            self.assertIsNone(publish_mod.url_expiry(url), url)
+
     def test_runner_publish_handler_uses_the_configured_backend(self):
         from volt.runner import Config, Runner, default_handlers, request_publish
         client = FakeS3Client()
