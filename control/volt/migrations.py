@@ -57,7 +57,10 @@ MIGRATIONS = (
     # asr_run is a new table, so base-table creation (step 1) makes it. The entry records that the
     # database has been through that point; it changes nothing by itself.
     Migration(4, "asr_run table"),
-    # Next: Migration(5, "...", columns=(...)). Do not add a gap or reuse a number.
+    Migration(5, "item schedule columns",
+              columns=(("item", "scheduled_at", "TIMESTAMP"), ("item", "schedule_state", "TEXT"),
+                       ("item", "schedule_note", "TEXT"), ("item", "schedule_claimed_at", "TIMESTAMP"))),
+    # Next: Migration(6, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
