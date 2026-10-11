@@ -82,6 +82,7 @@ class LivePostgres(unittest.TestCase):
         live = {}
         for table, column in rows:
             live.setdefault(table, []).append(column)
+        live.pop("schema_version", None)  # the migration ledger lives in volt/migrations.py, not in schema.sql
         lite = {
             name: [ln.split()[0] for ln in body.splitlines()
                    if ln.strip() and not ln.strip().upper().startswith(("UNIQUE", "PRIMARY"))]

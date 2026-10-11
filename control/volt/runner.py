@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, publish as publish_mod, record, speech
+from volt import chunking, pg, publish as publish_mod, record, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -104,6 +104,8 @@ class Config:
         return {"device": self.asr_device, "model": self.asr_model, "vad_filter": self.asr_vad,
                 "vocab_mode": self.asr_vocab_mode, "min_word_prob": self.asr_min_word_prob,
                 "silence_guard": self.asr_silence_guard, "cpu_threads": self.asr_cpu_threads}
+    storage: Optional[object] = None          # a storage.Backend; None = VOLT_STORAGE, else local under publish_dir
+    storage_scratch: Optional[Path] = None    # where cuts wait for upload (non-local storage)
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -127,6 +129,7 @@ class Config:
             asr_silence_guard=float(env["VOLT_ASR_SILENCE_GUARD"]) if env.get("VOLT_ASR_SILENCE_GUARD") else None,
             asr_cpu_threads=int(env.get("VOLT_ASR_CPU_THREADS") or 0),
             asr_idle_release=float(env.get("VOLT_ASR_IDLE_RELEASE") or cls.asr_idle_release),
+            storage_scratch=path("VOLT_STORAGE_SCRATCH"),
         )
 
 
@@ -183,10 +186,17 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             raise
 
     def publish(store: Store, job: Claimed) -> None:
-        out_dir = _need(config.publish_dir, "publish directory", "VOLT_PUBLISH_DIR or --publish-dir")
         span_id = job.key.split(":", 1)[1]
         try:
-            versions = publish_mod.publish_files(store, span_id, out_dir)
+            backend = config.storage or storage.from_env(local_root=config.publish_dir)
+        except storage.StorageError as exc:
+            raise Permanent(str(exc)) from exc
+        out_dir = config.publish_dir
+        if isinstance(backend, storage.LocalBackend):
+            out_dir = _need(out_dir, "publish directory", "VOLT_PUBLISH_DIR or --publish-dir")
+        try:
+            versions = publish_mod.publish_files(store, span_id, out_dir, backend=backend,
+                                                 scratch=config.storage_scratch)
         except KeyError as exc:
             raise Permanent(f"span {span_id} not found") from exc
         except Exception as exc:
@@ -416,6 +426,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
     ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF)
     ap.add_argument("--poll", type=float, default=2.0)
+    ap.add_argument("--pg-pool-max", type=int, default=None,
+                    help="pool up to N Postgres connections (default: off; or VOLT_PG_POOL_MAX). Use at least 2.")
     args = ap.parse_args(argv)
     if not args.db:
         ap.error("a database path or DSN is required")
@@ -423,6 +435,7 @@ def main(argv: list[str]) -> int:
     config = Config(args.proxy_dir, args.publish_dir, args.asr_engine, args.asr_model, args.asr_device,
                     args.corrections, args.asr_window, args.asr_overlap, bool(args.asr_vad), args.asr_vocab_mode,
                     args.asr_min_word_prob, args.asr_silence_guard, args.asr_cpu_threads, args.asr_idle_release)
+    pg.configure_pool_from_env(args.db, max_size=args.pg_pool_max)  # also VOLT_PG_POOL_*; heartbeats borrow
     store = Store(args.db)
     runner = Runner(store, default_handlers(config), target=args.db, lease=args.lease,
                     max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll,
@@ -440,6 +453,7 @@ def main(argv: list[str]) -> int:
         return 0
     finally:
         store.close()
+        pg.close_pools()
 
 
 if __name__ == "__main__":
