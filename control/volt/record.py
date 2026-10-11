@@ -48,7 +48,8 @@ def record_start(
     return Record(asset.id, essence_id, existing is None)
 
 
-def build_proxy(store: Store, asset_id: str, proxy_dir: Path) -> str:
+def build_proxy(store: Store, asset_id: str, proxy_dir: Path, owned: bool = False) -> str:
+    """owned: a runner holds the job row and records the outcome, so this does not touch jobs."""
     source = store.conn.execute(
         "SELECT id, location, open FROM essence WHERE asset_id = ? AND role = 'hi-res'",
         (asset_id,),
@@ -78,10 +79,10 @@ def build_proxy(store: Store, asset_id: str, proxy_dir: Path) -> str:
         text=True,
     )
     if probe.returncode != 0 or not dest.exists():
-        job_id = _proxy_job(store, asset_id)
+        job_id = "" if owned else _proxy_job(store, asset_id)
         if job_id:
             store.fail_job(job_id, probe.stderr[-400:] or "proxy failed")
-        raise RecordError("proxy failed")
+        raise RecordError((probe.stderr[-400:].strip() if owned else "") or "proxy failed")
     existing = store.conn.execute(
         "SELECT id FROM essence WHERE asset_id = ? AND role = 'proxy'",
         (asset_id,),
@@ -106,6 +107,7 @@ def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     if source is None:
         raise RecordError(f"no hi-res for {asset_id}")
     if not source["open"] and source["checksum"]:
+        chain_after_wrap(store, asset_id)  # idempotent; heals a crash between closing the file and queueing
         return source["checksum"]
     path = Path(source["location"])
     size = path.stat().st_size
@@ -122,7 +124,18 @@ def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     job_id = _proxy_job(store, asset_id)
     if job_id:
         store.complete_job(job_id)
+    chain_after_wrap(store, asset_id)
     return digest
+
+
+def chain_after_wrap(store: Store, asset_id: str) -> None:
+    """Queue the follow-on work for a closed asset: the final proxy and the transcript.
+
+    Both read the closed hi-res and neither needs the other, so they are queued together rather than
+    proxy-then-asr. Keys are per asset, so calling this twice queues nothing new. The asr job waits
+    (without using an attempt) until the asset is cleared."""
+    store.enqueue(asset_id, "proxy", f"proxy-final:{asset_id}")
+    store.enqueue(asset_id, "asr", f"asr:{asset_id}")
 
 
 def _proxy_job(store: Store, asset_id: str) -> str:

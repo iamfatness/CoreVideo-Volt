@@ -23,6 +23,9 @@ _ADDED_COLUMNS = (
     ("item", "as_run_out", "TIMESTAMPTZ"),
     ("show", "hold_reason", "TEXT"),
     ("show", "held_at", "TIMESTAMPTZ"),
+    ("job", "claimed_by", "TEXT"),
+    ("job", "lease_expires_at", "TIMESTAMPTZ"),
+    ("job", "run_after", "TIMESTAMPTZ"),
 )
 
 
