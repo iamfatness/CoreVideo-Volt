@@ -5,7 +5,7 @@ from tests.test_playout import Clock, _row
 from tests.test_rooms import _no_sleep, obs
 from volt.cues import add_cue, cues
 from volt.library import index_words
-from volt.playout import go, on_air
+from volt.playout import PlayoutError, go, hold, on_air, release
 from volt.rooms import FakeRoom
 from volt.rundown import add_item, attach, kill, open_show
 from volt.store import Store
@@ -93,6 +93,36 @@ class TakeWithCues(unittest.TestCase):
         result = take_item(store, FakeRoom([obs("idle")]), show, clock=clock, sleep=_no_sleep)
         self.assertTrue(result.advanced)
         self.assertIsNone(result.item_id)
+
+
+class TakeWhileHeld(unittest.TestCase):
+    def test_held_take_dispatches_nothing_and_changes_nothing(self):
+        store = Store()
+        show, (a, b) = _show(store, [[("overlay.take", "on")], [("overlay.take", "off")]])
+        room = FakeRoom([obs("idle")], states=[{"lowerThirdOnAir": True}])
+        take_item(store, room, show, clock=Clock(), sleep=_no_sleep)
+        calls = list(room.calls)
+        before = (_row(store, a)["status"], _row(store, b)["status"], _statuses(store, b))
+        hold(store, show, "technical")
+        with self.assertRaises(PlayoutError):
+            take_item(store, room, show, clock=Clock(), sleep=_no_sleep)
+        self.assertEqual(room.calls, calls)
+        self.assertEqual(
+            (_row(store, a)["status"], _row(store, b)["status"], _statuses(store, b)), before
+        )
+        self.assertEqual(on_air(store, show), a)
+
+    def test_release_then_take_fires_the_next_items_cues(self):
+        store = Store()
+        show, (a, b) = _show(store, [[], [("overlay.take", "on")]])
+        room = FakeRoom([obs("idle")], states=[{"lowerThirdOnAir": True}])
+        take_item(store, room, show, clock=Clock(), sleep=_no_sleep)
+        hold(store, show, "technical")
+        release(store, show)
+        result = take_item(store, room, show, clock=Clock(), sleep=_no_sleep)
+        self.assertTrue(result.advanced)
+        self.assertEqual(result.item_id, b)
+        self.assertEqual(_statuses(store, b), ["fired"])
 
 
 if __name__ == "__main__":

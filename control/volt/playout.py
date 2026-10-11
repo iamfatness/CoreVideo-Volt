@@ -22,6 +22,47 @@ def on_air(store: Store, show_id: str) -> Optional[str]:
 
 
 @dataclass
+class Hold:
+    reason: str
+    held_at: str
+
+
+def hold_state(store: Store, show_id: str) -> Optional[Hold]:
+    """The show's hold, or None when the rundown is free to advance."""
+    row = store.conn.execute(
+        "SELECT hold_reason, held_at FROM show WHERE id = ?", (show_id,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(show_id)
+    if row["held_at"] is None:
+        return None
+    return Hold(row["hold_reason"] or "", row["held_at"])
+
+
+def hold(store: Store, show_id: str, reason: str = "", clock: Callable[[], str] = _now) -> Hold:
+    """Hold the rundown: go and take_item refuse until release. Holding twice keeps the first hold."""
+    current = hold_state(store, show_id)
+    if current is not None:
+        return current
+    now = clock()
+    store.conn.execute(
+        "UPDATE show SET hold_reason = ?, held_at = ? WHERE id = ?", (reason, now, show_id)
+    )
+    store.conn.commit()
+    return Hold(reason, now)
+
+
+def release(store: Store, show_id: str) -> bool:
+    """Release the hold. Returns False when the show was not held."""
+    was_held = hold_state(store, show_id) is not None
+    store.conn.execute(
+        "UPDATE show SET hold_reason = NULL, held_at = NULL WHERE id = ?", (show_id,)
+    )
+    store.conn.commit()
+    return was_held
+
+
+@dataclass
 class Advance:
     target: Optional[str]
     previous: Optional[str]
@@ -53,8 +94,12 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Adva
 
     The outgoing item gets its as-run out and the incoming item its as-run in from
     the same clock read. A killed item that is passed over is recorded as skipped.
-    If the next item cannot air (not cleared), nothing changes.
+    If the next item cannot air (not cleared), nothing changes. While the show is
+    held this raises PlayoutError and changes nothing.
     """
+    held = hold_state(store, show_id)
+    if held is not None:
+        raise PlayoutError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
     current = on_air(store, show_id)
     floor = 0
     if current is not None:
