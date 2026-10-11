@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS job (
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_by TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  run_after TIMESTAMPTZ,
   UNIQUE (asset_id, type, idempotency_key)
 );
 

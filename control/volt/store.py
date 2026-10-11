@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS job (
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  claimed_by TEXT,
+  lease_expires_at TEXT,
+  run_after TEXT,
   UNIQUE (asset_id, type, idempotency_key)
 );
 
@@ -166,7 +169,8 @@ class Store:
 
         init=False skips schema bootstrap on postgres, for callers that did it.
         """
-        if pg.is_dsn(path):
+        self.postgres = pg.is_dsn(path)
+        if self.postgres:
             self.conn = pg.PgConnection(path)
             self.IntegrityError = self.conn.IntegrityError
             if init:
@@ -189,6 +193,10 @@ class Store:
         for column in ("hold_reason", "held_at"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE show ADD COLUMN {column} TEXT")
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(job)")}
+        for column in ("claimed_by", "lease_expires_at", "run_after"):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE job ADD COLUMN {column} TEXT")
         self.conn.commit()
 
     def close(self) -> None:
@@ -364,6 +372,12 @@ class Store:
         )
         self.conn.commit()
         row = self.conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+        return _job(row)
+
+    def get_job(self, job_id: str) -> Job:
+        row = self.conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
         return _job(row)
 
     def complete_job(self, job_id: str) -> None:

@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -243,14 +244,25 @@ def _run_key(info: dict, vocabulary: Sequence[str], corrections: Sequence[Correc
     return "asr-v2:" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def _run_time(store: Store) -> str:
+    """SQLite breaks created_at ties by rowid. Postgres has no rowid, so its run time keeps microseconds."""
+    if not store.postgres:
+        return _now()
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence[str] = (),
-               corrections: Sequence[Correction] = (), require_cleared: bool = True) -> int:
+               corrections: Sequence[Correction] = (), require_cleared: bool = True,
+               job_id: str | None = None) -> int:
     """Index the words of one asset and record how. Returns the word count.
 
     Consent: an asset that is not cleared is refused (no job, no audio read) unless require_cleared=False.
     The same engine/model/vocabulary/corrections on the same asset is a no-op. A different configuration is a
     new run and replaces the asset's transcript spans, so a better model or a fuller vocabulary can be re-run
-    on purpose; transcribe_pending never replaces an existing transcript."""
+    on purpose; transcribe_pending never replaces an existing transcript.
+
+    job_id: the job row a runner has already claimed for this work. It is used in place of a run-keyed job and its
+    status is left to the runner (no inline done/failed), so no second queued row appears for another runner to claim."""
     asset = store.get_asset(asset_id)
     if require_cleared and not asset.cleared:
         raise SpeechError("asset is not cleared; clear it before transcribing")
@@ -262,9 +274,11 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     if essence["open"]:
         raise SpeechError("asset is still recording; wrap it first")
     info = engine.describe()
-    job = store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections))
+    owned = job_id is not None
+    job = store.get_job(job_id) if owned else store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections))
     latest = store.conn.execute(
-        "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
+        + ("" if store.postgres else ", rowid DESC") + " LIMIT 1",
         (asset_id,)).fetchone()
     if job.status == "done" and latest is not None and latest["job_id"] == job.id:
         return latest["word_count"]
@@ -279,7 +293,8 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         rows = [(w.text, seconds_to_tc(origin + w.start, fps),
                  seconds_to_tc(origin + max(w.end, w.start + 1 / fps), fps)) for w in words]
     except Exception as exc:
-        store.fail_job(job.id, str(exc) or exc.__class__.__name__)
+        if not owned:
+            store.fail_job(job.id, str(exc) or exc.__class__.__name__)
         if isinstance(exc, SpeechError):
             raise
         raise SpeechError(str(exc)) from exc
@@ -288,12 +303,15 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     conn.commit()
     for text, tc_in, tc_out in rows:
         store.add_span(asset_id, "transcript", tc_in, tc_out, text=text)
+    conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
     conn.execute(
-        "INSERT OR REPLACE INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (job.id, asset_id, info["engine"], info.get("model"), info.get("device"), info.get("compute_type"),
-         json.dumps(list(vocabulary)), json.dumps(result.vocabulary_used), json.dumps(applied), len(rows), _now()))
+         json.dumps(list(vocabulary)), json.dumps(result.vocabulary_used), json.dumps(applied), len(rows),
+         _run_time(store)))
     conn.commit()
-    store.complete_job(job.id)
+    if not owned:
+        store.complete_job(job.id)
     return len(rows)
 
 
