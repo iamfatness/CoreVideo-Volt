@@ -7,6 +7,7 @@ import subprocess
 from fractions import Fraction
 from pathlib import Path
 
+from volt import timecode
 from volt.store import Store
 
 
@@ -14,13 +15,12 @@ class DeliverableError(Exception):
     pass
 
 
-# Non-drop timecode only. Drop-frame sources would need their own counting.
-def tc_to_seconds(tc: str, fps: float) -> float:
-    parts = tc.replace(";", ":").split(":")
-    if len(parts) != 4 or not all(p.isdigit() for p in parts):
-        raise DeliverableError(f"bad timecode {tc!r}")
-    h, m, s, f = (int(p) for p in parts)
-    return h * 3600 + m * 60 + s + f / fps
+def tc_to_seconds(tc: str, rate, drop: bool | None = None) -> float:
+    """Timecode to seconds on an exact rate; `;` before the frames (or drop=True) means drop-frame."""
+    try:
+        return timecode.tc_to_seconds(tc, rate, drop)
+    except timecode.TimecodeError as exc:
+        raise DeliverableError(str(exc)) from exc
 
 
 PROFILES = {
@@ -32,13 +32,13 @@ PROFILES = {
 }
 
 
-def _probe_fps(path: str) -> float:
+def _probe_rate(path: str) -> Fraction:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
          "-of", "json", path], capture_output=True, text=True)
     try:
         rate = json.loads(out.stdout)["streams"][0]["r_frame_rate"]
-        return float(Fraction(rate))
+        return timecode.parse_rate(rate)
     except (ValueError, KeyError, IndexError, ZeroDivisionError) as exc:
         raise DeliverableError("cannot read frame rate") from exc
 
@@ -65,18 +65,31 @@ def render(store: Store, span, kind: str, out_dir: Path) -> str:
         raise DeliverableError("no hi-res essence")
     if src["open"]:
         raise DeliverableError("asset is still recording; wrap it first")
-    fps = float(Fraction(src["frame_rate"])) if src["frame_rate"] else _probe_fps(src["location"])
-    start = tc_to_seconds(span["tc_in"], fps) - tc_to_seconds(src["timecode_start"] or "00:00:00:00", fps)
-    length = tc_to_seconds(span["tc_out"], fps) - tc_to_seconds(span["tc_in"], fps)
-    if start < 0 or length <= 0:
+    try:
+        rate = timecode.parse_rate(src["frame_rate"]) if src["frame_rate"] else _probe_rate(src["location"])
+        # Drop-frame is read from the stored start (`;` before the frames); a clip with no start falls back
+        # to the span's own label.
+        drop = timecode.is_drop(src["timecode_start"] or span["tc_in"])
+        origin = timecode.tc_to_frames(src["timecode_start"] or "00:00:00:00", rate, drop)
+        first = timecode.tc_to_frames(span["tc_in"], rate, drop) - origin
+        count = timecode.tc_to_frames(span["tc_out"], rate, drop) - origin - first
+    except timecode.TimecodeError as exc:
+        raise DeliverableError(str(exc)) from exc
+    if first < 0 or count <= 0:
         raise DeliverableError("span is outside the source or empty")
+    # Seek a quarter frame before the first frame (a half would sit on a rounding tie and duplicate it at
+    # whole-number rates) so rounding to a few decimals cannot drop it, and stop on a
+    # frame count (-frames:v) rather than a time, so the cut holds exactly `count` frames.
+    seek = max(Fraction(0), first - Fraction(1, 4))
+    start = float(timecode.frames_to_seconds(1, rate) * seek)
+    length = float(timecode.frames_to_seconds(1, rate) * (first + count - seek))
     dest_dir = Path(out_dir) / span["asset_id"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{span['id']}-{kind}.mp4"
     part = dest.with_suffix(".part.mp4")
     video, vf, audio_rate = PROFILES[kind]
-    cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-i", src["location"], "-t", f"{length:.3f}",
-           "-map", "0:v:0", "-map", "0:a:0?"]
+    cmd = ["ffmpeg", "-y", "-ss", f"{start:.4f}", "-i", src["location"], "-t", f"{length:.4f}",
+           "-frames:v", str(count), "-map", "0:v:0", "-map", "0:a:0?"]
     if vf:
         cmd += ["-vf", vf]
     cmd += video + ["-c:a", "aac", "-b:a", audio_rate, "-movflags", "+faststart", str(part)]

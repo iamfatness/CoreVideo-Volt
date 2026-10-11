@@ -40,5 +40,8 @@ The wire shape comes from CoreVideoPro source. It has not been run against a liv
 | `record.start` | `transport.record.set [true]` | `recording.lifecycle` producing, fresh, with an artifact path. Mints the asset. |
 | `stream.start` | `transport.stream.set [true]` | A sender in `outputSenders.senders[].lifecycle` producing and fresh |
 | `overlay.take` | `graphics.lowerThird.set [on]` | `GET /state` `lowerThirdOnAir` matches |
+| `show-input.take` | configurable steps (default `scene.select`), then `transport.take` | `GET /snapshot` `programFrame.videoSources[]` holds the source, attribution `live`, `deliverySequence` advanced |
 
-`show-input.take`, `record.arm`, `audio.snapshot` and every other room are reported `unsupported` and stay armed. Each needs a control action and a piece of evidence that are known before it gets a handler. Same status as above: wire shapes come from source and have not run against a live core.
+`record.arm`, `audio.snapshot` and every other room are reported `unsupported` and stay armed. Each needs a control action and a piece of evidence that are known before it gets a handler. Same status as above: wire shapes come from source and have not run against a live core.
+
+`show-input.take` reads Program through `CoreVideoProRoom.program_observed()` (`GET /snapshot`, `programFrame`). `input.assign` alone does not put anything on Program, and no control action routes a slot into a scene yet ([CoreVideoPro #861](https://github.com/iamfatness/CoreVideoPro/issues/861)), so the steps before `transport.take` are configuration. Rules, failure details and the list of unproven live assumptions are in [cues](specs/cues.md#show-inputtake).

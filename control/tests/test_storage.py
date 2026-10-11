@@ -1,0 +1,520 @@
+"""Storage seam: the backend contract, the S3 backend over a fake client, and (opt in) over a real
+S3-compatible server.
+
+Live tests run only when VOLT_TEST_S3_ENDPOINT is set (for example http://localhost:59000 for MinIO). They
+need boto3 and credentials in the standard AWS environment (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) and
+use the bucket VOLT_TEST_S3_BUCKET (default volt-test), creating it if it is missing. They never read or ask
+for real AWS credentials; point them only at a throwaway local server."""
+
+import base64
+import hashlib
+import os
+import subprocess
+import sys
+import unittest
+import urllib.request
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from volt import deliverables, publish as publish_mod, storage
+from volt.publish import publish_files, refresh_url
+from volt.store import Store
+from volt.storage import (
+    AzureBlobBackend, GcsBackend, LocalBackend, S3Backend, S3Config, StorageConfigError, StorageError,
+    StoredObject,
+)
+
+MB = 1024 * 1024
+LIVE = os.environ.get("VOLT_TEST_S3_ENDPOINT")
+
+
+class BackendContract:
+    """What any backend must do. A new backend (Azure, GCS) subclasses this and supplies make_backend."""
+
+    def make_backend(self) -> storage.Backend:
+        raise NotImplementedError
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.backend = self.make_backend()
+
+    def _file(self, data: bytes, name="src.mp4") -> Path:
+        path = self.root / name
+        path.write_bytes(data)
+        return path
+
+    def test_put_returns_a_verified_reference(self):
+        data = os.urandom(5000)
+        obj = self.backend.put_file(self._file(data), "asset1/span1-house.mp4")
+        self.assertIsInstance(obj, StoredObject)
+        self.assertEqual(obj.backend, self.backend.id)
+        self.assertEqual(obj.key, "asset1/span1-house.mp4")
+        self.assertEqual(obj.size, 5000)
+        self.assertEqual(obj.sha256, hashlib.sha256(data).hexdigest())
+        self.assertTrue(obj.url)
+
+    def test_exists_and_delete(self):
+        key = "asset1/span1-ott.mp4"
+        self.assertFalse(self.backend.exists(key))
+        self.backend.put_file(self._file(b"x" * 10), key)
+        self.assertTrue(self.backend.exists(key))
+        self.backend.delete(key)
+        self.assertFalse(self.backend.exists(key))
+        self.backend.delete(key)  # deleting a missing key is not an error
+
+    def test_put_replaces_an_existing_object(self):
+        key = "a/b.mp4"
+        self.backend.put_file(self._file(b"one"), key)
+        obj = self.backend.put_file(self._file(b"two!", "src2.mp4"), key)
+        self.assertEqual(obj.size, 4)
+        self.assertEqual(self.read(key), b"two!")
+
+    def test_url_reads_back_the_bytes(self):
+        data = os.urandom(3000)
+        self.backend.put_file(self._file(data), "a/c.mp4")
+        self.assertEqual(self.read("a/c.mp4"), data)
+
+    def test_missing_source_is_a_storage_error(self):
+        with self.assertRaises(StorageError):
+            self.backend.put_file(self.root / "nope.mp4", "a/d.mp4")
+
+    def test_unsafe_keys_are_refused(self):
+        src = self._file(b"x")
+        for key in ("", "/abs", "a/../b", "a//b", "../x", "a\\b", "a/./b", "x" * 901):
+            with self.assertRaises(StorageError, msg=key):
+                self.backend.put_file(src, key)
+
+    def read(self, key: str) -> bytes:
+        with urllib.request.urlopen(self.backend.url(key)) as response:
+            return response.read()
+
+
+class LocalContract(BackendContract, unittest.TestCase):
+    def make_backend(self):
+        return LocalBackend(Path(self.tmp.name) / "out")
+
+    def test_url_is_a_file_url_and_in_place_files_are_kept(self):
+        dest = Path(self.tmp.name) / "out" / "a" / "b.mp4"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"cut")
+        obj = self.backend.put_file(dest, "a/b.mp4")  # already where it belongs: verified, not copied
+        self.assertTrue(obj.url.startswith("file:///"))
+        self.assertEqual(dest.read_bytes(), b"cut")
+
+
+# ---- a fake S3 client that behaves like the real checksum surface --------------------------------
+
+class FakeS3Client:
+    """upload_file / head_object / generate_presigned_url / delete_object with S3's checksum rules: a
+    single PUT has a SHA-256 and an MD5 ETag; a multipart upload has a composite of the part digests."""
+
+    def __init__(self, part=5 * MB, checksum=True, etag=True, corrupt=False, fail=None, kms=False):
+        self.objects, self.part = {}, part
+        self.checksum, self.etag, self.corrupt, self.fail, self.kms = checksum, etag, corrupt, fail, kms
+        self.uploads = 0
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs=None, Config=None):
+        self.uploads += 1
+        if self.fail:
+            raise self.fail
+        data = Path(Filename).read_bytes()
+        stored = bytes([data[0] ^ 1]) + data[1:] if self.corrupt and data else data
+        part = self.part
+        pieces = [stored[i:i + part] for i in range(0, max(len(stored), 1), part)] if len(stored) >= part \
+            else [stored]
+        multipart = len(stored) >= part
+        if multipart:
+            sha = base64.b64encode(hashlib.sha256(b"".join(hashlib.sha256(p).digest() for p in pieces)).digest())
+            etag = hashlib.md5(b"".join(hashlib.md5(p).digest() for p in pieces)).hexdigest() + f"-{len(pieces)}"
+            sha = sha.decode() + f"-{len(pieces)}"
+        else:
+            sha = base64.b64encode(hashlib.sha256(stored).digest()).decode()
+            etag = hashlib.md5(stored).hexdigest()
+        self.objects[(Bucket, Key)] = {
+            "data": stored, "type": (ExtraArgs or {}).get("ContentType"), "ChecksumSHA256": sha, "ETag": f'"{etag}"'}
+
+    def head_object(self, Bucket, Key, ChecksumMode=None):
+        obj = self.objects.get((Bucket, Key))
+        if obj is None:
+            raise _NotFound()
+        head = {"ContentLength": len(obj["data"])}
+        if self.checksum:
+            head["ChecksumSHA256"] = obj["ChecksumSHA256"]
+        if self.etag:
+            head["ETag"] = obj["ETag"]
+        if self.kms:
+            head["ServerSideEncryption"] = "aws:kms"
+        return head
+
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        return f"https://fake.invalid/{Params['Bucket']}/{Params['Key']}?expires={ExpiresIn}"
+
+    def delete_object(self, Bucket, Key):
+        self.objects.pop((Bucket, Key), None)
+
+
+class _NotFound(Exception):
+    response = {"ResponseMetadata": {"HTTPStatusCode": 404}, "Error": {"Code": "404", "Message": "Not Found"}}
+
+
+def _s3(client, **kw):
+    cfg = S3Config(bucket="b", prefix=kw.pop("prefix", "pre"), **kw)
+    backend = S3Backend(cfg, client=client)
+    cfg.part_mb = 1  # the constructor enforces S3's 5 MiB floor; tests use small parts against the fake
+    client.part = MB
+    return backend
+
+
+class FakeS3Contract(BackendContract, unittest.TestCase):
+    def make_backend(self):
+        self.client = FakeS3Client()
+        return _s3(self.client)
+
+    def read(self, key):  # the fake's URLs are not fetchable; read what it holds
+        return self.client.objects[("b", "pre/" + key)]["data"]
+
+
+class S3Behaviour(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def file(self, size):
+        path = self.root / f"f{size}.bin"
+        path.write_bytes(os.urandom(size))
+        return path
+
+    def test_key_gets_the_prefix_and_content_type(self):
+        client = FakeS3Client()
+        _s3(client).put_file(self.file(10), "a/b.mp4")
+        self.assertEqual(list(client.objects), [("b", "pre/a/b.mp4")])
+        self.assertEqual(client.objects[("b", "pre/a/b.mp4")]["type"], "video/mp4")
+
+    def test_multipart_is_verified_with_the_composite_checksum(self):
+        for size in (MB - 1, MB, 2 * MB, 3 * MB + 17):
+            client = FakeS3Client()
+            obj = _s3(client).put_file(self.file(size), "a/m.mp4")
+            self.assertEqual(obj.size, size)
+
+    def test_a_corrupted_upload_fails_and_is_removed(self):
+        for size in (100, 3 * MB):
+            client = FakeS3Client(corrupt=True)
+            with self.assertRaisesRegex(StorageError, "mismatch"):
+                _s3(client).put_file(self.file(size), "a/x.mp4")
+            self.assertEqual(client.objects, {})
+
+    def test_etag_is_the_fallback_when_there_is_no_sha256(self):
+        client = FakeS3Client(checksum=False)
+        _s3(client).put_file(self.file(2 * MB + 5), "a/e.mp4")
+        with self.assertRaisesRegex(StorageError, "mismatch"):
+            _s3(FakeS3Client(checksum=False, corrupt=True)).put_file(self.file(500), "a/e2.mp4")
+
+    def test_an_unverifiable_upload_is_refused(self):
+        with self.assertRaisesRegex(StorageError, "cannot be verified"):
+            _s3(FakeS3Client(checksum=False, etag=False)).put_file(self.file(10), "a/n.mp4")
+        with self.assertRaisesRegex(StorageError, "cannot be verified"):  # a KMS ETag is not an MD5
+            _s3(FakeS3Client(checksum=False, kms=True)).put_file(self.file(10), "a/k.mp4")
+
+    def test_a_failed_upload_names_the_reason_only(self):
+        class Denied(Exception):
+            response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"},
+                        "ResponseMetadata": {"HTTPStatusCode": 403}}
+        with self.assertRaises(StorageError) as caught:
+            _s3(FakeS3Client(fail=Denied("secret detail should not leak"))).put_file(self.file(10), "a/f.mp4")
+        self.assertIn("AccessDenied", str(caught.exception))
+        self.assertNotIn("secret detail", str(caught.exception))
+
+    def test_urls(self):
+        backend = _s3(FakeS3Client(), url_expires=600)
+        self.assertTrue(backend.url("a/b.mp4").endswith("?expires=600"))
+        self.assertTrue(backend.url("a/b.mp4", 30).endswith("?expires=30"))
+        for bad in (0, 7 * 24 * 3600 + 1):
+            with self.assertRaises(StorageError):
+                backend.url("a/b.mp4", bad)
+        public = _s3(FakeS3Client(), public_url_base="https://cdn.example.com/")
+        self.assertEqual(public.url("a/b c.mp4"), "https://cdn.example.com/pre/a/b%20c.mp4")
+
+    def test_config_is_validated(self):
+        with self.assertRaises(StorageConfigError):
+            S3Backend(S3Config(bucket=""))
+        with self.assertRaises(StorageConfigError):
+            S3Backend(S3Config(bucket="b", url_expires=0))
+        with self.assertRaises(StorageConfigError):
+            S3Backend(S3Config(bucket="b", part_mb=1))
+
+
+class Configuration(unittest.TestCase):
+    def test_default_is_local_under_the_publish_dir(self):
+        backend = storage.from_env({}, local_root="out")
+        self.assertIsInstance(backend, LocalBackend)
+        with self.assertRaises(StorageConfigError):
+            storage.from_env({})
+
+    def test_s3_from_env(self):
+        backend = storage.from_env({
+            "VOLT_STORAGE": "s3", "VOLT_S3_BUCKET": "bkt", "VOLT_S3_PREFIX": "/shows/",
+            "VOLT_S3_REGION": "eu-west-2", "VOLT_S3_ENDPOINT_URL": "http://x:1", "VOLT_S3_URL_EXPIRES": "3600"})
+        self.assertEqual(backend.id, "s3:bkt/shows")
+        self.assertEqual((backend.config.region, backend.config.endpoint_url, backend.config.url_expires),
+                         ("eu-west-2", "http://x:1", 3600))
+        with self.assertRaises(StorageConfigError):
+            storage.from_env({"VOLT_STORAGE": "s3"})
+        with self.assertRaises(StorageConfigError):
+            storage.from_env({"VOLT_STORAGE": "s3", "VOLT_S3_BUCKET": "b", "VOLT_S3_URL_EXPIRES": "soon"})
+        with self.assertRaises(StorageConfigError):
+            storage.from_env({"VOLT_STORAGE": "ftp"})
+
+    def test_azure_and_gcs_are_named_stubs(self):
+        for kind, cls in (("azure", AzureBlobBackend), ("gcs", GcsBackend)):
+            with self.assertRaisesRegex(NotImplementedError, "not implemented"):
+                storage.from_env({"VOLT_STORAGE": kind})
+            with self.assertRaises(NotImplementedError):
+                cls()
+
+    def test_boto3_is_not_imported_until_s3_is_used(self):
+        code = ("import sys; from volt import storage, publish, runner;"
+                "b = storage.from_env({'VOLT_STORAGE': 's3', 'VOLT_S3_BUCKET': 'b'});"
+                "assert 'boto3' not in sys.modules; print('ok')")
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             cwd=Path(__file__).resolve().parents[1])
+        self.assertEqual(out.stdout.strip(), "ok", out.stderr)
+
+
+# ---- publish through a backend -------------------------------------------------------------------
+
+def _asset_and_span(store, root):
+    from tests.test_deliverables import _asset, _span
+    asset = _asset(store, root)
+    return asset, _span(store, asset)
+
+
+class PublishThroughStorage(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.store = self.make_store()
+        self.asset, self.span = _asset_and_span(self.store, self.root)
+
+    def make_store(self):
+        return Store()
+
+    def versions(self):
+        return {r["kind"]: r for r in self.store.conn.execute("SELECT * FROM version")}
+
+    def test_local_default_records_the_backend_and_key(self):
+        publish_files(self.store, self.span, self.root / "out", backend=LocalBackend(self.root / "out"))
+        for kind, row in self.versions().items():
+            self.assertEqual((row["status"], row["storage_backend"]), ("done", "local"))
+            self.assertEqual(row["storage_key"], f"{self.asset.id}/{self.span}-{kind}.mp4")
+            self.assertTrue(row["url"].startswith("file:///"))
+            self.assertEqual(len(row["storage_sha256"]), 64)
+
+    def test_remote_upload_stores_the_url_and_clears_scratch(self):
+        client = FakeS3Client()
+        backend = _s3(client)
+        scratch = self.root / "scratch"
+        versions = publish_files(self.store, self.span, None, backend=backend, scratch=scratch)
+        self.assertEqual([v.status for v in versions], ["done"] * 3)
+        self.assertEqual(len(client.objects), 3)
+        for kind, row in self.versions().items():
+            self.assertEqual(row["storage_backend"], "s3:b/pre")
+            self.assertEqual(row["storage_key"], f"{self.asset.id}/{self.span}-{kind}.mp4")
+            self.assertTrue(row["url"].startswith("https://fake.invalid/b/pre/"))
+        self.assertEqual([p for p in scratch.rglob("*") if p.is_file()], [])
+
+    def test_a_failed_upload_fails_only_that_version_and_retry_uploads_only_it(self):
+        class Flaky(FakeS3Client):
+            def upload_file(self, Filename, Bucket, Key, **kw):
+                if "-ott" in Key and not getattr(self, "healed", False):
+                    self.uploads += 1
+                    raise OSError("connection reset")
+                return super().upload_file(Filename, Bucket, Key, **kw)
+        client = Flaky()
+        backend = _s3(client)
+        scratch = self.root / "scratch"
+        first = publish_files(self.store, self.span, None, backend=backend, scratch=scratch)
+        self.assertEqual({v.kind: v.status for v in first}, {"house": "done", "ott": "failed", "social": "done"})
+        row = self.versions()["ott"]
+        self.assertIsNone(row["url"])
+        self.assertIsNone(row["storage_key"])
+        job = self.store.conn.execute(
+            "SELECT status, error FROM job WHERE idempotency_key = ?", (f"publish:{self.span}:ott",)).fetchone()
+        self.assertIn("connection reset", job["error"])
+        self.assertTrue((scratch / self.asset.id / f"{self.span}-ott.mp4").exists())  # not deleted unverified
+        client.healed, before = True, client.uploads
+        again = publish_files(self.store, self.span, None, backend=backend, scratch=scratch)
+        self.assertEqual([v.status for v in again], ["done"] * 3)
+        self.assertEqual(client.uploads - before, 1)  # only the failed version went up again
+        self.assertEqual([p for p in scratch.rglob("*") if p.is_file()], [])
+
+    def test_corruption_in_transit_fails_the_version(self):
+        versions = publish_files(self.store, self.span, None, backend=_s3(FakeS3Client(corrupt=True)),
+                                 scratch=self.root / "scratch")
+        self.assertEqual([v.status for v in versions], ["failed"] * 3)
+
+    def test_refresh_url_re_signs_from_the_stored_key(self):
+        backend = _s3(FakeS3Client(), url_expires=100)
+        publish_files(self.store, self.span, None, backend=backend, scratch=self.root / "s")
+        row = self.versions()["house"]
+        new = refresh_url(self.store, row["id"], backend=backend, expires=900)
+        self.assertTrue(new.endswith("?expires=900"))
+        self.assertEqual(self.versions()["house"]["url"], new)
+        other = _s3(FakeS3Client(), prefix="elsewhere")
+        with self.assertRaisesRegex(StorageError, "stored in s3:b/pre"):
+            refresh_url(self.store, row["id"], backend=other)
+
+    def test_runner_publish_handler_uses_the_configured_backend(self):
+        from volt.runner import Config, Runner, default_handlers, request_publish
+        client = FakeS3Client()
+        cfg = Config(storage=_s3(client), storage_scratch=self.root / "scratch")  # no publish_dir needed
+        job_id = request_publish(self.store, self.span)
+        Runner(self.store, {"publish": default_handlers(cfg)["publish"]}).drain()
+        self.assertEqual(len(client.objects), 3)
+        self.assertEqual(self.store.conn.execute("SELECT status FROM job WHERE id = ?", (job_id,)).fetchone()[0],
+                         "done")
+
+    def test_unconfigured_s3_fails_the_job_with_the_reason(self):
+        from volt.runner import Config, Runner, default_handlers, request_publish
+        old = {k: os.environ.pop(k, None) for k in ("VOLT_STORAGE", "VOLT_S3_BUCKET")}
+        os.environ["VOLT_STORAGE"] = "s3"
+        try:
+            job_id = request_publish(self.store, self.span)
+            Runner(self.store, {"publish": default_handlers(Config(publish_dir=self.root))["publish"]}).drain()
+        finally:
+            os.environ.pop("VOLT_STORAGE", None)
+            for k, v in old.items():
+                if v is not None:
+                    os.environ[k] = v
+        row = self.store.conn.execute("SELECT status, error FROM job WHERE id = ?", (job_id,)).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("VOLT_S3_BUCKET", row["error"])
+
+
+PG_DSN = os.environ.get("VOLT_TEST_PG_DSN")
+
+
+@unittest.skipUnless(PG_DSN, "set VOLT_TEST_PG_DSN to run the live Postgres tests")
+class PostgresPublishThroughStorage(PublishThroughStorage):
+    """The same publish-through-storage tests with the storage columns on Postgres."""
+
+    def make_store(self):
+        import uuid
+        from urllib.parse import quote
+        import psycopg
+
+        self.schema = "volt_s_" + uuid.uuid4().hex[:12]
+        with psycopg.connect(PG_DSN, autocommit=True) as admin:
+            admin.execute(f"CREATE SCHEMA {self.schema}")
+        sep = "&" if "?" in PG_DSN else "?"
+        self.addCleanup(self._drop)
+        return Store(f"{PG_DSN}{sep}options={quote('-csearch_path=' + self.schema)}")
+
+    def _drop(self):
+        import psycopg
+
+        self.store.close()
+        with psycopg.connect(PG_DSN, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA {self.schema} CASCADE")
+
+
+# ---- live: a real S3-compatible server -----------------------------------------------------------
+
+@unittest.skipUnless(LIVE, "set VOLT_TEST_S3_ENDPOINT to run against a local S3-compatible server")
+class LiveS3Contract(BackendContract, unittest.TestCase):
+    bucket = os.environ.get("VOLT_TEST_S3_BUCKET", "volt-test")
+
+    def make_backend(self):
+        backend = S3Backend(S3Config(bucket=self.bucket, prefix=f"live-{os.getpid()}/{id(self)}",
+                                     endpoint_url=LIVE, region="us-east-1", part_mb=5, url_expires=300))
+        try:
+            backend.client.create_bucket(Bucket=self.bucket)
+        except Exception as exc:  # noqa: BLE001 - an existing bucket is fine
+            if "BucketAlready" not in str(exc):
+                raise
+        self.addCleanup(self._clean, backend)
+        return backend
+
+    def _clean(self, backend):
+        listing = backend.client.list_objects_v2(Bucket=self.bucket, Prefix=backend.prefix)
+        for obj in listing.get("Contents", []):
+            backend.client.delete_object(Bucket=self.bucket, Key=obj["Key"])
+
+    def test_multipart_sizes_around_the_part_boundary(self):
+        for size in (0, 5 * MB - 1, 5 * MB, 12 * MB + 7):
+            data = os.urandom(size)
+            obj = self.backend.put_file(self._file(data, f"m{size}.bin"), f"m/{size}.bin")
+            self.assertEqual(obj.sha256, hashlib.sha256(data).hexdigest())
+            self.assertEqual(self.read(f"m/{size}.bin"), data)
+
+    def test_presigned_url_expires_and_signature_is_checked(self):
+        self.backend.put_file(self._file(b"abc"), "p/a.bin")
+        url = self.backend.url("p/a.bin", expires=1)
+        import time
+        time.sleep(2.5)
+        with self.assertRaises(Exception):
+            urllib.request.urlopen(url)
+        tampered = self.backend.url("p/a.bin").replace("Signature=", "Signature=00")
+        with self.assertRaises(Exception):
+            urllib.request.urlopen(tampered)
+
+    def test_content_type_is_set(self):
+        self.backend.put_file(self._file(b"abc"), "p/video.mp4")
+        with urllib.request.urlopen(self.backend.url("p/video.mp4")) as response:
+            self.assertEqual(response.headers["Content-Type"], "video/mp4")
+
+    def test_bad_credentials_fail_with_a_reason_and_no_leak(self):
+        bad = S3Backend(S3Config(bucket=self.bucket, endpoint_url=LIVE, region="us-east-1"))
+        import boto3
+        bad._client = boto3.client("s3", endpoint_url=LIVE, region_name="us-east-1",
+                                   aws_access_key_id="nope-key", aws_secret_access_key="nope-secret-value")
+        with self.assertRaises(StorageError) as caught:
+            bad.put_file(self._file(b"abc"), "p/denied.bin")
+        self.assertNotIn("nope-secret-value", str(caught.exception))
+
+    def test_an_unreachable_endpoint_fails_the_upload(self):
+        dead = S3Backend(S3Config(bucket=self.bucket, endpoint_url="http://127.0.0.1:1", region="us-east-1"))
+        dead.client.meta.config.retries = {"max_attempts": 1}
+        with self.assertRaises(StorageError):
+            dead.put_file(self._file(b"abc"), "p/x.bin")
+
+
+@unittest.skipUnless(LIVE, "set VOLT_TEST_S3_ENDPOINT to run against a local S3-compatible server")
+class LivePublish(unittest.TestCase):
+    """The real cut, uploaded to a real server, fetched back through the stored URL."""
+
+    def test_real_cuts_land_in_the_bucket_and_play(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = Store()
+            asset, span = _asset_and_span(store, root)
+            backend = S3Backend(S3Config(bucket=LiveS3Contract.bucket, prefix=f"live-publish-{os.getpid()}",
+                                         endpoint_url=LIVE, region="us-east-1"))
+            try:
+                backend.client.create_bucket(Bucket=LiveS3Contract.bucket)
+            except Exception:  # noqa: BLE001 - already there
+                pass
+            scratch = root / "scratch"
+            versions = publish_files(store, span, None, backend=backend, scratch=scratch)
+            try:
+                self.assertEqual([v.status for v in versions], ["done"] * 3)
+                for v in versions:
+                    with urllib.request.urlopen(v.url) as response:
+                        body = response.read()
+                    path = root / f"fetched-{v.kind}.mp4"
+                    path.write_bytes(body)
+                    self.assertGreater(deliverables._duration(path), 0)
+                    self.assertEqual(body[4:8], b"ftyp")
+                self.assertEqual([p for p in scratch.rglob("*") if p.is_file()], [])
+                row = store.conn.execute("SELECT id, url FROM version WHERE kind = 'house'").fetchone()
+                self.assertNotEqual(refresh_url(store, row["id"], backend=backend, expires=600), "")
+            finally:
+                for kind in ("house", "ott", "social"):
+                    backend.delete(f"{asset.id}/{span}-{kind}.mp4")
+
+
+if __name__ == "__main__":
+    unittest.main()

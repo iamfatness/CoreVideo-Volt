@@ -5,12 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from volt.rundown import take
+from volt.rundown import show_lock, take
 from volt.store import Store, _now
 
 
 class PlayoutError(Exception):
     pass
+
+
+class HeldError(PlayoutError):
+    """The rundown is held. A machine-readable subtype so callers need not parse the message."""
 
 
 def on_air(store: Store, show_id: str) -> Optional[str]:
@@ -45,21 +49,25 @@ def hold(store: Store, show_id: str, reason: str = "", clock: Callable[[], str] 
     if current is not None:
         return current
     now = clock()
-    store.conn.execute(
-        "UPDATE show SET hold_reason = ?, held_at = ? WHERE id = ?", (reason, now, show_id)
+    # One conditional write, so two holds at once keep the first, not the last.
+    cur = store.conn.execute(
+        "UPDATE show SET hold_reason = ?, held_at = ? WHERE id = ? AND held_at IS NULL",
+        (reason, now, show_id),
     )
     store.conn.commit()
+    if cur.rowcount == 0:
+        return hold_state(store, show_id) or Hold(reason, now)
     return Hold(reason, now)
 
 
 def release(store: Store, show_id: str) -> bool:
     """Release the hold. Returns False when the show was not held."""
-    was_held = hold_state(store, show_id) is not None
-    store.conn.execute(
-        "UPDATE show SET hold_reason = NULL, held_at = NULL WHERE id = ?", (show_id,)
+    hold_state(store, show_id)  # KeyError for an unknown show
+    cur = store.conn.execute(
+        "UPDATE show SET hold_reason = NULL, held_at = NULL WHERE id = ? AND held_at IS NOT NULL", (show_id,)
     )
     store.conn.commit()
-    return was_held
+    return cur.rowcount > 0
 
 
 @dataclass
@@ -76,17 +84,17 @@ def go(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Optional[
 
 def rewind(store: Store, adv: Advance) -> None:
     """Undo an advance: the target is ready again, the outgoing item back on air."""
-    if adv.target is not None:
-        store.conn.execute(
-            "UPDATE item SET status = 'ready', as_run_in = NULL WHERE id = ?", (adv.target,)
-        )
-    if adv.previous is not None:
-        store.conn.execute(
-            "UPDATE item SET status = 'on air', as_run_out = NULL WHERE id = ?", (adv.previous,)
-        )
-    for item_id in adv.passed:
-        store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
-    store.conn.commit()
+    with store.transaction():
+        if adv.target is not None:
+            store.conn.execute(
+                "UPDATE item SET status = 'ready', as_run_in = NULL WHERE id = ?", (adv.target,)
+            )
+        if adv.previous is not None:
+            store.conn.execute(
+                "UPDATE item SET status = 'on air', as_run_out = NULL WHERE id = ?", (adv.previous,)
+            )
+        for item_id in adv.passed:
+            store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
 
 
 def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Advance:
@@ -97,48 +105,49 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Adva
     If the next item cannot air (not cleared), nothing changes. While the show is
     held this raises PlayoutError and changes nothing.
     """
-    held = hold_state(store, show_id)
-    if held is not None:
-        raise PlayoutError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
-    current = on_air(store, show_id)
-    floor = 0
-    if current is not None:
-        floor = store.conn.execute("SELECT position FROM item WHERE id = ?", (current,)).fetchone()["position"]
-    passed: list[str] = []
-    target: Optional[str] = None
-    for row in store.conn.execute(
-        """SELECT id, status FROM item
-           WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
-           ORDER BY position""",
-        (show_id, floor),
-    ).fetchall():
-        if row["status"] == "killed":
-            passed.append(row["id"])
-        else:
-            target = row["id"]
-            break
-    if target is not None:
-        take(store, target)  # raises before changing anything if it cannot air
-    now = clock()
-    if current is not None:
-        store.conn.execute(
-            "UPDATE item SET status = 'aired', as_run_out = ? WHERE id = ?", (now, current)
-        )
-    for item_id in passed:
-        store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))
-    if target is not None:
-        store.conn.execute("UPDATE item SET as_run_in = ? WHERE id = ?", (now, target))
-    store.conn.commit()
-    return Advance(target, current, passed)
+    with store.transaction(show_lock(show_id)):  # read the show, then change it, with no other go in between
+        held = hold_state(store, show_id)
+        if held is not None:
+            raise HeldError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
+        current = on_air(store, show_id)
+        floor = 0
+        if current is not None:
+            floor = store.conn.execute("SELECT position FROM item WHERE id = ?", (current,)).fetchone()["position"]
+        passed: list[str] = []
+        target: Optional[str] = None
+        for row in store.conn.execute(
+            """SELECT id, status FROM item
+               WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
+               ORDER BY position""",
+            (show_id, floor),
+        ).fetchall():
+            if row["status"] == "killed":
+                passed.append(row["id"])
+            else:
+                target = row["id"]
+                break
+        if target is not None:
+            take(store, target)  # raises before changing anything if it cannot air
+        now = clock()
+        if current is not None:
+            store.conn.execute(
+                "UPDATE item SET status = 'aired', as_run_out = ? WHERE id = ?", (now, current)
+            )
+        for item_id in passed:
+            store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))
+        if target is not None:
+            store.conn.execute("UPDATE item SET as_run_in = ? WHERE id = ?", (now, target))
+        return Advance(target, current, passed)
 
 
 def skip(store: Store, item_id: str) -> None:
-    row = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()
-    if row is None:
+    found = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    if found is None:
         raise KeyError(item_id)
-    if row["status"] == "on air":
-        raise PlayoutError("cannot skip the item on air")
-    if row["status"] != "ready":
-        raise PlayoutError(f"cannot skip a {row['status']} item")
-    store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))
-    store.conn.commit()
+    with store.transaction(show_lock(found["show_id"])):
+        row = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()
+        if row["status"] == "on air":
+            raise PlayoutError("cannot skip the item on air")
+        if row["status"] != "ready":
+            raise PlayoutError(f"cannot skip a {row['status']} item")
+        store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))

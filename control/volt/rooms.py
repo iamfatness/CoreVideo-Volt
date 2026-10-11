@@ -35,11 +35,50 @@ class Observation:
         return not self.stale and self.state in KNOWN_STATES and self.health != "failed"
 
 
+@dataclass
+class ProgramSource:
+    """One entry of snapshot.programFrame.videoSources[], as the core observed it."""
+
+    layer_id: str
+    source_id: str
+    participant_id: str
+    kind: str
+
+
+@dataclass
+class ProgramObservation:
+    """What the core says is on Program. Only programFrame is evidence, never an ack.
+
+    `available` and `stale` come from the snapshot envelope. `attribution` is
+    programFrame.sceneIdAttribution ("live" | "holding" | "unknown"). A sequence of
+    None means the core did not report one.
+    """
+
+    available: bool
+    stale: bool
+    attribution: str
+    delivery_sequence: Optional[int]
+    scene_id: str
+    sources: list
+    error: Optional[str] = None
+
+
+def _unavailable(error: Optional[str] = None) -> ProgramObservation:
+    return ProgramObservation(False, True, "unknown", None, "", [], error)
+
+
 class FakeRoom:
-    """Plays a scripted run of observations. The last one repeats."""
+    """Plays a scripted run of observations. The last one repeats.
+
+    `program` scripts program_observed() the same way; its first call is the
+    pre-take baseline. With no script the program is reported unavailable.
+    """
 
     def __init__(self, script: list[Observation], senders: Optional[list[list[str]]] = None,
-                 states: Optional[list[dict]] = None):
+                 states: Optional[list[dict]] = None,
+                 program: Optional[list[ProgramObservation]] = None):
+        self._program = list(program) if program else None
+        self._program_at = 0
         self._script = list(script)
         self._at = 0
         self._senders = senders or [[]]
@@ -59,6 +98,12 @@ class FakeRoom:
         self._at += 1
         return item
 
+    def program_observed(self) -> ProgramObservation:
+        if self._program is None:
+            return _unavailable("no program script")
+        item = self._program[min(self._program_at, len(self._program) - 1)]
+        self._program_at += 1
+        return item
 
     def senders_observed(self) -> list[Observation]:
         item = self._senders[min(self._sender_at, len(self._senders) - 1)]
@@ -118,6 +163,25 @@ class CoreVideoProRoom:
             else:
                 out.append(Observation("unknown", "unknown", False, None, None, stale=stale))
         return out
+
+    def program_observed(self) -> ProgramObservation:
+        """Read snapshot.programFrame. Anything malformed is unavailable, never a guess."""
+        env = self._request("GET", "/snapshot")
+        if not env.get("available"):
+            return _unavailable(env.get("reasonCode"))
+        stale = bool(env.get("stale"))
+        frame = (env.get("snapshot") or {}).get("programFrame")
+        if not isinstance(frame, dict) or not isinstance(frame.get("videoSources"), list):
+            return ProgramObservation(True, stale, "unknown", None, "", [], "programFrame absent")
+        seq = frame.get("deliverySequence")
+        seq = int(seq) if isinstance(seq, (int, float)) and not isinstance(seq, bool) else None
+        sources = [
+            ProgramSource(str(v.get("layerId") or ""), str(v.get("sourceId") or ""),
+                          str(v.get("participantId") or ""), str(v.get("kind") or ""))
+            for v in frame["videoSources"] if isinstance(v, dict)
+        ]
+        return ProgramObservation(True, stale, str(frame.get("sceneIdAttribution", "unknown")),
+                                  seq, str(frame.get("sceneId") or ""), sources)
 
     def observe(self) -> Observation:
         env = self._request("GET", "/snapshot")

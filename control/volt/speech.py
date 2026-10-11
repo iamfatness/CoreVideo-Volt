@@ -13,12 +13,14 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from volt.deliverables import _probe_fps, tc_to_seconds
+from volt import timecode
+from volt.deliverables import _probe_rate
 from volt.store import Store, _now
 
 
@@ -217,13 +219,12 @@ class FasterWhisperEngine:
             raise SpeechError(f"transcription failed: {exc}") from exc
         return Transcription(words, used)
 
-def seconds_to_tc(seconds: float, fps: float) -> str:
-    """Inverse of tc_to_seconds. Non-drop."""
-    base = max(1, round(fps))
-    total = round(seconds * fps)
-    f = total % base
-    whole = total // base
-    return f"{whole // 3600:02d}:{whole // 60 % 60:02d}:{whole % 60:02d}:{f:02d}"
+def seconds_to_tc(seconds, rate, drop: bool = False) -> str:
+    """Inverse of deliverables.tc_to_seconds. Exact rate (Fraction, "30000/1001", 25); drop=True gives `;` labels."""
+    try:
+        return timecode.seconds_to_tc(seconds, rate, drop)
+    except timecode.TimecodeError as exc:
+        raise SpeechError(str(exc)) from exc
 
 
 def _extract_audio(src: str, dest: Path) -> None:
@@ -243,14 +244,25 @@ def _run_key(info: dict, vocabulary: Sequence[str], corrections: Sequence[Correc
     return "asr-v2:" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def _run_time(store: Store) -> str:
+    """SQLite breaks created_at ties by rowid. Postgres has no rowid, so its run time keeps microseconds."""
+    if not store.postgres:
+        return _now()
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence[str] = (),
-               corrections: Sequence[Correction] = (), require_cleared: bool = True) -> int:
+               corrections: Sequence[Correction] = (), require_cleared: bool = True,
+               job_id: str | None = None) -> int:
     """Index the words of one asset and record how. Returns the word count.
 
     Consent: an asset that is not cleared is refused (no job, no audio read) unless require_cleared=False.
     The same engine/model/vocabulary/corrections on the same asset is a no-op. A different configuration is a
     new run and replaces the asset's transcript spans, so a better model or a fuller vocabulary can be re-run
-    on purpose; transcribe_pending never replaces an existing transcript."""
+    on purpose; transcribe_pending never replaces an existing transcript.
+
+    job_id: the job row a runner has already claimed for this work. It is used in place of a run-keyed job and its
+    status is left to the runner (no inline done/failed), so no second queued row appears for another runner to claim."""
     asset = store.get_asset(asset_id)
     if require_cleared and not asset.cleared:
         raise SpeechError("asset is not cleared; clear it before transcribing")
@@ -262,24 +274,32 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     if essence["open"]:
         raise SpeechError("asset is still recording; wrap it first")
     info = engine.describe()
-    job = store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections))
+    owned = job_id is not None
+    job = store.get_job(job_id) if owned else store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections))
     latest = store.conn.execute(
-        "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
+        + ("" if store.postgres else ", rowid DESC") + " LIMIT 1",
         (asset_id,)).fetchone()
     if job.status == "done" and latest is not None and latest["job_id"] == job.id:
         return latest["word_count"]
     try:
-        fps = float(Fraction(essence["frame_rate"])) if essence["frame_rate"] else _probe_fps(essence["location"])
-        origin = tc_to_seconds(essence["timecode_start"] or "00:00:00:00", fps)
+        rate = timecode.parse_rate(essence["frame_rate"]) if essence["frame_rate"] else _probe_rate(essence["location"])
+        drop = timecode.is_drop(essence["timecode_start"])  # `;` before the frames = drop-frame
+        origin = timecode.tc_to_frames(essence["timecode_start"] or "00:00:00:00", rate, drop)
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "audio.wav"
             _extract_audio(essence["location"], wav)
             result = engine.transcribe(wav, vocabulary)
         words, applied = apply_corrections(result.words, corrections)
-        rows = [(w.text, seconds_to_tc(origin + w.start, fps),
-                 seconds_to_tc(origin + max(w.end, w.start + 1 / fps), fps)) for w in words]
+        one = 1 / rate
+        rows = []
+        for w in words:
+            f_in = origin + timecode.seconds_to_frames(w.start, rate)
+            f_out = origin + timecode.seconds_to_frames(max(Fraction(repr(float(w.end))), Fraction(repr(float(w.start))) + one), rate)
+            rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop)))
     except Exception as exc:
-        store.fail_job(job.id, str(exc) or exc.__class__.__name__)
+        if not owned:
+            store.fail_job(job.id, str(exc) or exc.__class__.__name__)
         if isinstance(exc, SpeechError):
             raise
         raise SpeechError(str(exc)) from exc
@@ -288,12 +308,15 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     conn.commit()
     for text, tc_in, tc_out in rows:
         store.add_span(asset_id, "transcript", tc_in, tc_out, text=text)
+    conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
     conn.execute(
-        "INSERT OR REPLACE INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (job.id, asset_id, info["engine"], info.get("model"), info.get("device"), info.get("compute_type"),
-         json.dumps(list(vocabulary)), json.dumps(result.vocabulary_used), json.dumps(applied), len(rows), _now()))
+         json.dumps(list(vocabulary)), json.dumps(result.vocabulary_used), json.dumps(applied), len(rows),
+         _run_time(store)))
     conn.commit()
-    store.complete_job(job.id)
+    if not owned:
+        store.complete_job(job.id)
     return len(rows)
 
 

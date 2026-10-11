@@ -29,17 +29,17 @@ class Cue:
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> str:
     if room == "corevideo.pro" and command not in COREVIDEO_COMMANDS:
         raise ValueError(command)
-    position = store.conn.execute(
-        "SELECT COALESCE(MAX(position), 0) + 1 FROM cue WHERE item_id = ?",
-        (item_id,),
-    ).fetchone()[0]
     cue_id = _id()
-    store.conn.execute(
-        """INSERT INTO cue (id, item_id, position, room, command, payload, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'stored', ?)""",
-        (cue_id, item_id, position, room, command, payload, _now()),
-    )
-    store.conn.commit()
+    with store.transaction(f"item-cues:{item_id}"):  # next position is read then written: one at a time
+        position = store.conn.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM cue WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()[0]
+        store.conn.execute(
+            """INSERT INTO cue (id, item_id, position, room, command, payload, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'stored', ?)""",
+            (cue_id, item_id, position, room, command, payload, _now()),
+        )
     return cue_id
 
 

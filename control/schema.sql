@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS job (
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_by TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  run_after TIMESTAMPTZ,
   UNIQUE (asset_id, type, idempotency_key)
 );
 
@@ -82,7 +85,11 @@ CREATE TABLE IF NOT EXISTS item (
   span_id TEXT REFERENCES span(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   as_run_in TIMESTAMPTZ,
-  as_run_out TIMESTAMPTZ
+  as_run_out TIMESTAMPTZ,
+  scheduled_at TIMESTAMPTZ,
+  schedule_state TEXT,
+  schedule_note TEXT,
+  schedule_claimed_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS version (
@@ -93,6 +100,9 @@ CREATE TABLE IF NOT EXISTS version (
   status TEXT NOT NULL,
   url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  storage_backend TEXT,
+  storage_key TEXT,
+  storage_sha256 TEXT,
   UNIQUE (asset_id, span_id, kind)
 );
 
