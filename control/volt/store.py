@@ -1,4 +1,4 @@
-"""Volt control plane. SQLite runs the contract. Postgres is the same objects."""
+﻿"""Volt control plane. SQLite runs the contract. Postgres is the same objects."""
 
 from __future__ import annotations
 
@@ -70,10 +70,26 @@ CREATE TABLE IF NOT EXISTS job (
   UNIQUE (asset_id, type, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS asr_run (
+  job_id TEXT PRIMARY KEY REFERENCES job(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  engine TEXT NOT NULL,
+  model TEXT,
+  device TEXT,
+  compute_type TEXT,
+  vocabulary_requested TEXT NOT NULL,
+  vocabulary_used TEXT NOT NULL,
+  corrections_applied TEXT NOT NULL,
+  word_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS show (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  hold_reason TEXT,
+  held_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS item (
@@ -169,6 +185,10 @@ class Store:
         for column in ("as_run_in", "as_run_out"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE item ADD COLUMN {column} TEXT")
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(show)")}
+        for column in ("hold_reason", "held_at"):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE show ADD COLUMN {column} TEXT")
         self.conn.commit()
 
     def close(self) -> None:

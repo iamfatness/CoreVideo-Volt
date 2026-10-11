@@ -50,10 +50,26 @@ CREATE TABLE IF NOT EXISTS job (
   UNIQUE (asset_id, type, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS asr_run (
+  job_id TEXT PRIMARY KEY REFERENCES job(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  engine TEXT NOT NULL,
+  model TEXT,
+  device TEXT,
+  compute_type TEXT,
+  vocabulary_requested TEXT NOT NULL,
+  vocabulary_used TEXT NOT NULL,
+  corrections_applied TEXT NOT NULL,
+  word_count INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS show (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  hold_reason TEXT,
+  held_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS item (

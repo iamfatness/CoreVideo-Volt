@@ -16,6 +16,16 @@ SCHEMA_FILE = Path(__file__).resolve().parents[1] / "schema.sql"
 _SCHEMA_LOCK = 0x566F6C74
 
 
+# Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS leaves an existing table
+# alone, so a database made by an older schema.sql needs these. Keep in step with schema.sql.
+_ADDED_COLUMNS = (
+    ("item", "as_run_in", "TIMESTAMPTZ"),
+    ("item", "as_run_out", "TIMESTAMPTZ"),
+    ("show", "hold_reason", "TEXT"),
+    ("show", "held_at", "TIMESTAMPTZ"),
+)
+
+
 def is_dsn(target: str) -> bool:
     return target.startswith(("postgres://", "postgresql://"))
 
@@ -82,6 +92,8 @@ class PgConnection:
         with self._conn.transaction():
             self._conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK,))
             self._conn.execute(SCHEMA_FILE.read_text())
+            for table, column, kind in _ADDED_COLUMNS:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
 
     def commit(self) -> None:
         self._conn.commit()

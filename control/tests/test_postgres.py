@@ -90,6 +90,18 @@ class LivePostgres(unittest.TestCase):
         }
         self.assertEqual(live, lite)
 
+    def test_an_older_database_gains_the_columns_added_since(self):
+        import psycopg
+
+        with psycopg.connect(self.dsn, autocommit=True) as old:
+            old.execute("CREATE TABLE show (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+                        "created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+        store = self.store()
+        cols = {r["column_name"] for r in store.conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'show'")}
+        self.assertTrue({"hold_reason", "held_at"} <= cols)
+
     def test_schema_is_idempotent(self):
         self.store()
         again = self.store()

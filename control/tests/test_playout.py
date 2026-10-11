@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from volt.library import index_words
-from volt.playout import PlayoutError, go, on_air, skip
+from volt.playout import PlayoutError, go, hold, hold_state, on_air, release, skip
 from volt.rundown import add_item, attach, items, kill, open_show
 from volt.store import NotClearedError, Store
 
@@ -130,6 +130,81 @@ class Migration(unittest.TestCase):
             row = store.conn.execute("SELECT as_run_in, as_run_out FROM item").fetchone()
             self.assertEqual((row[0], row[1]), (None, None))
             store.close()
+
+
+class Hold(unittest.TestCase):
+    def test_held_go_changes_nothing_and_release_resumes(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        clock = Clock()
+        go(store, show, clock)
+        before = [dict(_row(store, i)) for i in (a, b, c)]
+        state = hold(store, show, "tech issue", clock)
+        self.assertEqual(state.reason, "tech issue")
+        with self.assertRaises(PlayoutError) as ctx:
+            go(store, show, clock)
+        self.assertIn("held", str(ctx.exception))
+        self.assertEqual([dict(_row(store, i)) for i in (a, b, c)], before)
+        self.assertEqual(on_air(store, show), a)
+        self.assertTrue(release(store, show))
+        self.assertIsNone(hold_state(store, show))
+        self.assertEqual(go(store, show, clock), b)
+
+    def test_skip_still_works_while_held_and_hold_keeps_the_first_reason(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        first = hold(store, show, "first", Clock())
+        again = hold(store, show, "second", Clock())
+        self.assertEqual(again, first)
+        skip(store, b)
+        self.assertEqual(_row(store, b)["status"], "skipped")
+        with self.assertRaises(PlayoutError):
+            go(store, show)
+        self.assertTrue(release(store, show))
+        self.assertFalse(release(store, show))
+        self.assertEqual(go(store, show, Clock()), a)
+        self.assertEqual(go(store, show, Clock()), c)
+
+    def test_hold_persists_across_reopen_and_is_per_show(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "volt.db")
+            store = Store(path)
+            show, (a, *_rest) = _show(store)
+            other = open_show(store, "Other")
+            hold(store, show, "weather", Clock())
+            store.close()
+            again = Store(path)
+            state = hold_state(again, show)
+            self.assertEqual(state.reason, "weather")
+            self.assertEqual(state.held_at, "2026-10-10T20:00:01Z")
+            self.assertIsNone(hold_state(again, other))
+            with self.assertRaises(PlayoutError):
+                go(again, show, Clock())
+            again.close()
+
+    def test_unknown_show_raises_key_error(self):
+        with self.assertRaises(KeyError):
+            hold(Store(), "nope")
+
+    def test_existing_db_without_hold_columns_is_upgraded_and_keeps_its_shows(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = sqlite3.connect(path)
+            conn.executescript("""
+              CREATE TABLE show (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL);
+              INSERT INTO show VALUES ('s1','Old show','2026-01-01T00:00:00Z');
+            """)
+            conn.commit()
+            conn.close()
+            store = Store(path)
+            self.assertIsNone(hold_state(store, "s1"))
+            hold(store, "s1", "late", Clock())
+            self.assertEqual(hold_state(store, "s1").reason, "late")
+            store.close()
+            reopened = Store(path)
+            self.assertEqual(hold_state(reopened, "s1").reason, "late")
+            reopened.close()
 
 
 if __name__ == "__main__":

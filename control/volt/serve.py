@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from volt.playout import hold_state
 from volt.session import list_assets, rundown, seek_hit
 from volt.pg import is_dsn
 from volt.store import Store
@@ -41,12 +42,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/rundown":
             show_id = parse_qs(parsed.query).get("show", [""])[0]
-            rows = [
+            held = hold_state(STORE, show_id) if show_id else None
+            items = [
                 {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
                  "asRunIn": row.as_run_in, "asRunOut": row.as_run_out}
                 for row in rundown(STORE, show_id)
             ]
-            self._send(200, "application/json", json.dumps(rows).encode())
+            hold = None if held is None else {"reason": held.reason, "heldAt": held.held_at}
+            self._send(200, "application/json", json.dumps({"hold": hold, "items": items}).encode())
             return
         if parsed.path == "/seek":
             query = parse_qs(parsed.query).get("q", [""])[0]

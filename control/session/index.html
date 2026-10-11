@@ -41,8 +41,10 @@
         : "No assets";
       const show = new URLSearchParams(location.search).get("show");
       if (!show) return;
-      const items = await fetch("/rundown?show=" + encodeURIComponent(show)).then(r => r.json());
-      document.getElementById("rundown").innerHTML = items.map(item =>
+      const data = await fetch("/rundown?show=" + encodeURIComponent(show)).then(r => r.json());
+      const items = data.items;
+      const banner = data.hold ? `<p>HOLD${data.hold.reason ? " · " + data.hold.reason : ""}</p>` : "";
+      document.getElementById("rundown").innerHTML = banner + items.map(item =>
         `<p>${item.slug} · ${item.status}${item.urls.length ? "<br>" + item.urls.join("<br>") : ""}</p>`
       ).join("");
     }
