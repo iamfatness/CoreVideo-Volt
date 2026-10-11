@@ -42,7 +42,7 @@ IDs are path segments. All are `POST`.
 | `/api/record/stop` | `asset` | Stop and wrap only on completed + finalized (`finish_recording`). Returns `checksum`, `asset`. | 404; 503; 502 `not_wrapped` (nothing wrapped); 422 |
 | `/api/assets/{asset}/cleared` | `cleared`: boolean | Set the cleared flag. | 404; 422 (must be a real boolean) |
 | `/api/assets/{asset}/legal-hold` | `held`: boolean | Set the legal hold. A held asset cannot air or publish. | 404; 422 |
-| `/api/spans/{span}/publish` | none | Render house, OTT and social files (`publish_files`) into `VOLT_OUT`. Returns `versions`. | 404; 409 `not_cleared`; 502 `publish_failed` (versions list shows which kind failed; it did record the failure) |
+| `/api/spans/{span}/publish` | none | Render house, OTT and social files (`publish_files`) into `VOLT_OUT`. Returns `versions`. | 404; 409 `not_cleared`; 409 `publish_busy` (another writer holds a version; nothing was rendered by this call); 502 `publish_failed` (versions list shows which kind failed; it did record the failure) |
 
 ### Take with a failing cue
 

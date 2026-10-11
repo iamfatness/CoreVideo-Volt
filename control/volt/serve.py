@@ -342,6 +342,10 @@ def act_publish(store, span_id, body):
     versions = [{"id": v.id, "kind": v.kind, "status": v.status, "url": v.url}
                 for v in PUBLISH(store, span_id, OUT_DIR)]
     payload = {"ok": all(v["status"] == "done" for v in versions), "span": span_id, "versions": versions}
+    if not payload["ok"] and any(v["status"] == "busy" for v in versions) \
+            and not any(v["status"] == "failed" for v in versions):
+        raise ApiError(409, "publish_busy", "another writer is publishing this span; try again shortly", **{
+            "span": span_id, "versions": versions})
     if not payload["ok"]:
         raise ApiError(502, "publish_failed", "one or more versions failed to render", **{
             "span": span_id, "versions": versions})

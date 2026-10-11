@@ -203,7 +203,10 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             if exc.__class__.__name__ == "NotClearedError":
                 raise Permanent("asset is not cleared or is on legal hold") from exc
             raise
-        failed = [v for v in versions if v.status != "done"]
+        failed = [v for v in versions if v.status not in ("done", "busy")]
+        if not failed and any(v.status == "busy" for v in versions):
+            # another writer holds a version's claim: not a failure and not ours to render; look again later
+            raise Defer(f"span {span_id}: another writer is publishing it", DEFAULT_DEFER)
         if failed:
             reasons = []
             for v in failed:

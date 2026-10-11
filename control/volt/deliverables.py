@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from fractions import Fraction
 from pathlib import Path
 
@@ -86,7 +87,9 @@ def render(store: Store, span, kind: str, out_dir: Path) -> str:
     dest_dir = Path(out_dir) / span["asset_id"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{span['id']}-{kind}.mp4"
-    part = dest.with_suffix(".part.mp4")
+    # ffmpeg writes a name of its own, renamed over `dest` when it is whole, so two renders of one cut (a stale
+    # writer and its replacement) never write or delete each other's half-made file.
+    part = dest.with_name(f"{dest.stem}.{uuid.uuid4().hex[:12]}.part.mp4")
     video, vf, audio_rate = PROFILES[kind]
     cmd = ["ffmpeg", "-y", "-ss", f"{start:.4f}", "-i", src["location"], "-t", f"{length:.4f}",
            "-frames:v", str(count), "-map", "0:v:0", "-map", "0:a:0?"]
