@@ -2,33 +2,33 @@
 
 State on `main`: store (SQLite and Postgres), room adapter, live record, cue dispatch, playout with hold and as-run, take, deliverable files, speech worker. 118 tests. Nothing has run against a live core. Operator mockups are in PR #8 and the owner called them a good start.
 
-## Status (2026-10-11)
+## Status (2026-10-11, evening)
 
-Wave A and Wave B are on `main`, except B3. The suite is 416 tests, run on SQLite and on live Postgres 16, and CI runs three jobs per PR (ubuntu, windows, postgres).
+Wave A and Wave B are on `main`. The suite is 485 tests, run on SQLite and on live Postgres 16, and CI runs three jobs per PR (ubuntu, windows, postgres).
 
 | Item | PR | State |
 |---|---|---|
 | A1 Job runner | #18 | Merged |
 | A2 Operator API | #16 | Merged |
 | A3 Timecode, drop-frame | #17 | Merged |
-| A4 show-input.take against the fake room | #15 | Merged. Live action names are config until CoreVideoPro #861 lands. |
-| B1 Storage seam, AWS S3 first | #20 | Merged. Verified against MinIO only; real AWS not tried. Azure and GCS are stubs. |
+| A4 show-input.take against the fake room | #15 | Merged. Live action names are config until CoreVideoPro #861 lands. Run against a live core 2026-10-11 (see below); #26 fixed the mid-transition layer gap that run found. |
+| B1 Storage seam, AWS S3 first | #20, #25 | Merged. Run on real AWS S3 (us-east-2, 12/12 plus a real ffmpeg publish); #25 fixed presigned URLs that were dead outside us-east-1. Azure and GCS are stubs. |
 | B2 Schedule clock | #19 | Merged |
-| B3 Speech at scale | not yet | In progress: chunked long files, model benchmarks, hallucination guard. Its columns, if any, are migration 7. |
+| B3 Speech at scale | #24 | Merged. Chunked long files with resume, benchmarks, hallucination guard. Migration 7. |
 | B4 Postgres hardening | #22 | Merged. Versioned migrations in `volt/migrations.py`. |
 | B5 Operator UI | #21, #23 | Merged; #23 makes Space the take key. |
+| Small fixes | #27 | Merged. `/rundown?show=<unknown>` returns 404; failed cues persist (migration 8); opt-in S3 URL refresh. |
+| Cross-process races | #28 | Merged. Publish claim, kill vs go, transcribe replace, proxy builds. Limits are in the specs. |
 
-Schema changes now go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number.
+Schema changes go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number (next is 9).
 
-Still open after this wave:
+Run against a live CoreVideo Pro core (2026-10-11): `show-input.take` takes with a source that is not on Program failed closed, and a take between scenes with distinct sources confirmed only once the core showed the source and had dropped its `take-in`/`take-out` layers. Not yet run live: record, stream, lower third, fade, and a camera source (no action routes one into a scene, CoreVideoPro #861).
 
-- Live proof against a real core (record, stream, lower third). Blocked while another agent owns the core.
-- Live `show-input.take`, after CoreVideoPro #861.
-- Real AWS check of the S3 backend, once the owner has a bucket. Azure Blob and GCS backends. Re-signing expiring S3 URLs on a schedule.
-- Races left across processes: publishing one span from two writers, `kill` racing `go`, `speech.transcribe` replacing transcript spans.
-- The record-start proxy and the final proxy can build the same file at once on two runners.
-- `GET /rundown?show=<unknown>` drops the connection.
-- Failed cues are not persisted server-side (the UI shows them until the next take).
+Still open:
+
+- Live proof of record, stream and lower third against a real core. Needs the core running.
+- Azure Blob and GCS backends. S3: SSE-KMS, CDN or public-read, instance-role credentials. Nothing runs `publish refresh-urls` on a schedule yet.
+- Limits left by #28: the publish claim lease has no heartbeat (30 minutes); two proxy jobs can both encode; a proxy build begun during recording may finish after the final proxy (not reproduced); two runners can both transcribe.
 - Shot spans and the NLE panel.
 
 ## What the investigation found
