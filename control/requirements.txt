@@ -1,2 +1,4 @@
 # Optional. Only needed for a postgres:// store; SQLite and the tests need nothing.
 psycopg[binary]==3.3.6
+# Optional, only for VOLT_PG_POOL_MAX / --pg-pool-max. Imported lazily.
+psycopg_pool==3.3.3
