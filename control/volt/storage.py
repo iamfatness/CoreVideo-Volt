@@ -176,8 +176,10 @@ class S3Backend:
             raise StorageConfigError(
                 "VOLT_STORAGE=s3 needs boto3 (pip install boto3); it is not installed") from exc
         cfg = {"signature_version": "s3v4", "retries": {"max_attempts": 5, "mode": "standard"}}
-        if self.config.endpoint_url:
-            cfg["s3"] = {"addressing_style": "path"}
+        # Path style for S3-compatible servers. Real AWS: virtual-hosted style, so a presigned URL names the
+        # bucket's regional host. Without it boto3 signs for the region but points at s3.amazonaws.com, which
+        # AWS rejects ("the region is wrong") for any bucket outside us-east-1.
+        cfg["s3"] = {"addressing_style": "path" if self.config.endpoint_url else "virtual"}
         return boto3.client("s3", region_name=self.config.region or None,
                             endpoint_url=self.config.endpoint_url or None, config=Config(**cfg))
 

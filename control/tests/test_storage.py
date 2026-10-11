@@ -8,11 +8,13 @@ for real AWS credentials; point them only at a throwaway local server."""
 
 import base64
 import hashlib
+import importlib.util
 import os
 import subprocess
 import sys
 import unittest
 import urllib.request
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -289,6 +291,26 @@ def _asset_and_span(store, root):
     from tests.test_deliverables import _asset, _span
     asset = _asset(store, root)
     return asset, _span(store, asset)
+
+
+@unittest.skipUnless(importlib.util.find_spec("boto3"), "boto3 is not installed")
+class PresignedUrlHost(unittest.TestCase):
+    """Real AWS rejects a URL signed for one region but pointed at the global host (seen live, us-east-2)."""
+
+    def _url(self, **config):
+        backend = S3Backend(S3Config(bucket="volt-bucket", prefix="p", **config))
+        backend._client = None
+        env = {"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "x", "AWS_EC2_METADATA_DISABLED": "true"}
+        with mock.patch.dict(os.environ, env):
+            return backend.url("k.mp4")
+
+    def test_aws_url_names_the_regional_host(self):
+        url = self._url(region="us-east-2")
+        self.assertTrue(url.startswith("https://volt-bucket.s3.us-east-2.amazonaws.com/p/k.mp4?"), url)
+
+    def test_s3_compatible_endpoint_stays_path_style(self):
+        url = self._url(region="us-east-1", endpoint_url="http://localhost:9000")
+        self.assertTrue(url.startswith("http://localhost:9000/volt-bucket/p/k.mp4?"), url)
 
 
 class PublishThroughStorage(unittest.TestCase):
