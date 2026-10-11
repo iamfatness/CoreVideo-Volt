@@ -18,7 +18,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from volt.deliverables import _probe_fps, tc_to_seconds
+from volt import timecode
+from volt.deliverables import _probe_rate
 from volt.store import Store, _now
 
 
@@ -217,13 +218,12 @@ class FasterWhisperEngine:
             raise SpeechError(f"transcription failed: {exc}") from exc
         return Transcription(words, used)
 
-def seconds_to_tc(seconds: float, fps: float) -> str:
-    """Inverse of tc_to_seconds. Non-drop."""
-    base = max(1, round(fps))
-    total = round(seconds * fps)
-    f = total % base
-    whole = total // base
-    return f"{whole // 3600:02d}:{whole // 60 % 60:02d}:{whole % 60:02d}:{f:02d}"
+def seconds_to_tc(seconds, rate, drop: bool = False) -> str:
+    """Inverse of deliverables.tc_to_seconds. Exact rate (Fraction, "30000/1001", 25); drop=True gives `;` labels."""
+    try:
+        return timecode.seconds_to_tc(seconds, rate, drop)
+    except timecode.TimecodeError as exc:
+        raise SpeechError(str(exc)) from exc
 
 
 def _extract_audio(src: str, dest: Path) -> None:
@@ -269,15 +269,20 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     if job.status == "done" and latest is not None and latest["job_id"] == job.id:
         return latest["word_count"]
     try:
-        fps = float(Fraction(essence["frame_rate"])) if essence["frame_rate"] else _probe_fps(essence["location"])
-        origin = tc_to_seconds(essence["timecode_start"] or "00:00:00:00", fps)
+        rate = timecode.parse_rate(essence["frame_rate"]) if essence["frame_rate"] else _probe_rate(essence["location"])
+        drop = timecode.is_drop(essence["timecode_start"])  # `;` before the frames = drop-frame
+        origin = timecode.tc_to_frames(essence["timecode_start"] or "00:00:00:00", rate, drop)
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "audio.wav"
             _extract_audio(essence["location"], wav)
             result = engine.transcribe(wav, vocabulary)
         words, applied = apply_corrections(result.words, corrections)
-        rows = [(w.text, seconds_to_tc(origin + w.start, fps),
-                 seconds_to_tc(origin + max(w.end, w.start + 1 / fps), fps)) for w in words]
+        one = 1 / rate
+        rows = []
+        for w in words:
+            f_in = origin + timecode.seconds_to_frames(w.start, rate)
+            f_out = origin + timecode.seconds_to_frames(max(Fraction(repr(float(w.end))), Fraction(repr(float(w.start))) + one), rate)
+            rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop)))
     except Exception as exc:
         store.fail_job(job.id, str(exc) or exc.__class__.__name__)
         if isinstance(exc, SpeechError):
