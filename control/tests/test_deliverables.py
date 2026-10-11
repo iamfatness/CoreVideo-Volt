@@ -42,7 +42,7 @@ def _asset(store, root, open_file=False, tc_start="01:12:08:00"):
     return asset
 
 
-def _span(store, asset, tc_in="01:12:08:25", tc_out="01:12:09:10"):
+def _span(store, asset, tc_in="01:12:09:00", tc_out="01:12:09:15"):
     return store.add_span(asset.id, "transcript", tc_in, tc_out, text="steal")
 
 
