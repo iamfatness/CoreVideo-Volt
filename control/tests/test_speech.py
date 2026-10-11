@@ -1,3 +1,5 @@
+import json
+import os
 import subprocess
 import sys
 import unittest
@@ -5,7 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from volt.library import search
-from volt.speech import (FakeEngine, SpeechError, Word, WhisperCliEngine, seconds_to_tc,
+from volt.speech import (FakeEngine, FasterWhisperEngine, SpeechError, Word, apply_corrections,
+                         parse_corrections, seconds_to_tc, select_vocabulary, show_vocabulary,
                          transcribe, transcribe_pending)
 from volt.store import Store
 
@@ -18,10 +21,11 @@ def _clip(path: Path, audio=True) -> None:
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _asset(store, root, audio=True, open_file=False, tc_start="01:00:00:00"):
+def _asset(store, root, audio=True, open_file=False, tc_start="01:00:00:00", cleared=True):
     clip = root / "iso.mp4"
     _clip(clip, audio)
     asset = store.mint_asset(owner="desk")
+    store.set_cleared(asset.id, cleared)
     store.add_essence(asset.id, role="hi-res", location=str(clip), open_file=open_file,
                       frame_rate="25", timecode_start=tc_start)
     return asset
@@ -106,30 +110,137 @@ class Transcribe(unittest.TestCase):
         self.assertNotIn(still_open.id, out)
 
 
-class WhisperCli(unittest.TestCase):
-    def test_reads_word_timestamps_from_the_engine_json(self):
-        with TemporaryDirectory() as tmp:
-            stub = Path(tmp) / "stub.py"
-            stub.write_text(
-                "import json, sys, pathlib\n"
-                "a = sys.argv; wav = pathlib.Path(a[1]); out = pathlib.Path(a[a.index('--output_dir') + 1])\n"
-                "(out / (wav.stem + '.json')).write_text(json.dumps({'segments': [{'words': [\n"
-                "  {'word': ' they', 'start': 0.2, 'end': 0.4}, {'word': ' steal', 'start': 0.4, 'end': 0.9}]}]}))\n")
-            wav = Path(tmp) / "a.wav"
-            wav.write_bytes(b"")
-            words = WhisperCliEngine(exe=[sys.executable, str(stub)]).transcribe(wav)
-            self.assertEqual([(w.text, w.start, w.end) for w in words], [("they", 0.2, 0.4), ("steal", 0.4, 0.9)])
+class Provenance(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = Store()
+        self.asset = _asset(self.store, self.root)
 
-    def test_missing_engine_is_a_speech_error(self):
-        with self.assertRaises(SpeechError):
-            WhisperCliEngine(exe="definitely-not-installed-asr").transcribe(Path("a.wav"))
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
 
-    def test_failing_engine_reports_its_stderr(self):
+    def _runs(self):
+        return self.store.conn.execute("SELECT * FROM asr_run ORDER BY rowid").fetchall()
+
+    def test_run_records_engine_model_vocabulary_and_corrections(self):
+        engine = FakeEngine([Word("they", 0.2, 0.4), Word("steal", 0.4, 0.9)], model="tiny.en")
+        transcribe(self.store, self.asset.id, engine, ["Okonkwo"], parse_corrections("steal => Steele"))
+        run = self._runs()[0]
+        self.assertEqual((run["engine"], run["model"], run["word_count"]), ("fake", "tiny.en", 2))
+        self.assertEqual(json.loads(run["vocabulary_used"]), ["Okonkwo"])
+        self.assertEqual(json.loads(run["corrections_applied"]), [{"heard": "steal", "replacement": "Steele", "count": 1}])
+        self.assertEqual(len(search(self.store, "steele")), 1)
+        self.assertEqual(engine.last_vocabulary, ["Okonkwo"])
+
+    def test_different_model_or_vocabulary_is_a_new_run_that_replaces_the_transcript(self):
+        a, b = FakeEngine(WORDS, model="tiny.en"), FakeEngine([Word("steal", 0.1, 0.5)], model="large-v3")
+        transcribe(self.store, self.asset.id, a)
+        self.assertEqual(transcribe(self.store, self.asset.id, b), 1)
+        self.assertEqual(len(search(self.store, "they")), 0)
+        self.assertEqual(len(self._runs()), 2)
+        transcribe(self.store, self.asset.id, b, ["Okonkwo"])
+        self.assertEqual(b.calls, 2)
+        # going back to the first configuration is a real re-run, not a stale "done"
+        self.assertEqual(transcribe(self.store, self.asset.id, a), 3)
+        self.assertEqual(a.calls, 2)
+
+    def test_uncleared_asset_is_refused_before_any_work(self):
+        (self.root / "u").mkdir()
+        asset = _asset(self.store, self.root / "u", cleared=False)
+        engine = FakeEngine(WORDS)
+        with self.assertRaisesRegex(SpeechError, "not cleared"):
+            transcribe(self.store, asset.id, engine)
+        self.assertEqual((engine.calls, _job(self.store, asset)), (0, None))
+        self.assertEqual(transcribe_pending(self.store, engine)[asset.id], "skipped: not cleared")
+        self.assertEqual(transcribe(self.store, asset.id, engine, require_cleared=False), 3)
+
+    def test_pending_never_replaces_an_existing_transcript(self):
+        transcribe(self.store, self.asset.id, FakeEngine(WORDS))
+        self.assertEqual(transcribe_pending(self.store, FakeEngine([], model="other")), {})
+
+
+class VocabularyAndCorrections(unittest.TestCase):
+    def test_vocabulary_keeps_priority_order_dedupes_and_stops_at_budget(self):
+        self.assertEqual(select_vocabulary(["Okonkwo", " okonkwo ", "", "Zed"]), ["Okonkwo", "Zed"])
+        self.assertEqual(select_vocabulary(["aaaa", "bbbb", "cc"], budget=10), ["aaaa", "bbbb"])
+        self.assertEqual(select_vocabulary(["aaaa", "bbbbbbbbbbbb", "c"], budget=10), ["aaaa"])
+
+    def test_show_vocabulary_is_title_then_rundown_slugs_in_order(self):
+        store = Store()
+        sid = "s1"
+        store.conn.execute("INSERT INTO show VALUES (?, ?, 'now')", (sid, "Tuesday Show"))
+        for pos, slug in ((2, "okonkwo-interview"), (1, "cold-open")):
+            store.conn.execute("INSERT INTO item (id, show_id, position, slug, status, created_at) VALUES (?,?,?,?, 'planned','now')",
+                               (f"i{pos}", sid, pos, slug))
+        self.assertEqual(show_vocabulary(store, "Tuesday Show"), ["Tuesday Show", "cold-open", "okonkwo-interview"])
+        self.assertEqual(show_vocabulary(store, "Unknown"), ["Unknown"])
+        store.close()
+
+    def test_corrections_are_whole_word_case_insensitive_and_keep_punctuation(self):
+        words = [Word("Okonquo,", 0, 1), Word("the", 1, 2), Word("o", 2, 3), Word("conquo.", 3, 4), Word("cat", 4, 5)]
+        out, applied = apply_corrections(words, parse_corrections("# names\nokonquo => Okonkwo\no conquo => Okonkwo\nca => X"))
+        self.assertEqual([(w.text, w.start, w.end) for w in out],
+                         [("Okonkwo,", 0, 1), ("the", 1, 2), ("Okonkwo.", 2, 4), ("cat", 4, 5)])
+        self.assertEqual([(a["heard"], a["count"]) for a in applied], [("okonquo", 1), ("o conquo", 1)])
+
+    def test_bad_corrections_line_is_loud(self):
+        with self.assertRaisesRegex(SpeechError, "line 2"):
+            parse_corrections("a => b\nnonsense")
+
+
+class RealEngine(unittest.TestCase):
+    """Real faster-whisper tiny.en on a Windows SAPI clip. Opt in with VOLT_ASR_REAL=1 (needs faster-whisper
+    importable, the tiny.en model in the HF cache or network, and powershell System.Speech)."""
+
+    @unittest.skipUnless(os.environ.get("VOLT_ASR_REAL") == "1" and sys.platform == "win32", "set VOLT_ASR_REAL=1 on Windows")
+    def test_spoken_words_are_found_on_plausible_timecode(self):
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            self.skipTest("faster-whisper not installed")
         with TemporaryDirectory() as tmp:
-            stub = Path(tmp) / "bad.py"
-            stub.write_text("import sys; sys.stderr.write('no model'); sys.exit(3)\n")
-            with self.assertRaisesRegex(SpeechError, "no model"):
-                WhisperCliEngine(exe=[sys.executable, str(stub)]).transcribe(Path("a.wav"))
+            root = Path(tmp)
+            wav = root / "say.wav"
+            subprocess.check_call(["powershell", "-NoProfile", "-Command",
+                                   "Add-Type -AssemblyName System.Speech;$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+                                   f"$s.SetOutputToWaveFile('{wav}');$s.Speak('They steal home.');$s.Dispose()"])
+            clip = root / "iso.mp4"
+            subprocess.check_call(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=s=160x90:r=25:d=4", "-i", str(wav),
+                                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(clip)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            store = Store()
+            asset = store.mint_asset(owner="desk")
+            store.set_cleared(asset.id, True)
+            store.add_essence(asset.id, role="hi-res", location=str(clip), open_file=False,
+                              frame_rate="25", timecode_start="01:00:00:00")
+            self.assertGreaterEqual(transcribe(store, asset.id, FasterWhisperEngine(device="cpu", model="tiny.en")), 3)
+            hit = search(store, "steal")[0]
+            self.assertEqual(hit.asset_id, asset.id)
+            self.assertTrue(hit.tc_in.startswith("01:00:0"), hit.tc_in)  # within the first 10 s of the essence
+            self.assertEqual(store.conn.execute("SELECT model FROM asr_run").fetchone()[0], "tiny.en")
+            store.close()
+
+
+class EngineSetup(unittest.TestCase):
+    def test_cuda_without_a_gpu_fails_loud(self):
+        from volt import speech
+        orig = speech._cuda_available
+        speech._cuda_available = lambda: False
+        try:
+            with self.assertRaisesRegex(SpeechError, "no CUDA"):
+                FasterWhisperEngine(device="cuda")
+            self.assertEqual(FasterWhisperEngine(device="auto").describe()["model"], "distil-large-v3")
+            self.assertEqual(FasterWhisperEngine(device="auto", model="tiny.en").describe()["model"], "tiny.en")
+        finally:
+            speech._cuda_available = orig
+        speech._cuda_available = lambda: True
+        try:
+            d = FasterWhisperEngine(device="auto").describe()
+            self.assertEqual((d["device"], d["model"], d["compute_type"]), ("cuda", "large-v3", "float16"))
+        finally:
+            speech._cuda_available = orig
 
 
 if __name__ == "__main__":
