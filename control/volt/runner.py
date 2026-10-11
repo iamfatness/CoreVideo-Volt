@@ -21,13 +21,14 @@ import os
 import signal
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import pg, publish as publish_mod, record, speech, storage
+from volt import chunking, pg, publish as publish_mod, record, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -85,6 +86,24 @@ class Config:
     asr_model: Optional[str] = None
     asr_device: str = "auto"
     corrections: Optional[Path] = None
+    # long-file and guard settings; every one is recorded in asr_run, so changing one is a new, recorded run
+    asr_window: float = 900.0  # seconds per window; a longer file is read window by window and resumes after a crash
+    asr_overlap: float = 15.0
+    asr_vad: bool = True  # skip non-speech audio before recognition (hallucination guard)
+    asr_vocab_mode: str = "initial_prompt"  # hotwords | initial_prompt | none
+    asr_min_word_prob: Optional[float] = None
+    asr_silence_guard: Optional[float] = None
+    asr_cpu_threads: int = 0
+    asr_idle_release: float = 900.0  # seconds idle before the model is unloaded; 0 = keep it loaded
+
+    def chunk_settings(self) -> chunking.ChunkSettings:
+        return chunking.ChunkSettings(window=self.asr_window, overlap=self.asr_overlap,
+                                      search=min(30.0, self.asr_window / 4))
+
+    def engine_options(self) -> dict:
+        return {"device": self.asr_device, "model": self.asr_model, "vad_filter": self.asr_vad,
+                "vocab_mode": self.asr_vocab_mode, "min_word_prob": self.asr_min_word_prob,
+                "silence_guard": self.asr_silence_guard, "cpu_threads": self.asr_cpu_threads}
     storage: Optional[object] = None          # a storage.Backend; None = VOLT_STORAGE, else local under publish_dir
     storage_scratch: Optional[Path] = None    # where cuts wait for upload (non-local storage)
 
@@ -102,6 +121,14 @@ class Config:
             asr_model=env.get("VOLT_ASR_MODEL") or None,
             asr_device=env.get("VOLT_ASR_DEVICE") or "auto",
             corrections=path("VOLT_ASR_CORRECTIONS"),
+            asr_window=float(env.get("VOLT_ASR_WINDOW") or cls.asr_window),
+            asr_overlap=float(env.get("VOLT_ASR_OVERLAP") or cls.asr_overlap),
+            asr_vad=(env.get("VOLT_ASR_VAD") or "1").lower() not in ("0", "false", "no", "off"),
+            asr_vocab_mode=env.get("VOLT_ASR_VOCAB_MODE") or cls.asr_vocab_mode,
+            asr_min_word_prob=float(env["VOLT_ASR_MIN_WORD_PROB"]) if env.get("VOLT_ASR_MIN_WORD_PROB") else None,
+            asr_silence_guard=float(env["VOLT_ASR_SILENCE_GUARD"]) if env.get("VOLT_ASR_SILENCE_GUARD") else None,
+            asr_cpu_threads=int(env.get("VOLT_ASR_CPU_THREADS") or 0),
+            asr_idle_release=float(env.get("VOLT_ASR_IDLE_RELEASE") or cls.asr_idle_release),
             storage_scratch=path("VOLT_STORAGE_SCRATCH"),
         )
 
@@ -127,7 +154,8 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             if kind != "faster-whisper":
                 raise Permanent(f"unknown ASR engine {kind!r} (only faster-whisper)")
             try:
-                state["engine"] = speech.FasterWhisperEngine(device=config.asr_device, model=config.asr_model)
+                # one model per process and configuration: later jobs (and later handler sets) reuse it
+                state["engine"] = speech.shared_engine(**config.engine_options())
             except speech.SpeechError as exc:
                 raise Permanent(str(exc)) from exc
         return state["engine"]
@@ -148,7 +176,10 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             if config.corrections else []
         vocabulary = speech.show_vocabulary(store, asset.show_name) if asset.show_name else []
         try:
-            speech.transcribe(store, job.asset_id, eng, vocabulary, corrections, job_id=job.id)
+            speech.transcribe(store, job.asset_id, eng, vocabulary, corrections, job_id=job.id,
+                              chunk=config.chunk_settings(),
+                              progress=lambda n, done, total: log.info(
+                                  "asr %s: window %d done, %.0f of %.0f s", job.asset_id, n, done, total))
         except speech.SpeechError as exc:
             if "still recording" in str(exc) or "no hi-res" in str(exc):
                 raise Permanent(str(exc)) from exc
@@ -202,6 +233,8 @@ class Runner:
     backoff: float = DEFAULT_BACKOFF
     backoff_cap: float = DEFAULT_BACKOFF_CAP
     poll: float = 2.0
+    release: Optional[Callable[[], object]] = None  # called once after `idle_release` seconds with no job (unload models)
+    idle_release: float = 0.0
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def __post_init__(self):
@@ -323,9 +356,16 @@ class Runner:
         return counts
 
     def run_forever(self) -> None:
+        idle_since: Optional[float] = None
         while not self._stop.is_set():
-            if not self.drain():
-                self._stop.wait(self.poll)
+            if self.drain():
+                idle_since = time.monotonic()
+                continue
+            if (idle_since is not None and self.release and self.idle_release > 0
+                    and time.monotonic() - idle_since >= self.idle_release):
+                self.release()
+                idle_since = None
+            self._stop.wait(self.poll)
 
     def stop(self) -> None:
         """Ask the loop to end. The job in flight finishes and is recorded; no new job is claimed."""
@@ -373,6 +413,15 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--asr-model", default=env.asr_model)
     ap.add_argument("--asr-device", default=env.asr_device)
     ap.add_argument("--corrections", type=Path, default=env.corrections)
+    ap.add_argument("--asr-window", type=float, default=env.asr_window, help="seconds per ASR window (long files resume per window)")
+    ap.add_argument("--asr-overlap", type=float, default=env.asr_overlap)
+    ap.add_argument("--asr-vad", type=int, choices=(0, 1), default=int(env.asr_vad))
+    ap.add_argument("--asr-vocab-mode", choices=speech.VOCAB_MODES, default=env.asr_vocab_mode)
+    ap.add_argument("--asr-min-word-prob", type=float, default=env.asr_min_word_prob)
+    ap.add_argument("--asr-silence-guard", type=float, default=env.asr_silence_guard)
+    ap.add_argument("--asr-cpu-threads", type=int, default=env.asr_cpu_threads)
+    ap.add_argument("--asr-idle-release", type=float, default=env.asr_idle_release,
+                    help="seconds idle before the model is unloaded (0 = never)")
     ap.add_argument("--lease", type=float, default=DEFAULT_LEASE)
     ap.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
     ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF)
@@ -384,11 +433,13 @@ def main(argv: list[str]) -> int:
         ap.error("a database path or DSN is required")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = Config(args.proxy_dir, args.publish_dir, args.asr_engine, args.asr_model, args.asr_device,
-                    args.corrections)
+                    args.corrections, args.asr_window, args.asr_overlap, bool(args.asr_vad), args.asr_vocab_mode,
+                    args.asr_min_word_prob, args.asr_silence_guard, args.asr_cpu_threads, args.asr_idle_release)
     pg.configure_pool_from_env(args.db, max_size=args.pg_pool_max)  # also VOLT_PG_POOL_*; heartbeats borrow
     store = Store(args.db)
     runner = Runner(store, default_handlers(config), target=args.db, lease=args.lease,
-                    max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll)
+                    max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll,
+                    release=speech.release_engines, idle_release=config.asr_idle_release)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: runner.stop())
     try:

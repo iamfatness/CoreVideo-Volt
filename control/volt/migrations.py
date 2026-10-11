@@ -63,6 +63,7 @@ MIGRATIONS = (
     Migration(6, "version storage columns",
               columns=(("version", "storage_backend", "TEXT"), ("version", "storage_key", "TEXT"),
                        ("version", "storage_sha256", "TEXT"))),
+    Migration(7, "asr settings and chunk table", columns=(("asr_run", "settings", "TEXT"),)),  # asr_chunk: CREATE IF NOT EXISTS
     # Next: Migration(7, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
