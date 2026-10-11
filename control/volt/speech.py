@@ -9,19 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
-import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from volt import timecode
+from volt import chunking, timecode
 from volt.deliverables import _probe_rate
 from volt.store import Store, _now
+
+
+log = logging.getLogger("volt.speech")
 
 
 class SpeechError(Exception):
@@ -39,11 +44,15 @@ class Word:
 class Transcription:
     words: list[Word]
     vocabulary_used: list[str] = field(default_factory=list)
+    stats: dict = field(default_factory=dict)  # per-window counters (e.g. words dropped by a guard); summed per run
 
 
 class Engine(Protocol):
     def describe(self) -> dict: ...  # engine, model, device, compute_type: the resolved choice, before running
-    def transcribe(self, wav: Path, vocabulary: Sequence[str] = ()) -> Transcription: ...
+    # `window` = (start, end) of this audio on the essence timeline, for engines that want it (the fakes do).
+    # Word times in the result are relative to the start of `wav`.
+    def transcribe(self, wav: Path, vocabulary: Sequence[str] = (),
+                   window: tuple[float, float] | None = None) -> Transcription: ...
 
 
 class FakeEngine:
@@ -57,12 +66,41 @@ class FakeEngine:
     def describe(self) -> dict:
         return {"engine": "fake", "model": self.model, "device": None, "compute_type": None}
 
-    def transcribe(self, wav: Path, vocabulary: Sequence[str] = ()) -> Transcription:
+    def transcribe(self, wav: Path, vocabulary: Sequence[str] = (),
+                   window: tuple[float, float] | None = None) -> Transcription:
         self.calls += 1
         self.last_vocabulary = list(vocabulary)
         if self.error:
             raise SpeechError(self.error)
         return Transcription(list(self.words), list(vocabulary))
+
+
+class TimelineEngine(FakeEngine):
+    """A fake that knows the whole essence. `words` are on the essence timeline; each call returns the ones that
+    fall inside the window it is given, with times relative to the window, like a real engine would. Words that
+    straddle a window edge are returned whole (or clipped by `clip_edges`), as a real engine tends to do.
+    `fail_on_call=n` raises on the n-th call (1-based) to stand in for a crash."""
+
+    def __init__(self, words: list[Word], model: str = "fake-timeline", fail_on_call: int | None = None,
+                 clip_edges: bool = False):
+        super().__init__(words, model=model)
+        self.fail_on_call = fail_on_call
+        self.clip_edges = clip_edges
+        self.windows: list[tuple[float, float]] = []
+
+    def transcribe(self, wav: Path, vocabulary: Sequence[str] = (),
+                   window: tuple[float, float] | None = None) -> Transcription:
+        self.calls += 1
+        self.last_vocabulary = list(vocabulary)
+        if self.fail_on_call == self.calls:
+            raise SpeechError("simulated crash")
+        a, b = window if window else (0.0, float("inf"))
+        self.windows.append((a, b))
+        out = []
+        for w in self.words:
+            if w.end > a and w.start < b and not (self.clip_edges and (w.start < a or w.end > b)):
+                out.append(Word(w.text, w.start - a, w.end - a))
+        return Transcription(out, list(vocabulary))
 
 
 # ---- vocabulary -------------------------------------------------------------------------------------
@@ -156,8 +194,41 @@ def apply_corrections(words: list[Word], corrections: Sequence[Correction]) -> t
 _CUDA = ("cuda", "large-v3", "float16")
 _CPU = ("cpu", "distil-large-v3", "int8")
 
+VOCAB_MODES = ("hotwords", "initial_prompt", "none")
 
-def _cuda_available() -> bool:
+
+_CUDA_LIBS_ERROR: str | None | bool = False  # False = not checked yet
+
+
+def _cuda_libs_error() -> str | None:
+    """None if the CUDA 12 runtime libraries ctranslate2 needs can be loaded, else the reason. On Windows the pip
+    wheels (nvidia-cublas-cu12) put them under site-packages/nvidia/*/bin, which is not on the DLL search path
+    until it is added here. Checked once per process."""
+    global _CUDA_LIBS_ERROR
+    if _CUDA_LIBS_ERROR is not False:
+        return _CUDA_LIBS_ERROR
+    err = None
+    if sys.platform == "win32":
+        import ctypes
+        import os
+        for entry in sys.path:
+            nv = Path(entry) / "nvidia"
+            if nv.is_dir():
+                for bin_dir in nv.glob("*/bin"):
+                    try:
+                        os.add_dll_directory(str(bin_dir))
+                    except OSError:
+                        pass
+        try:
+            ctypes.WinDLL("cublas64_12.dll")
+        except OSError:
+            err = ("a CUDA GPU is present but cublas64_12.dll cannot be loaded "
+                   "(pip install nvidia-cublas-cu12 into the same environment as faster-whisper)")
+    _CUDA_LIBS_ERROR = err
+    return err
+
+
+def _cuda_gpu() -> bool:
     try:
         import ctranslate2
         return ctranslate2.get_cuda_device_count() > 0
@@ -165,27 +236,58 @@ def _cuda_available() -> bool:
         return False
 
 
+def _cuda_available() -> bool:
+    """A GPU that can actually run: present and its runtime libraries load."""
+    return _cuda_gpu() and _cuda_libs_error() is None
+
+
+def _cuda_why_not() -> str:
+    return "cuda was requested but no CUDA GPU is available" if not _cuda_gpu() else f"cuda was requested but {_cuda_libs_error()}"
+
+
 class FasterWhisperEngine:
     """faster-whisper with word timestamps. CUDA gets large-v3 float16, otherwise CPU distil-large-v3 int8;
-    `model` and `compute_type` override. Asking for cuda without a GPU fails; there is no quiet CPU fallback."""
+    `model` and `compute_type` override. Asking for cuda without a GPU fails; there is no quiet CPU fallback.
+
+    Hallucination guards (all recorded in describe(), so a change is a new run):
+      vad_filter        skip non-speech audio before recognition (faster-whisper's bundled Silero VAD).
+      vocab_mode        how a vocabulary reaches the model: `hotwords` (decoder bias), `initial_prompt` (a
+                        glossary sentence as prior text) or `none` (the vocabulary is ignored).
+      min_word_prob     drop words the model itself was less sure of than this (None = keep all).
+      silence_guard     seconds; faster-whisper skips a silent stretch this long when it sees a hallucination.
+    """
 
     def __init__(self, device: str = "auto", model: str | None = None, compute_type: str | None = None,
-                 language: str | None = None, model_dir: str | None = None):
+                 language: str | None = None, model_dir: str | None = None, vad_filter: bool = True,
+                 vocab_mode: str = "initial_prompt", min_word_prob: float | None = None,
+                 silence_guard: float | None = None, cpu_threads: int = 0, beam_size: int = 5,
+                 condition_on_previous_text: bool = True):
         if device not in ("auto", "cuda", "cpu"):
             raise SpeechError(f"device must be auto, cuda or cpu, not {device!r}")
+        if vocab_mode not in VOCAB_MODES:
+            raise SpeechError(f"vocab_mode must be one of {', '.join(VOCAB_MODES)}, not {vocab_mode!r}")
         if device == "cuda" and not _cuda_available():
-            raise SpeechError("cuda was requested but no CUDA GPU is available")
+            raise SpeechError(_cuda_why_not())
         dev, default_model, default_compute = _CUDA if device == "cuda" or (device == "auto" and _cuda_available()) else _CPU
         self.device = dev
         self.model_name = model or default_model
         self.compute_type = compute_type or default_compute
         self.language = language
         self.model_dir = model_dir
+        self.vad_filter = vad_filter
+        self.vocab_mode = vocab_mode
+        self.min_word_prob = min_word_prob
+        self.silence_guard = silence_guard
+        self.cpu_threads = cpu_threads
+        self.beam_size = beam_size
+        self.condition_on_previous_text = condition_on_previous_text
         self._model = None
 
     def describe(self) -> dict:
         return {"engine": "faster-whisper", "model": self.model_name, "device": self.device,
-                "compute_type": self.compute_type}
+                "compute_type": self.compute_type, "vad_filter": self.vad_filter, "vocab_mode": self.vocab_mode,
+                "min_word_prob": self.min_word_prob, "silence_guard": self.silence_guard,
+                "beam_size": self.beam_size, "condition_on_previous_text": self.condition_on_previous_text}
 
     def _load(self):
         if self._model is None:
@@ -195,10 +297,20 @@ class FasterWhisperEngine:
                 raise SpeechError("faster-whisper is not installed (pip install faster-whisper)") from exc
             try:
                 self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type,
-                                           download_root=self.model_dir)
+                                           download_root=self.model_dir, cpu_threads=self.cpu_threads)
             except Exception as exc:
                 raise SpeechError(f"cannot load model {self.model_name}: {exc}") from exc
         return self._model
+
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def release(self) -> None:
+        """Drop the model so its RAM or VRAM can be returned. The next transcribe reloads it."""
+        self._model = None
+        import gc
+        gc.collect()
 
     def _select(self, vocabulary: Sequence[str]) -> list[str]:
         tok = getattr(self._load(), "hf_tokenizer", None)
@@ -207,17 +319,61 @@ class FasterWhisperEngine:
         return select_vocabulary(vocabulary, HOTWORDS_TOKEN_BUDGET,
                                  lambda t: len(tok.encode(" " + t, add_special_tokens=False).ids))
 
-    def transcribe(self, wav: Path, vocabulary: Sequence[str] = ()) -> Transcription:
+    def transcribe(self, wav: Path, vocabulary: Sequence[str] = (),
+                   window: tuple[float, float] | None = None) -> Transcription:
         model = self._load()
-        used = self._select(vocabulary) if vocabulary else []
+        used = self._select(vocabulary) if vocabulary and self.vocab_mode != "none" else []
+        extra = {}
+        if used and self.vocab_mode == "hotwords":
+            extra["hotwords"] = ", ".join(used)
+        elif used:
+            extra["initial_prompt"] = "Glossary: " + ", ".join(used) + "."
+        if self.silence_guard:
+            extra["hallucination_silence_threshold"] = self.silence_guard
+        dropped = 0
         try:
-            segments, _ = model.transcribe(str(wav), word_timestamps=True, vad_filter=False,
-                                           language=self.language, hotwords=", ".join(used) or None)
-            words = [Word(w.word.strip(), float(w.start), float(w.end))
-                     for seg in segments for w in (seg.words or []) if w.word.strip()]
+            segments, _ = model.transcribe(str(wav), word_timestamps=True, vad_filter=self.vad_filter,
+                                           language=self.language, beam_size=self.beam_size,
+                                           condition_on_previous_text=self.condition_on_previous_text, **extra)
+            words = []
+            for seg in segments:
+                for w in (seg.words or []):
+                    if not w.word.strip():
+                        continue
+                    if self.min_word_prob is not None and w.probability < self.min_word_prob:
+                        dropped += 1
+                        continue
+                    words.append(Word(w.word.strip(), float(w.start), float(w.end)))
         except Exception as exc:
             raise SpeechError(f"transcription failed: {exc}") from exc
-        return Transcription(words, used)
+        return Transcription(words, used, {"dropped_low_prob": dropped} if self.min_word_prob is not None else {})
+
+
+# ---- one engine per process -------------------------------------------------------------------------
+# A model is loaded once and reused by every job in the process. Keyed by the full construction choice.
+
+_ENGINES: dict[tuple, "FasterWhisperEngine"] = {}
+_ENGINES_LOCK = threading.Lock()
+
+
+def shared_engine(**options) -> "FasterWhisperEngine":
+    key = tuple(sorted(options.items()))
+    with _ENGINES_LOCK:
+        if key not in _ENGINES:
+            _ENGINES[key] = FasterWhisperEngine(**options)
+        return _ENGINES[key]
+
+
+def release_engines() -> int:
+    """Unload every shared model. Returns how many were loaded."""
+    with _ENGINES_LOCK:
+        n = 0
+        for eng in _ENGINES.values():
+            if eng.loaded:
+                eng.release()
+                n += 1
+        return n
+
 
 def seconds_to_tc(seconds, rate, drop: bool = False) -> str:
     """Inverse of deliverables.tc_to_seconds. Exact rate (Fraction, "30000/1001", 25); drop=True gives `;` labels."""
@@ -227,21 +383,12 @@ def seconds_to_tc(seconds, rate, drop: bool = False) -> str:
         raise SpeechError(str(exc)) from exc
 
 
-def _extract_audio(src: str, dest: Path) -> None:
-    run = subprocess.run(
-        ["ffmpeg", "-y", "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", str(dest)],
-        capture_output=True, text=True)
-    if run.returncode != 0 or not dest.exists():
-        tail = (run.stderr or "")[-300:].strip()
-        if "matches no streams" in tail or "Stream map" in tail:
-            raise SpeechError("essence has no audio")
-        raise SpeechError(tail or "ffmpeg produced no audio")
-
-
-def _run_key(info: dict, vocabulary: Sequence[str], corrections: Sequence[Correction]) -> str:
-    """Different model, device, vocabulary or corrections = a different run. Same everything = the same run."""
-    blob = json.dumps([info, list(vocabulary), [[c.heard, c.replacement] for c in corrections]], sort_keys=True)
-    return "asr-v2:" + hashlib.sha256(blob.encode()).hexdigest()[:16]
+def _run_key(info: dict, vocabulary: Sequence[str], corrections: Sequence[Correction],
+             chunk: chunking.ChunkSettings) -> str:
+    """Different model, device, vocabulary, corrections or windowing = a different run. Same everything = the same run."""
+    blob = json.dumps([info, list(vocabulary), [[c.heard, c.replacement] for c in corrections], chunk.as_dict()],
+                      sort_keys=True)
+    return "asr-v3:" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 def _run_time(store: Store) -> str:
@@ -251,18 +398,118 @@ def _run_time(store: Store) -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _fingerprint(info: dict, vocabulary: Sequence[str], chunk: chunking.ChunkSettings, location: str) -> str:
+    """What saved windows are only good for: the same file (path, size, mtime), engine, vocabulary and windowing."""
+    try:
+        st = os.stat(location)
+        ident = [location, st.st_size, int(st.st_mtime)]
+    except OSError:
+        ident = [location, None, None]
+    blob = json.dumps([ident, info, list(vocabulary), chunk.as_dict()], sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:24]
+
+
+def _saved_windows(store: Store, job_id: str, fingerprint: str) -> list[dict]:
+    """Finished windows of this job that still apply and join up from zero. Anything else is deleted: windows
+    of another configuration or file, or past a gap."""
+    rows = store.conn.execute(
+        "SELECT idx, fingerprint, own_start, own_end, words FROM asr_chunk WHERE job_id = ? ORDER BY idx",
+        (job_id,)).fetchall()
+    keep: list[dict] = []
+    end = 0.0
+    for r in rows:
+        if r["fingerprint"] != fingerprint or r["idx"] != len(keep) or abs(r["own_start"] - end) > 1e-6:
+            break
+        body = json.loads(r["words"])
+        keep.append({"idx": r["idx"], "own_start": r["own_start"], "own_end": r["own_end"],
+                     "words": [Word(t, s, e) for t, s, e in body["words"]], "quiet": body.get("quiet", True),
+                     "stats": body.get("stats", {}), "vocab_used": body.get("vocab_used", [])})
+        end = r["own_end"]
+    if len(keep) != len(rows):
+        store.conn.execute("DELETE FROM asr_chunk WHERE job_id = ? AND idx >= ?", (job_id, len(keep)))
+        store.conn.commit()
+    return keep
+
+
+def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary: Sequence[str],
+                chunk: chunking.ChunkSettings, fingerprint: str, progress=None) -> tuple[list[Word], dict, list[str]]:
+    """Transcribe an essence window by window. Returns (words on essence seconds, run facts, vocabulary used).
+
+    Each finished window is saved (its owned words and its cut) before the next starts, so a crash resumes at the
+    first unfinished window with the same cut points. A file that fits in one window is a single call and saves
+    nothing."""
+    try:
+        total = chunking.probe_duration(src)
+    except chunking.AudioError as exc:
+        raise SpeechError(str(exc)) from exc
+    windows = _saved_windows(store, job_id, fingerprint)
+    resumed = len(windows)
+    words: list[Word] = [w for win in windows for w in win["words"]]
+    quiet = sum(1 for win in windows if win["quiet"])
+    stats: dict = {}
+    for win in windows:
+        for k, v in win["stats"].items():
+            stats[k] = stats.get(k, 0) + v
+    used: list[str] = windows[0]["vocab_used"] if windows else []
+    own_start = windows[-1]["own_end"] if windows else 0.0
+    idx = resumed
+    if resumed:
+        log.info("asr %s: resuming at window %d (%.0f of %.0f s already done)", job_id, idx, own_start, total)
+    while own_start < total - 1e-6:
+        try:
+            own_end, found = chunking.next_cut(src, own_start, total, chunk)
+            last = own_end >= total - 1e-6
+            a0 = max(0.0, own_start - chunk.overlap)
+            a1 = min(total, own_end + chunk.overlap)
+            with tempfile.TemporaryDirectory() as tmp:
+                wav = Path(tmp) / "audio.wav"
+                chunking.extract(src, a0, a1 - a0, wav)
+                result = engine.transcribe(wav, vocabulary, window=(a0, a1))
+        except chunking.AudioError as exc:
+            raise SpeechError(str(exc)) from exc
+        kept = [Word(t, s, e) for t, s, e in chunking.owned(result.words, a0, own_start, own_end, last)]
+        used = used or result.vocabulary_used
+        if not (idx == 0 and last):
+            store.conn.execute(
+                "INSERT INTO asr_chunk VALUES (?,?,?,?,?,?,?)",
+                (job_id, idx, fingerprint, own_start, own_end,
+                 json.dumps({"words": [[w.text, w.start, w.end] for w in kept], "quiet": found,
+                             "stats": result.stats, "vocab_used": result.vocabulary_used}), _run_time(store)))
+            store.conn.commit()
+        words.extend(kept)
+        quiet += 1 if found else 0
+        for k, v in result.stats.items():
+            stats[k] = stats.get(k, 0) + v
+        idx += 1
+        own_start = own_end
+        if progress:
+            progress(idx, own_end, total)
+    facts = {"chunk": chunk.as_dict(), "audio_seconds": round(total, 3), "windows": idx, "resumed_windows": resumed,
+             "quiet_cuts": quiet, "hard_cuts": idx - quiet,
+             "engine_stats": stats}
+    return words, facts, used
+
+
 def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence[str] = (),
                corrections: Sequence[Correction] = (), require_cleared: bool = True,
-               job_id: str | None = None) -> int:
+               job_id: str | None = None, chunk: chunking.ChunkSettings | None = None, progress=None) -> int:
     """Index the words of one asset and record how. Returns the word count.
 
     Consent: an asset that is not cleared is refused (no job, no audio read) unless require_cleared=False.
-    The same engine/model/vocabulary/corrections on the same asset is a no-op. A different configuration is a
-    new run and replaces the asset's transcript spans, so a better model or a fuller vocabulary can be re-run
+    The same engine/model/vocabulary/corrections/windowing on the same asset is a no-op. A different configuration
+    is a new run and replaces the asset's transcript spans, so a better model or a fuller vocabulary can be re-run
     on purpose; transcribe_pending never replaces an existing transcript.
+
+    Long files are read window by window (see volt.chunking) and each finished window is saved, so a crash or a
+    lost lease resumes where it stopped instead of starting over. `progress(window_count, seconds_done, seconds_total)`
+    is called after each window.
 
     job_id: the job row a runner has already claimed for this work. It is used in place of a run-keyed job and its
     status is left to the runner (no inline done/failed), so no second queued row appears for another runner to claim."""
+    try:
+        chunk = (chunk or chunking.ChunkSettings()).validate()
+    except chunking.AudioError as exc:
+        raise SpeechError(str(exc)) from exc
     asset = store.get_asset(asset_id)
     if require_cleared and not asset.cleared:
         raise SpeechError("asset is not cleared; clear it before transcribing")
@@ -275,7 +522,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         raise SpeechError("asset is still recording; wrap it first")
     info = engine.describe()
     owned = job_id is not None
-    job = store.get_job(job_id) if owned else store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections))
+    job = store.get_job(job_id) if owned else store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections, chunk))
     latest = store.conn.execute(
         "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
         + ("" if store.postgres else ", rowid DESC") + " LIMIT 1",
@@ -286,11 +533,9 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         rate = timecode.parse_rate(essence["frame_rate"]) if essence["frame_rate"] else _probe_rate(essence["location"])
         drop = timecode.is_drop(essence["timecode_start"])  # `;` before the frames = drop-frame
         origin = timecode.tc_to_frames(essence["timecode_start"] or "00:00:00:00", rate, drop)
-        with tempfile.TemporaryDirectory() as tmp:
-            wav = Path(tmp) / "audio.wav"
-            _extract_audio(essence["location"], wav)
-            result = engine.transcribe(wav, vocabulary)
-        words, applied = apply_corrections(result.words, corrections)
+        found, facts, used = _window_run(store, job.id, essence["location"], engine, vocabulary, chunk,
+                                         _fingerprint(info, vocabulary, chunk, essence["location"]), progress)
+        words, applied = apply_corrections(found, corrections)
         one = 1 / rate
         rows = []
         for w in words:
@@ -298,6 +543,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
             f_out = origin + timecode.seconds_to_frames(max(Fraction(repr(float(w.end))), Fraction(repr(float(w.start))) + one), rate)
             rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop)))
     except Exception as exc:
+        store.conn.rollback()
         if not owned:
             store.fail_job(job.id, str(exc) or exc.__class__.__name__)
         if isinstance(exc, SpeechError):
@@ -310,10 +556,11 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         store.add_span(asset_id, "transcript", tc_in, tc_out, text=text)
     conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
     conn.execute(
-        "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (job.id, asset_id, info["engine"], info.get("model"), info.get("device"), info.get("compute_type"),
-         json.dumps(list(vocabulary)), json.dumps(result.vocabulary_used), json.dumps(applied), len(rows),
-         _run_time(store)))
+         json.dumps(list(vocabulary)), json.dumps(used), json.dumps(applied), len(rows),
+         _run_time(store), json.dumps({"engine": info, **facts})))
+    conn.execute("DELETE FROM asr_chunk WHERE job_id = ?", (job.id,))
     conn.commit()
     if not owned:
         store.complete_job(job.id)
@@ -321,7 +568,8 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
 
 
 def transcribe_pending(store: Store, engine: Engine, vocabulary: Sequence[str] = (),
-                       corrections: Sequence[Correction] = ()) -> dict[str, int | str]:
+                       corrections: Sequence[Correction] = (),
+                       chunk: chunking.ChunkSettings | None = None) -> dict[str, int | str]:
     """Run every closed asset that has no transcript. Assets that are not cleared are reported as skipped.
     One failure does not stop the rest."""
     rows = store.conn.execute(
@@ -335,7 +583,7 @@ def transcribe_pending(store: Store, engine: Engine, vocabulary: Sequence[str] =
             out[row["asset_id"]] = "skipped: not cleared"
             continue
         try:
-            out[row["asset_id"]] = transcribe(store, row["asset_id"], engine, vocabulary, corrections)
+            out[row["asset_id"]] = transcribe(store, row["asset_id"], engine, vocabulary, corrections, chunk=chunk)
         except SpeechError as exc:
             out[row["asset_id"]] = f"failed: {exc}"
     return out
@@ -349,13 +597,20 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--vocabulary", help="file, one term per line, most important first")
     ap.add_argument("--corrections", help="file of 'heard => should be' lines")
+    ap.add_argument("--window", type=float, default=900.0, help="seconds per window for long files")
+    ap.add_argument("--overlap", type=float, default=15.0)
+    ap.add_argument("--vad", type=int, choices=(0, 1), default=1, help="skip non-speech audio (hallucination guard)")
+    ap.add_argument("--vocab-mode", choices=VOCAB_MODES, default="initial_prompt")
+    ap.add_argument("--min-word-prob", type=float)
     args = ap.parse_args(argv)
     vocab = [l for l in Path(args.vocabulary).read_text(encoding="utf-8").splitlines()] if args.vocabulary else []
     corr = parse_corrections(Path(args.corrections).read_text(encoding="utf-8")) if args.corrections else []
     store = Store(args.db)
     try:
-        engine = FasterWhisperEngine(device=args.device, model=args.model)
-        for asset_id, result in transcribe_pending(store, engine, vocab, corr).items():
+        engine = FasterWhisperEngine(device=args.device, model=args.model, vad_filter=bool(args.vad),
+                                     vocab_mode=args.vocab_mode, min_word_prob=args.min_word_prob)
+        chunk = chunking.ChunkSettings(window=args.window, overlap=args.overlap, search=min(30.0, args.window / 4))
+        for asset_id, result in transcribe_pending(store, engine, vocab, corr, chunk).items():
             print(asset_id, result)
     except SpeechError as exc:
         print(f"error: {exc}", file=sys.stderr)

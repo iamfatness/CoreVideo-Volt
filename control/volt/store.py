@@ -84,7 +84,19 @@ CREATE TABLE IF NOT EXISTS asr_run (
   vocabulary_used TEXT NOT NULL,
   corrections_applied TEXT NOT NULL,
   word_count INTEGER NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  settings TEXT
+);
+
+CREATE TABLE IF NOT EXISTS asr_chunk (
+  job_id TEXT NOT NULL REFERENCES job(id),
+  idx INTEGER NOT NULL,
+  fingerprint TEXT NOT NULL,
+  own_start REAL NOT NULL,
+  own_end REAL NOT NULL,
+  words TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (job_id, idx)
 );
 
 CREATE TABLE IF NOT EXISTS show (
