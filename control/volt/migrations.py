@@ -60,7 +60,10 @@ MIGRATIONS = (
     Migration(5, "item schedule columns",
               columns=(("item", "scheduled_at", "TIMESTAMP"), ("item", "schedule_state", "TEXT"),
                        ("item", "schedule_note", "TEXT"), ("item", "schedule_claimed_at", "TIMESTAMP"))),
-    # Next: Migration(6, "...", columns=(...)). Do not add a gap or reuse a number.
+    Migration(6, "version storage columns",
+              columns=(("version", "storage_backend", "TEXT"), ("version", "storage_key", "TEXT"),
+                       ("version", "storage_sha256", "TEXT"))),
+    # Next: Migration(7, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

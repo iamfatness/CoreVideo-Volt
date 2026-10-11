@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS version (
   status TEXT NOT NULL,
   url TEXT,
   created_at TEXT NOT NULL,
+  storage_backend TEXT,
+  storage_key TEXT,
+  storage_sha256 TEXT,
   UNIQUE (asset_id, span_id, kind)
 );
 
