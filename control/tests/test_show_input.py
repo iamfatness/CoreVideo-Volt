@@ -120,6 +120,17 @@ class Evidence(unittest.TestCase):
         room = FakeRoom([obs("idle")], program=[prog(10, OLD), prog(11, NEW, OLD), prog(12, NEW, OLD)])
         _fails(self, room, "outgoing source 'zoom:1' still on program")
 
+    def test_mid_transition_layers_are_not_evidence_even_with_the_target_present(self):
+        # Observed live: old layers renamed take-out:*, new ones take-in:*, so no layer id matches the base.
+        mid = [prog(11, src("zoom:2", "2", layer="take-in:route:b-1"), src("zoom:1", "1", layer="take-out:route:a-1"))] * 2
+        room = FakeRoom([obs("idle")], program=[prog(10, OLD)] + mid)
+        _fails(self, room, "transition still rendering")
+
+    def test_confirms_once_the_transition_layers_are_gone(self):
+        mid = prog(11, src("zoom:2", "2", layer="take-in:route:b-1"), src("zoom:1", "1", layer="take-out:route:a-1"))
+        done = [prog(12, src("zoom:2", "2", layer="route:b-1")), prog(13, src("zoom:2", "2", layer="route:b-1"))]
+        _run(FakeRoom([obs("idle")], program=[prog(10, OLD), mid] + done))
+
     def test_a_source_that_was_already_on_program_is_not_outgoing(self):
         both = [prog(10, NEW), prog(11, NEW), prog(12, NEW)]
         _run(FakeRoom([obs("idle")], program=both))
