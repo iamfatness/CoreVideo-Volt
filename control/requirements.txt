@@ -2,3 +2,5 @@
 psycopg[binary]==3.3.6
 # Optional. Only needed with VOLT_STORAGE=s3; imported lazily, so a stdlib-only install still works.
 # boto3>=1.35
+# Optional, only for VOLT_PG_POOL_MAX / --pg-pool-max. Imported lazily.
+psycopg_pool==3.3.3

@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import publish as publish_mod, record, speech, storage
+from volt import pg, publish as publish_mod, record, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -377,12 +377,15 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
     ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF)
     ap.add_argument("--poll", type=float, default=2.0)
+    ap.add_argument("--pg-pool-max", type=int, default=None,
+                    help="pool up to N Postgres connections (default: off; or VOLT_PG_POOL_MAX). Use at least 2.")
     args = ap.parse_args(argv)
     if not args.db:
         ap.error("a database path or DSN is required")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = Config(args.proxy_dir, args.publish_dir, args.asr_engine, args.asr_model, args.asr_device,
                     args.corrections)
+    pg.configure_pool_from_env(args.db, max_size=args.pg_pool_max)  # also VOLT_PG_POOL_*; heartbeats borrow
     store = Store(args.db)
     runner = Runner(store, default_handlers(config), target=args.db, lease=args.lease,
                     max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll)
@@ -399,6 +402,7 @@ def main(argv: list[str]) -> int:
         return 0
     finally:
         store.close()
+        pg.close_pools()
 
 
 if __name__ == "__main__":
