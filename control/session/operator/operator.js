@@ -668,6 +668,14 @@
     if (e.key >= '1' && e.key <= '4') { location.hash = '#' + SCREENS[+e.key - 1]; return; }
     if (S.screen !== 'show' || !S.data) return;
     const k = e.key.toLowerCase();
+    // Space takes only when nothing interactive has focus, so a focused button keeps its own Space.
+    // Pointer clicks drop focus (see init), so Space after clicking Hold does not press Hold again.
+    if (e.key === ' ' || e.code === 'Space') {
+      if (t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],[tabindex]')) return;
+      e.preventDefault();
+      if (!e.repeat) takeNow(true);
+      return;
+    }
     if (k === 't') { if (!e.repeat) takeNow(true); return; }
     if (k === 'h') { if (!e.repeat) toggleHold(); return; }
     if (k === 's' && S.selected && !e.repeat) { const it = showInfo().items.find((i) => i.id === S.selected); if (it && it.status === 'ready') skipItem(it.id); return; }
@@ -695,7 +703,12 @@
     $('keys-btn').addEventListener('click', () => $('keys-dlg').showModal());
     $('keys-close').addEventListener('click', () => $('keys-dlg').close());
     document.addEventListener('keydown', onKey);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.armed) { S.armed = null; render(); } });
+    // A mouse click leaves focus on the button it pressed. Drop it so Space is TAKE, not that button again.
+    document.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest && e.target.closest('button');
+      if (b && e.detail > 0) setTimeout(() => { if (document.activeElement === b) b.blur(); }, 0);
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (S.armed) { S.armed = null; render(); } else if (document.activeElement && document.activeElement !== document.body && !anyDialog()) document.activeElement.blur(); } });
     window.addEventListener('hashchange', () => setScreen(location.hash.slice(1)));
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); schedule(); } });
     const tick = () => { $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false }); };
