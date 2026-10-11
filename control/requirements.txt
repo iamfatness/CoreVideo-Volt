@@ -1,1 +1,2 @@
+# Optional. Only needed for a postgres:// store; SQLite and the tests need nothing.
 psycopg[binary]==3.3.6

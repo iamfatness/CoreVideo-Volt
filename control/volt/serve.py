@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from volt.playout import hold_state
 from volt.session import list_assets, rundown, seek_hit
+from volt.pg import is_dsn
 from volt.store import Store
 
 ROOT = Path(__file__).resolve().parents[1] / "session"
-DB_PATH = str(Path(__file__).resolve().parents[1] / "volt.db")
+# VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
+DB_PATH = os.environ.get("VOLT_DB") or str(Path(__file__).resolve().parents[1] / "volt.db")
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        store = Store(DB_PATH)
+        # One connection per request. Postgres schema is applied once in main().
+        store = Store(DB_PATH, init=not is_dsn(DB_PATH))
         try:
             self._route(store)
         finally:
@@ -73,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    Store(DB_PATH).close()  # bootstrap the schema once
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
     print("Volt session on http://127.0.0.1:8765")
     server.serve_forever()

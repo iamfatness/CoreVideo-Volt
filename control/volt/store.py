@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from volt import pg
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -159,7 +161,18 @@ class Job:
 
 
 class Store:
-    def __init__(self, path: str = ":memory:"):
+    def __init__(self, path: str = ":memory:", init: bool = True):
+        """`path` is a SQLite path, or a postgres:// DSN (needs psycopg).
+
+        init=False skips schema bootstrap on postgres, for callers that did it.
+        """
+        if pg.is_dsn(path):
+            self.conn = pg.PgConnection(path)
+            self.IntegrityError = self.conn.IntegrityError
+            if init:
+                self.conn.apply_schema()
+            return
+        self.IntegrityError = sqlite3.IntegrityError
         self.conn = sqlite3.connect(path, timeout=10)
         self.conn.row_factory = sqlite3.Row
         if path != ":memory:":
@@ -194,7 +207,7 @@ class Store:
         self.conn.execute(
             """INSERT INTO asset
                (id, owner, retention_class, legal_hold, cleared, show_name, room, camera, source_key, created_at)
-               VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, FALSE, FALSE, ?, ?, ?, ?, ?)""",
             (asset_id, owner, retention_class, show_name, room, camera, source_key, _now()),
         )
         self.conn.commit()
@@ -240,7 +253,7 @@ class Store:
             return self.mint_asset(
                 owner, retention_class, show_name, room, camera, source_key=source_key
             )
-        except sqlite3.IntegrityError:
+        except self.IntegrityError:
             self.conn.rollback()
             winner = self.find_by_source(source_key)
             if winner is None:
@@ -250,14 +263,14 @@ class Store:
     def set_hold(self, asset_id: str, held: bool) -> None:
         self.conn.execute(
             "UPDATE asset SET legal_hold = ? WHERE id = ?",
-            (1 if held else 0, asset_id),
+            (bool(held), asset_id),
         )
         self.conn.commit()
 
     def set_cleared(self, asset_id: str, cleared: bool) -> None:
         self.conn.execute(
             "UPDATE asset SET cleared = ? WHERE id = ?",
-            (1 if cleared else 0, asset_id),
+            (bool(cleared), asset_id),
         )
         self.conn.commit()
 
@@ -289,7 +302,7 @@ class Store:
                 frame_rate,
                 timecode_start,
                 audio_layout,
-                1 if open_file else 0,
+                bool(open_file),
                 _now(),
             ),
         )
@@ -298,7 +311,7 @@ class Store:
 
     def wrap_essence(self, essence_id: str, checksum: str) -> None:
         self.conn.execute(
-            "UPDATE essence SET open = 0, checksum = ? WHERE id = ?",
+            "UPDATE essence SET open = FALSE, checksum = ? WHERE id = ?",
             (checksum, essence_id),
         )
         self.conn.commit()
@@ -379,7 +392,7 @@ class Store:
             raise NotClearedError(asset_id)
 
 
-def _job(row: sqlite3.Row) -> Job:
+def _job(row) -> Job:
     return Job(
         id=row["id"],
         asset_id=row["asset_id"],

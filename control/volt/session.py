@@ -31,7 +31,7 @@ class Seek:
 def list_assets(store: Store) -> list[AssetRow]:
     rows = store.conn.execute(
         """SELECT a.id, a.show_name, a.camera,
-                  COALESCE(MAX(e.open), 0) AS open
+                  COALESCE(MAX(CASE WHEN e.open THEN 1 ELSE 0 END), 0) AS open
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
            GROUP BY a.id

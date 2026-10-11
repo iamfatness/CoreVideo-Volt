@@ -90,7 +90,7 @@ class Playout(unittest.TestCase):
         show, (a, b, c) = _show(store)
         clock = Clock()
         go(store, show, clock)
-        store.conn.execute("UPDATE asset SET cleared = 0")
+        store.conn.execute("UPDATE asset SET cleared = FALSE")
         store.conn.commit()
         with self.assertRaises(NotClearedError):
             go(store, show, clock)
