@@ -19,7 +19,7 @@ Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps
 
 | Key | Does |
 | --- | --- |
-| `T` | TAKE. Ignored on key repeat, in a text field, within 1.5 s of the last take, while any sequenced request runs, while held, with no next item, or with no live connection. |
+| `Space`, `T` | TAKE. Space applies only when no button, link or field has focus (a focused control keeps its own Space; `Esc` drops focus; a mouse click drops focus after it acts). Ignored on key repeat, in a text field, within 1.5 s of the last take, while any sequenced request runs, while held, with no next item, or with no live connection. |
 | `H` | Hold, or release when held. |
 | Up, Down | Move between rundown rows (selection follows). |
 | `S` | Skip the selected ready row. |
