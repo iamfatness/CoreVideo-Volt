@@ -120,6 +120,12 @@ real windows each appear once; both passed here.
 - The idle-release path is unit-tested; unloading was not observed to return VRAM in a long-lived runner.
 - macOS/Linux CUDA path and non-Windows DLL handling untested.
 
+## Replacing a transcript is atomic
+
+`transcribe` used to delete the old transcript spans and commit, then insert the new spans one commit each, so a reader on another connection could see no transcript or half of one, a failure in between left a partial transcript, and two transcribes of one asset could leave both runs' spans mixed. The delete, the span inserts, this run's `asr_run` row and the removal of its `asr_chunk` windows are now one transaction under a per-asset lock (`transcript:<asset>`; a Postgres advisory lock, and SQLite's write lock already serializes). A reader sees the old transcript with the old run record or the new one with the new, never a half; a failure rolls back to the old transcript; two transcribes of one asset queue at that point (after the engine work, so the model is never held behind a lock) and the later one replaces the earlier one whole. The per-window checkpoints are unchanged: windows are still committed one by one while the engine works, and are deleted only in the same commit that publishes the transcript. Legal hold does not block this; the consent gate (`cleared`) is checked as before. Tests: `tests/test_race_transcribe.py`.
+
+Not covered: two runners transcribing the same asset still both pay for the engine work (the runner claim stops this for one job, not for a hand-run `transcribe` beside a runner); the last to finish wins. The `asr_chunk` primary-key collision between a stale runner and its replacement (above) is unchanged.
+
 ## Schema (for the migration)
 
 - `asr_run.settings` TEXT NULL (JSON), existing rows NULL.

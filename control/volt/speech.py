@@ -23,7 +23,7 @@ from typing import Protocol, Sequence
 
 from volt import chunking, timecode
 from volt.deliverables import _probe_rate
-from volt.store import Store, _now
+from volt.store import Store, _id, _now
 
 
 log = logging.getLogger("volt.speech")
@@ -550,18 +550,25 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
             raise
         raise SpeechError(str(exc)) from exc
     conn = store.conn
-    conn.execute("DELETE FROM span WHERE asset_id = ? AND kind = 'transcript'", (asset_id,))
-    conn.commit()
-    for text, tc_in, tc_out in rows:
-        store.add_span(asset_id, "transcript", tc_in, tc_out, text=text)
-    conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
-    conn.execute(
-        "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (job.id, asset_id, info["engine"], info.get("model"), info.get("device"), info.get("compute_type"),
-         json.dumps(list(vocabulary)), json.dumps(used), json.dumps(applied), len(rows),
-         _run_time(store), json.dumps({"engine": info, **facts})))
-    conn.execute("DELETE FROM asr_chunk WHERE job_id = ?", (job.id,))
-    conn.commit()
+    # The replacement is one transaction: the old transcript spans, the new ones, this run's record and its
+    # saved windows change together or not at all, so a reader on another connection sees the old transcript
+    # or the new one and never a half. The per-asset lock serializes two transcribes of one asset (they
+    # queue here, after the slow engine work above, and the later one replaces the earlier one whole).
+    with store.transaction(f"transcript:{asset_id}"):
+        conn.execute("DELETE FROM span WHERE asset_id = ? AND kind = 'transcript'", (asset_id,))
+        stamp = _now()
+        for text, tc_in, tc_out in rows:
+            conn.execute(
+                """INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at)
+                   VALUES (?, ?, 'transcript', ?, ?, ?, ?)""",
+                (_id(), asset_id, tc_in, tc_out, text, stamp))
+        conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
+        conn.execute(
+            "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (job.id, asset_id, info["engine"], info.get("model"), info.get("device"), info.get("compute_type"),
+             json.dumps(list(vocabulary)), json.dumps(used), json.dumps(applied), len(rows),
+             _run_time(store), json.dumps({"engine": info, **facts})))
+        conn.execute("DELETE FROM asr_chunk WHERE job_id = ?", (job.id,))
     if not owned:
         store.complete_job(job.id)
     return len(rows)
