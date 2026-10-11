@@ -170,7 +170,7 @@ class VocabularyAndCorrections(unittest.TestCase):
     def test_show_vocabulary_is_title_then_rundown_slugs_in_order(self):
         store = Store()
         sid = "s1"
-        store.conn.execute("INSERT INTO show VALUES (?, ?, 'now')", (sid, "Tuesday Show"))
+        store.conn.execute("INSERT INTO show (id, title, created_at) VALUES (?, ?, 'now')", (sid, "Tuesday Show"))
         for pos, slug in ((2, "okonkwo-interview"), (1, "cold-open")):
             store.conn.execute("INSERT INTO item (id, show_id, position, slug, status, created_at) VALUES (?,?,?,?, 'planned','now')",
                                (f"i{pos}", sid, pos, slug))
