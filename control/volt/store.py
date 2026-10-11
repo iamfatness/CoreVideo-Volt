@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from volt import pg
+from volt import migrations, pg
 
 
 def _now() -> str:
@@ -136,6 +138,41 @@ CREATE TABLE IF NOT EXISTS cue (
 """
 
 
+class _LiteConnection(sqlite3.Connection):
+    """sqlite3 connection with the same transaction() the Postgres adapter has.
+
+    Inside transaction() a commit() from the code being run is held back until the block ends, so a
+    function that commits at its own end (take, advance) can be composed into one atomic step."""
+
+    _depth = 0
+
+    def commit(self):
+        if not self._depth:
+            super().commit()
+
+    @contextmanager
+    def transaction(self, lock=None):
+        # `lock` is the Postgres advisory-lock name; SQLite's write lock already serializes writers.
+        if self._depth:
+            self._depth += 1
+            try:
+                yield
+            finally:
+                self._depth -= 1
+            return
+        if not self.in_transaction:
+            self.execute("BEGIN IMMEDIATE")  # take the write lock now, so the reads below cannot go stale
+        self._depth = 1
+        try:
+            yield
+        except BaseException:
+            self._depth = 0
+            self.rollback()
+            raise
+        self._depth = 0
+        super().commit()
+
+
 class HoldError(Exception):
     pass
 
@@ -178,31 +215,57 @@ class Store:
             self.conn = pg.PgConnection(path)
             self.IntegrityError = self.conn.IntegrityError
             if init:
-                self.conn.apply_schema()
+                try:
+                    self.conn.apply_schema()
+                except BaseException:
+                    self.conn.close()  # a failed bootstrap must not strand a connection (or pool slot)
+                    raise
             return
         self.IntegrityError = sqlite3.IntegrityError
-        self.conn = sqlite3.connect(path, timeout=10)
-        self.conn.row_factory = sqlite3.Row
-        if path != ":memory:":
-            self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
+        self.conn = sqlite3.connect(path, timeout=10, factory=_LiteConnection)
+        try:
+            self.conn.row_factory = sqlite3.Row
+            if path != ":memory:":
+                self._enable_wal()
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def _enable_wal(self) -> None:
+        # Switching the journal mode needs the file to itself and ignores the busy timeout, so processes
+        # starting together can get "database is locked". The mode persists once one of them wins.
+        for attempt in range(50):
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.05)
 
     def _migrate(self) -> None:
-        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(item)")}
-        for column in ("as_run_in", "as_run_out", "scheduled_at", "schedule_state", "schedule_note",
-                       "schedule_claimed_at"):
-            if column not in have:
-                self.conn.execute(f"ALTER TABLE item ADD COLUMN {column} TEXT")
-        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(show)")}
-        for column in ("hold_reason", "held_at"):
-            if column not in have:
-                self.conn.execute(f"ALTER TABLE show ADD COLUMN {column} TEXT")
-        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(job)")}
-        for column in ("claimed_by", "lease_expires_at", "run_after"):
-            if column not in have:
-                self.conn.execute(f"ALTER TABLE job ADD COLUMN {column} TEXT")
+        """Bring an older SQLite file to the latest shape. See volt/migrations.py."""
         self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")  # two processes starting together take turns
+        try:
+            migrations.run(migrations.SqliteBackend(self.conn))
+        except BaseException:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+
+    @contextmanager
+    def transaction(self, lock: Optional[str] = None):
+        """Run a read-modify-write as one atomic step, one at a time per `lock` name.
+
+        Use it when a decision is made from a read and then written (next position, who is on air, is it
+        free). Without it two writers can both read the same state. `lock` is a name such as
+        f"show:{show_id}"; the same name serializes across threads and processes on Postgres (advisory
+        lock) and SQLite serializes every writer anyway. Reentrant. Commits on exit, rolls back on error."""
+        with self.conn.transaction(lock):
+            yield
 
     def close(self) -> None:
         self.conn.close()
@@ -348,35 +411,30 @@ class Store:
         return span_id
 
     def enqueue(self, asset_id: str, job_type: str, idempotency_key: str) -> Job:
+        """Queue a job once per (asset, type, key). A failed one is re-queued with its attempt counted.
+
+        Safe to race: the insert and the re-queue are each one conditional statement, so two callers
+        end with one row and a single attempt increment."""
         self.get_asset(asset_id)
-        existing = self.conn.execute(
-            """SELECT * FROM job
-               WHERE asset_id = ? AND type = ? AND idempotency_key = ?""",
-            (asset_id, job_type, idempotency_key),
-        ).fetchone()
-        if existing is not None:
-            if existing["status"] == "failed":
-                self.conn.execute(
-                    """UPDATE job
-                       SET status = 'queued', attempt = attempt + 1, error = NULL, updated_at = ?
-                       WHERE id = ?""",
-                    (_now(), existing["id"]),
-                )
-                self.conn.commit()
-                existing = self.conn.execute(
-                    "SELECT * FROM job WHERE id = ?", (existing["id"],)
-                ).fetchone()
-            return _job(existing)
-        job_id = _id()
         now = _now()
-        self.conn.execute(
-            """INSERT INTO job
-               (id, asset_id, type, idempotency_key, status, attempt, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'queued', 1, ?, ?)""",
-            (job_id, asset_id, job_type, idempotency_key, now, now),
-        )
-        self.conn.commit()
-        row = self.conn.execute("SELECT * FROM job WHERE id = ?", (job_id,)).fetchone()
+        with self.transaction():
+            self.conn.execute(
+                """INSERT INTO job
+                   (id, asset_id, type, idempotency_key, status, attempt, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'queued', 1, ?, ?)
+                   ON CONFLICT (asset_id, type, idempotency_key) DO NOTHING""",
+                (_id(), asset_id, job_type, idempotency_key, now, now),
+            )
+            self.conn.execute(
+                """UPDATE job
+                   SET status = 'queued', attempt = attempt + 1, error = NULL, updated_at = ?
+                   WHERE asset_id = ? AND type = ? AND idempotency_key = ? AND status = 'failed'""",
+                (now, asset_id, job_type, idempotency_key),
+            )
+            row = self.conn.execute(
+                """SELECT * FROM job WHERE asset_id = ? AND type = ? AND idempotency_key = ?""",
+                (asset_id, job_type, idempotency_key),
+            ).fetchone()
         return _job(row)
 
     def get_job(self, job_id: str) -> Job:
