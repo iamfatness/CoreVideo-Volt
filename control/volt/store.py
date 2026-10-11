@@ -1,4 +1,4 @@
-"""Volt control plane. SQLite runs the contract. Postgres is the same objects."""
+﻿"""Volt control plane. SQLite runs the contract. Postgres is the same objects."""
 
 from __future__ import annotations
 
@@ -66,6 +66,20 @@ CREATE TABLE IF NOT EXISTS job (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (asset_id, type, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS asr_run (
+  job_id TEXT PRIMARY KEY REFERENCES job(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  engine TEXT NOT NULL,
+  model TEXT,
+  device TEXT,
+  compute_type TEXT,
+  vocabulary_requested TEXT NOT NULL,
+  vocabulary_used TEXT NOT NULL,
+  corrections_applied TEXT NOT NULL,
+  word_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS show (
