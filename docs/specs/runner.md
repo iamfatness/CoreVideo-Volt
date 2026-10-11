@@ -39,6 +39,12 @@ The engine comes from `VOLT_ASR_ENGINE=faster-whisper` (plus `VOLT_ASR_MODEL`, `
 
 SIGINT or SIGTERM (or `Runner.stop()`): the job in flight finishes and is recorded, no new job is claimed, the process exits 0. `--once` drains every due job and exits; it returns 1 if any job ended `failed` in that run.
 
+## Two proxy builds of one asset
+
+The record-start proxy (`proxy:<source>`) and the final proxy (`proxy-final:<asset>`) are separate jobs, so two runners can build the same asset's proxy at once. Job keys and leases are unchanged. `record.build_proxy` now has ffmpeg write a private temp name (`<asset>.<token>.part.mp4`) and renames it over `<asset>.mp4` with `os.replace`, so two runners never write the same path, a reader sees the old proxy or a complete new one, and a failed or killed build leaves the old file alone (before, `-y` truncated the live proxy and a failed build left a partial file that counted as success). The proxy essence row is checked and inserted under a per-asset lock (`proxy-essence:<asset>`), so two builds leave one row. Tests: `tests/test_race_proxy.py`.
+
 ## Not covered
 
-Two runners can still build the same asset's proxy file at once (the record-start proxy and the final proxy are separate jobs). A manually re-enqueued failed job past the attempt cap gets one more run.
+A manually re-enqueued failed job past the attempt cap gets one more run.
+
+Both proxy jobs may still do the encode (the work is duplicated, last rename wins). A build that began while the source was still recording can finish after the final proxy and replace it with the shorter file; the final job's freshness check compares file times, not durations, so it may not rebuild (not reproduced). Not exercised here: a real ffmpeg on two runners (the tests stand in for ffmpeg).
