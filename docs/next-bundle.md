@@ -51,7 +51,7 @@ Each is a job on an existing asset. Idempotency and the job table are already in
 - Speech worker that writes transcript word spans. Today `index_words` is fed by hand.
 - Deliverable transcodes: house, OTT, social. Publish URLs are placeholders.
 - Postgres as the running store. `schema.sql` exists and a test keeps it matched, but `Store` is SQLite only.
-- Hold in playout, and a clock that fires on a schedule.
+- A clock that fires on a schedule. (Hold in playout is built; see the playout spec.)
 - Done when: a recorded clip becomes searchable text and three files with real URLs.
 
 ## Not now

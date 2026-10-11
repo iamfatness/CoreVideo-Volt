@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS job (
 CREATE TABLE IF NOT EXISTS show (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  hold_reason TEXT,
+  held_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS item (
@@ -156,6 +158,10 @@ class Store:
         for column in ("as_run_in", "as_run_out"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE item ADD COLUMN {column} TEXT")
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(show)")}
+        for column in ("hold_reason", "held_at"):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE show ADD COLUMN {column} TEXT")
         self.conn.commit()
 
     def close(self) -> None:
