@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from volt import operator_state
 from volt.live import finish_recording, start_recording
 from volt.pg import is_dsn
 from volt.playout import HeldError, PlayoutError, advance, hold, hold_state, release, skip
@@ -29,6 +30,13 @@ from volt.store import NotClearedError, Store
 from volt.take import take_item
 
 ROOT = Path(__file__).resolve().parents[1] / "session"
+# The operator UI: three same-origin static files, no build step. Open without a token
+# (like "/"), so a page can ask for the token; every data route stays gated.
+STATIC = {
+    "/operator": ("operator/index.html", "text/html; charset=utf-8"),
+    "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
+    "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
+}
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
 DB_PATH = os.environ.get("VOLT_DB") or str(Path(__file__).resolve().parents[1] / "volt.db")
 OUT_DIR = Path(os.environ.get("VOLT_OUT") or Path(__file__).resolve().parents[1] / "out")
@@ -381,6 +389,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path in STATIC:
+            self._static(path)
+            return
         if path != "/" and not self._gate():
             return
         # One connection per request. Postgres schema is applied once in main().
@@ -448,6 +459,9 @@ class Handler(BaseHTTPRequestHandler):
             body = (ROOT / "index.html").read_bytes()
             self._send(200, "text/html", body)
             return
+        if parsed.path == "/api/state":
+            self._json(200, self._operator_state(STORE, parse_qs(parsed.query).get("show", [""])[0]))
+            return
         if parsed.path == "/assets":
             rows = [
                 {"id": row.id, "show": row.show_name, "camera": row.camera, "open": row.open}
@@ -479,6 +493,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps(payload).encode())
             return
         self._send(404, "text/plain", b"not found")
+
+    def _static(self, path: str):
+        name, ctype = STATIC[path]
+        # Host check only: with no token this server answers loopback only (DNS rebinding guard).
+        if not TOKEN and not _is_loopback(_host_name(self.headers.get("Host") or "")):
+            self._error(ApiError(403, "bad_host", "this server answers on loopback only"))
+            return
+        body = (ROOT / name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # Same-origin only: nothing external may load, and the page may not be framed.
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; script-src 'self'; style-src 'self'; "
+                         "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+                         "form-action 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _operator_state(self, store, show_id: str) -> dict:
+        """GET /api/state?show=<id>. No show means the newest. The /rundown shape stays in rundown_payload."""
+        listing = operator_state.shows(store)
+        if not show_id and listing:
+            show_id = listing[-1]["id"]
+        rundown = None
+        if show_id:
+            try:
+                rundown = rundown_payload(store, show_id)
+            except KeyError:  # a remembered show that no longer exists: fall back to the newest
+                show_id = listing[-1]["id"] if listing else None
+                rundown = rundown_payload(store, show_id) if show_id else None
+        return operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room))
 
     def _json(self, status: int, payload: dict):
         self._send(status, "application/json", json.dumps(payload).encode())
