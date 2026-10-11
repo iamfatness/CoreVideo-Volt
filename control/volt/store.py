@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS version (
   status TEXT NOT NULL,
   url TEXT,
   created_at TEXT NOT NULL,
+  storage_backend TEXT,
+  storage_key TEXT,
+  storage_sha256 TEXT,
   UNIQUE (asset_id, span_id, kind)
 );
 
@@ -197,6 +200,10 @@ class Store:
         for column in ("claimed_by", "lease_expires_at", "run_after"):
             if column not in have:
                 self.conn.execute(f"ALTER TABLE job ADD COLUMN {column} TEXT")
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(version)")}
+        for column in ("storage_backend", "storage_key", "storage_sha256"):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE version ADD COLUMN {column} TEXT")
         self.conn.commit()
 
     def close(self) -> None:

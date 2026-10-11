@@ -1,2 +1,4 @@
 # Optional. Only needed for a postgres:// store; SQLite and the tests need nothing.
 psycopg[binary]==3.3.6
+# Optional. Only needed with VOLT_STORAGE=s3; imported lazily, so a stdlib-only install still works.
+# boto3>=1.35

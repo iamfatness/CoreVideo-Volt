@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import publish as publish_mod, record, speech
+from volt import publish as publish_mod, record, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -85,6 +85,8 @@ class Config:
     asr_model: Optional[str] = None
     asr_device: str = "auto"
     corrections: Optional[Path] = None
+    storage: Optional[object] = None          # a storage.Backend; None = VOLT_STORAGE, else local under publish_dir
+    storage_scratch: Optional[Path] = None    # where cuts wait for upload (non-local storage)
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -100,6 +102,7 @@ class Config:
             asr_model=env.get("VOLT_ASR_MODEL") or None,
             asr_device=env.get("VOLT_ASR_DEVICE") or "auto",
             corrections=path("VOLT_ASR_CORRECTIONS"),
+            storage_scratch=path("VOLT_STORAGE_SCRATCH"),
         )
 
 
@@ -152,10 +155,17 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             raise
 
     def publish(store: Store, job: Claimed) -> None:
-        out_dir = _need(config.publish_dir, "publish directory", "VOLT_PUBLISH_DIR or --publish-dir")
         span_id = job.key.split(":", 1)[1]
         try:
-            versions = publish_mod.publish_files(store, span_id, out_dir)
+            backend = config.storage or storage.from_env(local_root=config.publish_dir)
+        except storage.StorageError as exc:
+            raise Permanent(str(exc)) from exc
+        out_dir = config.publish_dir
+        if isinstance(backend, storage.LocalBackend):
+            out_dir = _need(out_dir, "publish directory", "VOLT_PUBLISH_DIR or --publish-dir")
+        try:
+            versions = publish_mod.publish_files(store, span_id, out_dir, backend=backend,
+                                                 scratch=config.storage_scratch)
         except KeyError as exc:
             raise Permanent(f"span {span_id} not found") from exc
         except Exception as exc:

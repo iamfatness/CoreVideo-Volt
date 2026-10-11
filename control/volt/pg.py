@@ -26,6 +26,9 @@ _ADDED_COLUMNS = (
     ("job", "claimed_by", "TEXT"),
     ("job", "lease_expires_at", "TIMESTAMPTZ"),
     ("job", "run_after", "TIMESTAMPTZ"),
+    ("version", "storage_backend", "TEXT"),
+    ("version", "storage_key", "TEXT"),
+    ("version", "storage_sha256", "TEXT"),
 )
 
 
