@@ -49,10 +49,10 @@ State on `main`: store (SQLite and Postgres), room adapter, live record, cue dis
 
 A1, A2, A3, A4 touch different files. A1 and B4 both touch the job claim path, so B4 waits. A3 and B1 both touch `deliverables.py`, so B1 waits. The lead merges in the order A3, A1, A4, A2, then Wave B as each unblocks.
 
-## Decisions for the owner
+## Decisions (owner, 2026-10-11)
 
-1. What to change in the mockups before B5, and whether to merge PR #8 now as the starting point.
-2. `/rundown` is now `{hold, items}`. Keep it, or restore the bare list plus a `/hold` endpoint.
-3. Should legal hold block transcription? Today it does not.
-4. Object storage target for B1: S3-compatible, and which provider.
-5. Whether to run Wave A now. It is four agents and no live core.
+1. Mockups: good start, PR #8 merged as the starting point. B5 revises them before wiring.
+2. `/rundown` shape: undecided. Default stays `{hold, items}` until the owner picks.
+3. Legal hold does not block transcription.
+4. Storage: support AWS, Azure and GCP behind one interface. AWS (S3) first, since it is the most common in production workflows. B1 builds the interface and the S3 backend; Azure Blob and GCS follow.
+5. Wave A (A1 to A4) approved to start.
