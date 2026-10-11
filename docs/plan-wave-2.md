@@ -2,6 +2,35 @@
 
 State on `main`: store (SQLite and Postgres), room adapter, live record, cue dispatch, playout with hold and as-run, take, deliverable files, speech worker. 118 tests. Nothing has run against a live core. Operator mockups are in PR #8 and the owner called them a good start.
 
+## Status (2026-10-11)
+
+Wave A and Wave B are on `main`, except B3. The suite is 416 tests, run on SQLite and on live Postgres 16, and CI runs three jobs per PR (ubuntu, windows, postgres).
+
+| Item | PR | State |
+|---|---|---|
+| A1 Job runner | #18 | Merged |
+| A2 Operator API | #16 | Merged |
+| A3 Timecode, drop-frame | #17 | Merged |
+| A4 show-input.take against the fake room | #15 | Merged. Live action names are config until CoreVideoPro #861 lands. |
+| B1 Storage seam, AWS S3 first | #20 | Merged. Verified against MinIO only; real AWS not tried. Azure and GCS are stubs. |
+| B2 Schedule clock | #19 | Merged |
+| B3 Speech at scale | not yet | In progress: chunked long files, model benchmarks, hallucination guard. Its columns, if any, are migration 7. |
+| B4 Postgres hardening | #22 | Merged. Versioned migrations in `volt/migrations.py`. |
+| B5 Operator UI | #21, #23 | Merged; #23 makes Space the take key. |
+
+Schema changes now go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number.
+
+Still open after this wave:
+
+- Live proof against a real core (record, stream, lower third). Blocked while another agent owns the core.
+- Live `show-input.take`, after CoreVideoPro #861.
+- Real AWS check of the S3 backend, once the owner has a bucket. Azure Blob and GCS backends. Re-signing expiring S3 URLs on a schedule.
+- Races left across processes: publishing one span from two writers, `kill` racing `go`, `speech.transcribe` replacing transcript spans.
+- The record-start proxy and the final proxy can build the same file at once on two runners.
+- `GET /rundown?show=<unknown>` drops the connection.
+- Failed cues are not persisted server-side (the UI shows them until the next take).
+- Shot spans and the NLE panel.
+
 ## What the investigation found
 
 1. **Nothing runs the jobs.** Proxy, speech and publish are functions. The job table has queued jobs and no process claims them. A recorded clip does not become searchable text and three files on its own. This is the biggest gap and it blocks the "one asset ID" story.
