@@ -74,9 +74,21 @@ def take(store: Store, item_id: str) -> None:
         store.conn.execute("UPDATE item SET status = 'on air' WHERE id = ?", (item_id,))
 
 
-def kill(store: Store, item_id: str) -> None:
-    store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
-    store.conn.commit()
+def kill(store: Store, item_id: str) -> bool:
+    """Kill a ready item. Returns True when this call killed it, False when it was not ready (on air, aired,
+    skipped, already killed) or does not exist; the status is then left alone.
+
+    The decision is one conditional write (`WHERE status = 'ready'`) taken under the show's lock, the same one
+    go and take hold while they pick and air the next item. So a kill and a go that race get one outcome: the
+    go airs the item and the kill returns False, or the kill lands first and the go passes the item over. An
+    item is never killed after it went on air, so no cue is sent for a killed item."""
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        return False
+    with store.transaction(show_lock(row["show_id"])):
+        cur = store.conn.execute(
+            "UPDATE item SET status = 'killed' WHERE id = ? AND status = 'ready'", (item_id,))
+    return cur.rowcount == 1
 
 
 def reorder(store: Store, show_id: str, item_ids: list[str]) -> None:

@@ -36,8 +36,12 @@ class RundownContract(unittest.TestCase):
         store.set_cleared(asset.id, True)
         take(store, item_id)
         self.assertEqual(items(store, show_id)[0].status, "on air")
-        kill(store, item_id)
-        self.assertEqual(items(store, show_id)[0].status, "killed")
+        self.assertFalse(kill(store, item_id))  # on air: a kill is refused, not applied
+        self.assertEqual(items(store, show_id)[0].status, "on air")
+        other = add_item(store, show_id, "Other")
+        attach(store, other, span_id)
+        self.assertTrue(kill(store, other))
+        self.assertEqual(items(store, show_id)[1].status, "killed")
         self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
 
 

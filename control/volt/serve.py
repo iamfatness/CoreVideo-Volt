@@ -265,10 +265,11 @@ def act_kill(store, item_id, body):
     _unknown_keys(body, set())
     show_id, _ = _item_show(store, item_id)
     with _SEQ:
-        status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
-        if status != "ready":
+        # _SEQ only orders requests inside this process; kill() decides with one conditional write, so a go
+        # or take from another process cannot slip between a read here and the write.
+        if not kill(store, item_id):
+            status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
             raise ApiError(409, "not_killable", f"cannot kill a {status} item")
-        kill(store, item_id)
         return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
 
 
@@ -341,6 +342,10 @@ def act_publish(store, span_id, body):
     versions = [{"id": v.id, "kind": v.kind, "status": v.status, "url": v.url}
                 for v in PUBLISH(store, span_id, OUT_DIR)]
     payload = {"ok": all(v["status"] == "done" for v in versions), "span": span_id, "versions": versions}
+    if not payload["ok"] and any(v["status"] == "busy" for v in versions) \
+            and not any(v["status"] == "failed" for v in versions):
+        raise ApiError(409, "publish_busy", "another writer is publishing this span; try again shortly", **{
+            "span": span_id, "versions": versions})
     if not payload["ok"]:
         raise ApiError(502, "publish_failed", "one or more versions failed to render", **{
             "span": span_id, "versions": versions})
