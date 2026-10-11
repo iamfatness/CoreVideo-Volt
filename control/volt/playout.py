@@ -13,6 +13,10 @@ class PlayoutError(Exception):
     pass
 
 
+class HeldError(PlayoutError):
+    """The rundown is held. A machine-readable subtype so callers need not parse the message."""
+
+
 def on_air(store: Store, show_id: str) -> Optional[str]:
     row = store.conn.execute(
         "SELECT id FROM item WHERE show_id = ? AND status = 'on air' ORDER BY position",
@@ -99,7 +103,7 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Adva
     """
     held = hold_state(store, show_id)
     if held is not None:
-        raise PlayoutError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
+        raise HeldError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
     current = on_air(store, show_id)
     floor = 0
     if current is not None:
