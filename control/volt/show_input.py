@@ -22,6 +22,9 @@ DEFAULT_ACTIONS = [{"action": "scene.select", "args": ["{scene}"]}]
 # Evidence must hold on this many consecutive polls, each on a newer delivered frame.
 CONFIRMATIONS = 2
 
+# Layer-id prefixes the core gives layers while a take is rendering.
+TRANSITION_LAYERS = ("take-in:", "take-out:")
+
 
 @dataclass
 class ShowInput:
@@ -125,6 +128,11 @@ def _blocker(si: ShowInput, base: ProgramObservation, o: ProgramObservation,
         return "delivery sequence not advanced since before the take"
     if not any(_matches(si.source, s) for s in o.sources):
         return f"source {si.source!r} not on program"
+    # Seen live (CoreVideo Pro, 2026-10-11): mid-transition Program carries the old scene's layers renamed
+    # `take-out:<layer>` next to the new scene's `take-in:<layer>`. Layer ids change, so the same-layer test
+    # below cannot see the outgoing sources; Program is not proof until the core has dropped those layers.
+    if any(s.layer_id.startswith(TRANSITION_LAYERS) for s in o.sources):
+        return "transition still rendering (take-in/take-out layers on program)"
     if si.transition == "cut":
         for s in base.sources:
             if _matches(si.source, s):
