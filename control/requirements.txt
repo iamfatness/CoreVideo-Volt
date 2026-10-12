@@ -4,3 +4,8 @@ psycopg[binary]==3.3.6
 # boto3>=1.35
 # Optional, only for VOLT_PG_POOL_MAX / --pg-pool-max. Imported lazily.
 psycopg_pool==3.3.3
+# Optional. Only needed with VOLT_STORAGE=azure (azure-identity only for Entra ID auth); imported lazily.
+# azure-storage-blob>=12.19
+# azure-identity>=1.15
+# Optional. Only needed with VOLT_STORAGE=gcs; imported lazily.
+# google-cloud-storage>=2.16

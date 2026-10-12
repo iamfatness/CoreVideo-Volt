@@ -276,10 +276,14 @@ def url_expiry(url: Optional[str]) -> Optional[datetime]:
         return got[0] if got else None
 
     try:
-        issued, lifetime = one("X-Amz-Date"), one("X-Amz-Expires")
+        issued = one("X-Amz-Date") or one("X-Goog-Date")          # SigV4 on S3, V4 signed URL on GCS
+        lifetime = one("X-Amz-Expires") or one("X-Goog-Expires")
         if issued and lifetime:
             start = datetime.strptime(issued, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
             return start + timedelta(seconds=int(lifetime))
+        sas = one("se")                                           # Azure SAS: ISO-8601 UTC expiry
+        if sas and one("sig"):
+            return datetime.fromisoformat(sas.replace("Z", "+00:00")).astimezone(timezone.utc)
         absolute = one("Expires")
         if absolute:
             return datetime.fromtimestamp(int(absolute), tz=timezone.utc)
