@@ -47,4 +47,4 @@ The record-start proxy (`proxy:<source>`) and the final proxy (`proxy-final:<ass
 
 A manually re-enqueued failed job past the attempt cap gets one more run.
 
-Both proxy jobs may still do the encode (the work is duplicated, last rename wins). A build that began while the source was still recording can finish after the final proxy and replace it with the shorter file; the final job's freshness check compares file times, not durations, so it may not rebuild (not reproduced). Not exercised here: a real ffmpeg on two runners (the tests stand in for ffmpeg).
+A publish claim is renewed while the renderer runs. A second proxy build of one asset does not encode, and an open-file build that finishes after wrap does not replace the final proxy. A second transcribe of one asset does not start the engine.

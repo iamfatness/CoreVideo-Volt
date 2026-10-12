@@ -15,7 +15,7 @@ import re
 import sys
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -523,11 +523,21 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     info = engine.describe()
     owned = job_id is not None
     job = store.get_job(job_id) if owned else store.enqueue(asset_id, "asr", _run_key(info, vocabulary, corrections, chunk))
+    slot = _claim_slot(store, asset_id)
+    if slot is None:
+        latest = store.conn.execute(
+            "SELECT word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
+            + ("" if store.postgres else ", rowid DESC") + " LIMIT 1",
+            (asset_id,)).fetchone()
+        if latest is not None:
+            return latest["word_count"]
+        raise SpeechError("another transcribe holds this asset")
     latest = store.conn.execute(
         "SELECT job_id, word_count FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
         + ("" if store.postgres else ", rowid DESC") + " LIMIT 1",
         (asset_id,)).fetchone()
     if job.status == "done" and latest is not None and latest["job_id"] == job.id:
+        _release_slot(store, slot)
         return latest["word_count"]
     try:
         rate = timecode.parse_rate(essence["frame_rate"]) if essence["frame_rate"] else _probe_rate(essence["location"])
@@ -544,6 +554,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
             rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop)))
     except Exception as exc:
         store.conn.rollback()
+        _release_slot(store, slot)
         if not owned:
             store.fail_job(job.id, str(exc) or exc.__class__.__name__)
         if isinstance(exc, SpeechError):
@@ -569,9 +580,37 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
              json.dumps(list(vocabulary)), json.dumps(used), json.dumps(applied), len(rows),
              _run_time(store), json.dumps({"engine": info, **facts})))
         conn.execute("DELETE FROM asr_chunk WHERE job_id = ?", (job.id,))
+    _release_slot(store, slot)
     if not owned:
         store.complete_job(job.id)
     return len(rows)
+
+
+def _claim_slot(store: Store, asset_id: str):
+    """One engine run per asset. A second transcribe does not start the model."""
+    job = store.enqueue(asset_id, "asr-slot", f"asr-slot:{asset_id}")
+    owner = f"asr-{os.getpid()}"
+    now = _now()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=1800)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cur = store.conn.execute(
+        """UPDATE job SET status = 'running', claimed_by = ?, lease_expires_at = ?, updated_at = ?
+           WHERE id = ? AND (status != 'running' OR lease_expires_at IS NULL OR lease_expires_at < ?)""",
+        (owner, expires, now, job.id, now))
+    store.conn.commit()
+    if cur.rowcount != 1:
+        return None
+    return job.id, owner
+
+
+def _release_slot(store: Store, slot) -> None:
+    if slot is None:
+        return
+    job_id, owner = slot
+    store.conn.execute(
+        """UPDATE job SET status = 'done', claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+           WHERE id = ? AND claimed_by = ?""",
+        (_now(), job_id, owner))
+    store.conn.commit()
 
 
 def transcribe_pending(store: Store, engine: Engine, vocabulary: Sequence[str] = (),

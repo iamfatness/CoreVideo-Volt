@@ -164,6 +164,8 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
         proxy_dir = _need(config.proxy_dir, "proxy directory", "VOLT_PROXY_DIR or --proxy-dir")
         try:
             record.build_proxy(store, job.asset_id, proxy_dir, owned=True)
+        except record.ProxyBusy as exc:
+            raise Defer(f"another proxy build holds {job.asset_id}") from exc
         except FileNotFoundError as exc:
             raise Permanent(f"missing media: {exc}") from exc
 
@@ -181,6 +183,8 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
                               progress=lambda n, done, total: log.info(
                                   "asr %s: window %d done, %.0f of %.0f s", job.asset_id, n, done, total))
         except speech.SpeechError as exc:
+            if "another transcribe" in str(exc):
+                raise Defer(str(exc)) from exc
             if "still recording" in str(exc) or "no hi-res" in str(exc):
                 raise Permanent(str(exc)) from exc
             raise
