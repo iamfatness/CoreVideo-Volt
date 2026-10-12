@@ -12,4 +12,4 @@ Build in this order.
 
 The session shell lists assets, seeks a proxy from a search hit, and shows publish URLs on a rundown item.
 
-Specs: [ingest](specs/ingest.md), [library](specs/library.md), [rundown](specs/rundown.md), [publish](specs/publish.md), [playout](specs/playout.md), [cues](specs/cues.md).
+Specs: [ingest](specs/ingest.md), [library](specs/library.md), [rundown](specs/rundown.md), [publish](specs/publish.md), [playout](specs/playout.md), [cues](specs/cues.md). Design only, not built: [shot spans and the NLE panel](specs/shot-spans.md).

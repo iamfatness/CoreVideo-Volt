@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Volt Library: shots and NLE export</title>
+<style>
+:root{--ground:#141414;--panel:#1c1c1c;--hair:#303030;--text:#e2e2e2;--muted:#9a9a9a;--blue:#1d6dc2;--signal:#f0b429;--air:#ff4d4d;--ok:#3ddc97;--raise:#242424}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--hair);flex-wrap:wrap}
+.mark{color:var(--signal);font-weight:700;letter-spacing:1px;font-style:italic}
+nav.main{display:flex;gap:4px;margin-left:24px;flex-wrap:wrap}
+nav.main span{padding:6px 14px;color:var(--muted);border:1px solid transparent;border-radius:4px}
+nav.main span[aria-current=page]{color:var(--text);border-color:var(--hair);background:var(--panel)}
+.clock{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
+.tabs{display:flex;gap:4px;padding:10px 20px 0;border-bottom:1px solid var(--hair);flex-wrap:wrap}
+.tabs button{background:none;border:1px solid transparent;border-bottom:0;color:var(--muted);padding:8px 16px;border-radius:4px 4px 0 0;font:inherit;cursor:pointer}
+.tabs button[aria-selected=true]{color:var(--text);border-color:var(--hair);background:var(--panel)}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.screen{display:none;padding:16px 20px}.screen.on{display:block}
+.note{color:var(--muted);margin:0 0 12px;max-width:90ch}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:6px;min-width:0}
+.panel>h2,.panel>h3{margin:0;padding:10px 14px;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--hair);font-weight:600}
+.body{padding:12px 14px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.stack{display:grid;gap:16px;min-width:0}
+.bar{display:flex;gap:10px;padding:10px 14px;align-items:center;flex-wrap:wrap}
+.bar small,small{color:var(--muted)}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:4px;padding:9px 16px;font:inherit;font-weight:700;letter-spacing:.5px;cursor:pointer}
+.btn.ghost{background:none;border:1px solid #5a5a5a;color:var(--text);font-weight:600}
+.btn.amber{background:var(--signal);color:#1a1200}
+.btn[disabled]{background:#2a2a2a;color:var(--muted);cursor:not-allowed;border:0}
+kbd{font:12px Consolas,monospace;border:1px solid #5a5a5a;border-radius:3px;padding:0 5px;background:var(--raise)}
+.btn kbd{background:transparent;border-color:currentColor;color:inherit}
+.mono{font-family:Consolas,monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+.chip{font-size:11px;font-weight:700;letter-spacing:.8px;padding:2px 7px;border-radius:3px;text-transform:uppercase;white-space:nowrap;display:inline-block}
+.det{background:#3a3a3a;color:var(--text)}.man{background:var(--signal);color:#1a1200}.wrd{background:none;color:var(--text);border:1px solid var(--text)}
+.ok{color:var(--ok)}.no{color:var(--air)}.warn{color:var(--signal)}
+.pill{border:1px solid var(--hair);border-radius:999px;padding:3px 12px;color:var(--text);background:none;font:inherit;font-size:12px;cursor:pointer}
+.pill[aria-pressed=true]{border-color:var(--signal);color:var(--signal)}
+.asset{display:flex;gap:18px;flex-wrap:wrap;padding:10px 14px;align-items:center}
+.asset b{font-weight:600}.asset .k{color:var(--muted);margin-right:6px}
+.player{padding:12px 14px}
+.screenbox{background:#0b0b0b;border:1px solid var(--hair);border-radius:4px;height:240px;width:100%;position:relative;display:flex;align-items:center;justify-content:center}
+.screenbox svg{height:100%;width:auto;max-width:100%}
+.overlay{position:absolute;left:10px;bottom:8px;background:rgba(0,0,0,.75);padding:2px 8px;border-radius:3px;font-family:Consolas,monospace;color:#fff}
+.tline{position:relative;height:34px;background:#101010;border:1px solid var(--hair);border-radius:4px;margin-top:10px;overflow:hidden}
+.seg{position:absolute;top:0;bottom:12px;border-right:2px solid var(--ground);background:#2c2c2c}
+.seg.on{background:#5a4510}
+.seg i{font:11px Consolas,monospace;color:var(--text);padding-left:4px;font-style:normal}
+.clipbar{position:absolute;bottom:3px;height:6px;background:var(--signal);border-radius:2px}
+.head{position:absolute;top:0;bottom:0;width:2px;background:#fff}
+.tlscale{display:flex;justify-content:space-between;color:var(--muted);font:12px Consolas,monospace;padding-top:4px}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 14px;border-top:1px solid var(--hair)}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--hair);font-size:12px;text-transform:uppercase;letter-spacing:1px;white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--hair);vertical-align:middle}
+tr.sel{background:#221d0e;box-shadow:inset 3px 0 0 var(--signal)}
+td.c{width:34px}td.t{width:112px}
+td.t .th{display:block;border-radius:3px;border:1px solid var(--hair)}
+td.tx{color:var(--muted);max-width:30ch}
+.nm{font-weight:600}
+.state{color:var(--signal);font-weight:600;white-space:nowrap}.state-off{color:var(--muted);white-space:nowrap}
+input[type=checkbox],input[type=radio]{width:18px;height:18px;accent-color:var(--signal)}
+label.f,legend.f{display:block;color:var(--muted);font-size:12px;letter-spacing:1px;text-transform:uppercase;margin:12px 0 4px}
+input[type=text],select{background:var(--ground);color:var(--text);border:1px solid #5a5a5a;border-radius:4px;padding:7px 9px;font:inherit;width:100%}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 0}
+.opt span small{display:block}
+dl.kv{margin:0;display:grid;grid-template-columns:110px 1fr;gap:6px 12px}
+dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;font-family:Consolas,monospace;overflow-wrap:anywhere}
+.tray{margin:0;padding:0}
+.tray li{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--hair);list-style:none}
+.tray .n{color:var(--muted);width:18px;font-family:Consolas,monospace}
+.tray .grow{flex:1;min-width:0}.tray .grow b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tray .mini{padding:2px 6px;min-width:26px}.tray li{padding:8px 10px}.tray .grow small{display:block}
+.mini{background:none;border:1px solid #5a5a5a;color:var(--text);border-radius:3px;padding:2px 8px;font:inherit;cursor:pointer;min-width:28px}
+.mini[disabled]{color:var(--muted);border-color:var(--hair);cursor:not-allowed}
+.banner{border:1px solid var(--air);border-left:4px solid var(--air);background:#2a1616;padding:10px 14px;border-radius:4px}
+.banner strong{color:var(--air)}
+.info{border:1px solid var(--hair);border-left:4px solid var(--signal);background:#221d0e;padding:10px 14px;border-radius:4px}
+.info strong{color:var(--signal)}
+.good{border:1px solid var(--ok);border-left:4px solid var(--ok);background:#12261d;padding:10px 14px;border-radius:4px}
+.good strong{color:var(--ok)}
+.tr{padding:14px 18px;line-height:1.9;font-size:15px;max-width:70ch}
+.tr .ts{display:block;color:var(--muted);font:12px Consolas,monospace;line-height:1.4;margin-top:10px}
+.tr mark{background:var(--signal);color:#1a1200;border-radius:2px;padding:1px 0}
+.tr .cut{display:inline-block;margin:0 6px;padding:0 6px;border:1px solid #5a5a5a;border-radius:3px;color:var(--text);font:11px Consolas,monospace;line-height:1.5;vertical-align:middle}
+.tr .cur{outline:2px solid var(--blue);outline-offset:1px;border-radius:2px}
+.stepper{display:flex;gap:6px;align-items:center}
+.stepper output{min-width:56px;text-align:center;font-family:Consolas,monospace;border:1px solid var(--hair);padding:5px 6px;border-radius:4px;background:var(--ground)}
+.strip{display:flex;gap:8px}
+.strip figure{margin:0}.strip figcaption{font:12px Consolas,monospace;color:var(--muted);text-align:center}
+pre.code{margin:0;padding:12px 14px;overflow:auto;font:12px/1.5 Consolas,monospace;color:var(--text);background:#101010;max-height:300px;tab-size:2}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.state-card .body{display:grid;gap:10px}
+.empty{text-align:center;padding:26px 18px;display:grid;gap:10px;justify-items:center}
+.empty p{margin:0;color:var(--muted);max-width:46ch}
+.verd{white-space:nowrap;font-weight:600}
+.cap{color:var(--muted);font-size:12px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(max-width:1000px){.layout,.grid2{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:no-preference){.spin{animation:sp 1.2s linear infinite}}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <span class="mark" aria-hidden="true">////</span><strong>VOLT</strong><h1 class="sr">Library: shots and NLE export</h1><span>Final Four Watch</span>
+  <nav class="main" aria-label="Screens"><span>Show</span><span>Record</span><span>Rights</span><span>Publish</span><span aria-current="page">Library</span></nav>
+  <span class="clock">01:12:08:14</span>
+</header>
+<main>
+<div class="tabs" role="tablist" aria-label="Mockup states">
+  <button role="tab" aria-selected="true" aria-controls="shots" id="t-shots">Shot list</button>
+  <button role="tab" aria-selected="false" aria-controls="words" id="t-words" tabindex="-1">Mark from transcript</button>
+  <button role="tab" aria-selected="false" aria-controls="export" id="t-export" tabindex="-1">Selection to export</button>
+  <button role="tab" aria-selected="false" aria-controls="states" id="t-states" tabindex="-1">Empty and error states</button>
+</div>
+<section class="screen on" id="shots" role="tabpanel" aria-labelledby="t-shots" tabindex="-1">
+<p class="note">State: a closed asset, shots detected once, one clip marked from the transcript. Selecting spans fills the tray on the right; Export opens the export tab. Rows come from <code>GET /api/assets/{asset}/spans</code>; thumbnails from <code>GET /api/spans/{span}/thumb</code>.</p>
+<div class="layout"><div class="stack">
+<div class="panel"><div class="asset">
+  <span><span class="k">Asset</span><b class="mono">c907b671</b></span><span><span class="k">Camera</span><b>iso-3</b></span>
+  <span><span class="k">Rate</span><b class="mono">25 fps</b></span><span><span class="k">Start</span><b class="mono">01:00:00:00</b></span>
+  <span><span class="k">Length</span><b class="mono">00:00:36:15</b></span>
+  <span class="ok"><span aria-hidden="true">&#10003;</span> Cleared</span><span><span class="k">Proxy</span>ready</span>
+</div></div>
+<div class="panel"><h2>Player</h2><div class="player"><div class="screenbox" role="img" aria-label="Proxy frame at 01:00:15:00, shot 3"><svg class="th" viewBox="0 0 96 54" width="320" height="180" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#22302a"/><rect y="34" width="96" height="20" fill="#33493d"/><circle cx="44" cy="22" r="7" fill="#5f8a72"/><rect x="36" y="29" width="16" height="22" rx="4" fill="#5f8a72"/><rect x="32" y="26" width="12" height="26" rx="3" fill="#33493d" stroke="#5f8a72"/></svg><span class="overlay">01:00:15:00 &middot; shot 3</span></div>
+  <div class="tline" role="img" aria-label="Timeline of 6 shots and 1 clip. Shots 2 and 5 and clip C1 are selected. Playhead at 01:00:15:00."><span class="seg" style="left:0.00%;width:17.70%"><i>1</i></span><span class="seg on" style="left:17.70%;width:12.68%"><i>2</i></span><span class="seg" style="left:30.38%;width:23.72%"><i>3</i></span><span class="seg" style="left:54.10%;width:6.89%"><i>4</i></span><span class="seg on" style="left:60.98%;width:23.72%"><i>5</i></span><span class="seg" style="left:84.70%;width:15.30%"><i>6</i></span><span class="clipbar" style="left:36.07%;width:18.03%"></span><span class="head" style="left:40.98%"></span></div>
+  <div class="tlscale" aria-hidden="true"><span>01:00:00:00</span><span>01:00:18:07</span><span>01:00:36:15</span></div></div>
+  <div class="tools"><button class="btn ghost">&#9664;&#9664; Prev shot</button><button class="btn ghost">Next shot &#9654;&#9654;</button>
+  <button class="btn amber">Mark in <kbd>I</kbd></button><button class="btn amber">Mark out <kbd>O</kbd></button><button class="btn ghost">Add clip <kbd>Enter</kbd></button>
+  <small>In 01:00:13:05 &middot; Out not set</small></div></div>
+<div class="panel"><h2>Shots and clips</h2>
+  <div class="bar" role="group" aria-label="Filter and detection">
+    <button class="pill" aria-pressed="true">All 7</button><button class="pill" aria-pressed="false">Shots 6</button><button class="pill" aria-pressed="false">Clips 1</button>
+    <button class="pill" aria-pressed="false">Detected 5</button><button class="pill" aria-pressed="false">Marked by hand 2</button>
+    <span style="margin-left:auto"><small>Last detection 2026-10-12 09:14 &middot; threshold 0.30 &middot; 5 shots</small></span>
+    <button class="btn ghost">Detect again</button>
+  </div>
+  <div class="tablewrap"><table><caption class="cap" style="text-align:left;padding:0 14px 6px">Sorted by timecode. Space toggles the focused row. Enter seeks the player.</caption>
+  <thead><tr><th scope="col"><span class="sr">Select</span></th><th scope="col">Frame</th><th scope="col">Name</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Length</th><th scope="col">Transcript</th><th scope="col">State</th></tr></thead>
+  <tbody><tr><td class="c"><input type="checkbox" aria-label="Select shot Wide, tip-off"></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#27313b"/><rect y="34" width="96" height="20" fill="#3b4a58"/><circle cx="10" cy="22" r="7" fill="#6d7f8f"/><rect x="2" y="29" width="16" height="22" rx="4" fill="#6d7f8f"/><rect x="66" y="26" width="12" height="26" rx="3" fill="#3b4a58" stroke="#6d7f8f"/></svg></td><td><div class="nm">Wide, tip-off</div><small>Shot 1 &middot; <span class="chip det">Detected</span></small></td><td class="mono">01:00:00:00</td><td class="mono">01:00:06:12</td><td class="mono">00:00:06:12</td><td class="tx">And we are underway at the Dome.</td><td class="st"><span class=state-off>Not selected</span></td></tr><tr class="sel"><td class="c"><input type="checkbox" aria-label="Select shot Bench reaction" checked></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#2f2a22"/><rect y="34" width="96" height="20" fill="#4a4132"/><circle cx="27" cy="22" r="7" fill="#8a7a5c"/><rect x="19" y="29" width="16" height="22" rx="4" fill="#8a7a5c"/><rect x="49" y="26" width="12" height="26" rx="3" fill="#4a4132" stroke="#8a7a5c"/></svg></td><td><div class="nm">Bench reaction</div><small>Shot 2 &middot; <span class="chip det">Detected</span></small></td><td class="mono">01:00:06:12</td><td class="mono">01:00:11:03</td><td class="mono">00:00:04:16</td><td class="tx">Okonkwo&#x27;s teammates are already on their feet.</td><td class="st"><span class=state>&#10003; Selected</span></td></tr><tr><td class="c"><input type="checkbox" aria-label="Select shot Steal and drive"></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#22302a"/><rect y="34" width="96" height="20" fill="#33493d"/><circle cx="44" cy="22" r="7" fill="#5f8a72"/><rect x="36" y="29" width="16" height="22" rx="4" fill="#5f8a72"/><rect x="32" y="26" width="12" height="26" rx="3" fill="#33493d" stroke="#5f8a72"/></svg></td><td><div class="nm">Steal and drive</div><small>Shot 3 &middot; <span class="chip det">Detected</span></small></td><td class="mono">01:00:11:03</td><td class="mono">01:00:19:20</td><td class="mono">00:00:08:17</td><td class="tx">That is a steal, and he is gone the other way.</td><td class="st"><span class=state-off>Not selected</span></td></tr><tr><td class="c"><input type="checkbox" aria-label="Select shot Layup, low angle"></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#2e2530"/><rect y="34" width="96" height="20" fill="#46354a"/><circle cx="11" cy="22" r="7" fill="#85688c"/><rect x="3" y="29" width="16" height="22" rx="4" fill="#85688c"/><rect x="65" y="26" width="12" height="26" rx="3" fill="#46354a" stroke="#85688c"/></svg></td><td><div class="nm">Layup, low angle</div><small>Shot 4 &middot; <span class="chip det">Detected</span></small></td><td class="mono">01:00:19:20</td><td class="mono">01:00:22:08</td><td class="mono">00:00:02:13</td><td class="tx">Okonkwo with the layup.</td><td class="st"><span class=state-off>Not selected</span></td></tr><tr class="sel"><td class="c"><input type="checkbox" aria-label="Select shot Crowd and bench" checked></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#252b3a"/><rect y="34" width="96" height="20" fill="#37425e"/><circle cx="28" cy="22" r="7" fill="#667aa8"/><rect x="20" y="29" width="16" height="22" rx="4" fill="#667aa8"/><rect x="48" y="26" width="12" height="26" rx="3" fill="#37425e" stroke="#667aa8"/></svg></td><td><div class="nm">Crowd and bench</div><small>Shot 5 &middot; <span class="chip det">Detected</span></small></td><td class="mono">01:00:22:08</td><td class="mono">01:00:31:00</td><td class="mono">00:00:08:17</td><td class="tx">The crowd is on its feet.</td><td class="st"><span class=state>&#10003; Selected</span></td></tr><tr><td class="c"><input type="checkbox" aria-label="Select shot Coach, timeout"></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#30262a"/><rect y="34" width="96" height="20" fill="#4d3840"/><circle cx="45" cy="22" r="7" fill="#94616f"/><rect x="37" y="29" width="16" height="22" rx="4" fill="#94616f"/><rect x="31" y="26" width="12" height="26" rx="3" fill="#4d3840" stroke="#94616f"/></svg></td><td><div class="nm">Coach, timeout</div><small>Shot 6 &middot; <span class="chip man">Marked</span></small></td><td class="mono">01:00:31:00</td><td class="mono">01:00:36:15</td><td class="mono">00:00:05:15</td><td class="tx">Coach calls the timeout.</td><td class="st"><span class=state-off>Not selected</span></td></tr><tr class="sel"><td class="c"><input type="checkbox" aria-label="Select clip Okonkwo steal and layup" checked></td><td class="t"><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#27313b"/><rect y="34" width="96" height="20" fill="#3b4a58"/><circle cx="12" cy="22" r="7" fill="#6d7f8f"/><rect x="4" y="29" width="16" height="22" rx="4" fill="#6d7f8f"/><rect x="64" y="26" width="12" height="26" rx="3" fill="#3b4a58" stroke="#6d7f8f"/></svg></td><td><div class="nm">Okonkwo steal and layup</div><small>Clip C1 &middot; <span class="chip wrd">From words</span></small></td><td class="mono">01:00:13:05</td><td class="mono">01:00:19:20</td><td class="mono">00:00:06:15</td><td class="tx">That is a steal, and he is gone the other way. Okonkwo with the layup.</td><td class="st"><span class=state>&#10003; Selected</span></td></tr></tbody></table></div>
+</div></div>
+<aside class="stack" aria-label="Selection">
+ <div class="panel"><h2>Selection &middot; 3 spans</h2><ol class="tray" aria-label="Selection, in export order">
+ <li><span class="n">1</span><span class="grow"><b>Bench reaction</b><small class="mono">01:00:06:12 &middot; 00:00:04:16</small></span><button class="mini" aria-label="Move Bench reaction up" disabled>&#9650;</button><button class="mini" aria-label="Move Bench reaction down">&#9660;</button><button class="mini" aria-label="Remove Bench reaction">&times;</button></li>
+ <li><span class="n">2</span><span class="grow"><b>Okonkwo steal and layup</b><small class="mono">01:00:13:05 &middot; 00:00:06:15</small></span><button class="mini" aria-label="Move Okonkwo steal and layup up">&#9650;</button><button class="mini" aria-label="Move Okonkwo steal and layup down">&#9660;</button><button class="mini" aria-label="Remove Okonkwo steal and layup">&times;</button></li>
+ <li><span class="n">3</span><span class="grow"><b>Crowd and bench</b><small class="mono">01:00:22:08 &middot; 00:00:08:17</small></span><button class="mini" aria-label="Move Crowd and bench up">&#9650;</button><button class="mini" aria-label="Move Crowd and bench down" disabled>&#9660;</button><button class="mini" aria-label="Remove Crowd and bench">&times;</button></li>
+</ol>
+  <div class="body"><dl class="kv"><dt>Total</dt><dd>00:00:19:23</dd><dt>Assets</dt><dd>1</dd></dl></div>
+  <div class="bar"><button class="btn">EXPORT TO NLE</button><button class="btn ghost">Clear</button></div></div>
+ <div class="panel"><h2>Span</h2><div class="body">
+  <label class="f" for="nm1">Name</label><input id="nm1" type="text" value="Crowd and bench">
+  <div class="bar" style="padding:10px 0 0"><button class="btn ghost">Split here</button><button class="btn ghost">Merge with next</button></div>
+  <div class="bar" style="padding:0"><button class="btn ghost">Attach to item&hellip;</button><button class="btn ghost">Delete</button></div>
+  <small>Delete is refused while a rundown item or a version uses the span.</small></div></div>
+</aside></div></section>
+<section class="screen" id="words" role="tabpanel" aria-labelledby="t-words" tabindex="-1">
+<p class="note">State: the operator has dragged across a sentence. The in and out come from the first and last word spans; the server resolves them from the span IDs, so the page never sends a time it computed. Words are good to about a quarter second, so the handles and the shot boundaries are the way to land on the real cut.</p>
+<div class="layout"><div class="stack">
+<div class="panel"><div class="asset">
+  <span><span class="k">Asset</span><b class="mono">c907b671</b></span><span><span class="k">Camera</span><b>iso-3</b></span>
+  <span><span class="k">Rate</span><b class="mono">25 fps</b></span><span><span class="k">Start</span><b class="mono">01:00:00:00</b></span>
+  <span><span class="k">Length</span><b class="mono">00:00:36:15</b></span>
+  <span class="ok"><span aria-hidden="true">&#10003;</span> Cleared</span><span><span class="k">Proxy</span>ready</span>
+</div></div>
+<div class="panel"><h2>Transcript &middot; c907b671</h2>
+ <div class="tr" tabindex="0" role="group" aria-label="Transcript. Arrow keys move the word cursor, Shift plus arrows extend the range, Enter makes a clip.">
+  <span class="ts">01:00:00:00 &middot; shot 1</span>
+  And we are underway at the Dome. Okonkwo's teammates are
+  <span class="cut">&#9612; shot 2 &middot; 01:00:06:12</span>
+  already on their feet, and the home bench is loud.
+  <span class="ts">01:00:11:03 &middot; shot 3</span>
+  Here we go.
+  <mark>That is a steal, <span class="cur">and</span> he is gone the other way. Okonkwo with the layup</mark>,
+  <span class="cut">&#9612; shot 4 &middot; 01:00:19:20</span>
+  and the crowd is on its feet.
+  <span class="ts">01:00:22:08 &middot; shot 5</span>
+  That is a huge swing for the Wildcats. We will take a look at it again after this.
+ </div>
+ <div class="tools"><small><kbd>&larr;</kbd> <kbd>&rarr;</kbd> move &middot; <kbd>Shift</kbd>+arrows extend &middot; <kbd>Enter</kbd> make clip &middot; <kbd>Esc</kbd> clears</small></div>
+</div></div>
+<aside class="stack" aria-label="New clip">
+ <div class="panel"><h2>New clip from words</h2><div class="body">
+  <dl class="kv"><dt>First word</dt><dd>"That" 01:00:13:05</dd><dt>Last word</dt><dd>"layup" 01:00:19:02</dd><dt>Words</dt><dd>16</dd></dl>
+  <label class="f" for="hin">Handle before</label>
+  <div class="stepper"><button class="mini" aria-label="One frame less before">&minus;</button><output id="hin">0 fr</output><button class="mini" aria-label="One frame more before">+</button><button class="mini" aria-label="+5 frames before">+5</button></div>
+  <label class="f" for="hout">Handle after</label>
+  <div class="stepper"><button class="mini" aria-label="One frame less after">&minus;</button><output id="hout">+18 fr</output><button class="mini" aria-label="One frame more after">+</button><button class="mini" aria-label="+5 frames after">+5</button></div>
+  <div class="opt"><input type="checkbox" id="snap" checked><label for="snap"><span>Snap to shot boundaries<small>Out moves to the cut at 01:00:19:20.</small></span></label></div>
+  <label class="f" for="nm2">Name</label><input id="nm2" type="text" value="Okonkwo steal and layup">
+  <div class="strip" style="margin-top:12px"><figure><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#22302a"/><rect y="34" width="96" height="20" fill="#33493d"/><circle cx="44" cy="22" r="7" fill="#5f8a72"/><rect x="36" y="29" width="16" height="22" rx="4" fill="#5f8a72"/><rect x="32" y="26" width="12" height="26" rx="3" fill="#33493d" stroke="#5f8a72"/></svg><figcaption>In 01:00:13:05</figcaption></figure><figure><svg class="th" viewBox="0 0 96 54" width="96" height="54" aria-hidden="true" focusable="false"><rect width="96" height="54" fill="#2e2530"/><rect y="34" width="96" height="20" fill="#46354a"/><circle cx="11" cy="22" r="7" fill="#85688c"/><rect x="3" y="29" width="16" height="22" rx="4" fill="#85688c"/><rect x="65" y="26" width="12" height="26" rx="3" fill="#46354a" stroke="#85688c"/></svg><figcaption>Out 01:00:19:20</figcaption></figure></div>
+  <dl class="kv" style="margin-top:12px"><dt>Result</dt><dd>01:00:13:05 &rarr; 01:00:19:20 &middot; 00:00:06:15</dd></dl>
+ </div>
+ <div class="bar"><button class="btn">ADD CLIP</button><button class="btn ghost">Cancel</button></div></div>
+ <div class="info"><strong>Words are not frame accurate.</strong> Measured on one TTS clip: worst start error 0.24 s. Check the out frame on the player.</div>
+</aside></div></section>
+<section class="screen" id="export" role="tabpanel" aria-labelledby="t-export" tabindex="-1">
+<p class="note">State: five spans selected across three assets. Two are blocked, and the page says why on the row. Nothing is written until the operator fixes the block or ticks "Leave out blocked spans". The check is <code>POST /api/exports/nle</code> with <code>dry_run: true</code>.</p>
+<div class="banner" role="alert" style="margin-bottom:16px"><strong>2 of 5 spans cannot be exported.</strong> Post-game handshake is on legal hold. Bench cam wide is not cleared. Clear it on the Rights screen, or leave them out.</div>
+<div class="layout"><div class="stack">
+ <div class="panel"><h2>Selection &middot; export order</h2><div class="tablewrap"><table>
+  <thead><tr><th scope="col">#</th><th scope="col">Span</th><th scope="col">In</th><th scope="col">Out</th><th scope="col">Length</th><th scope="col">Check</th></tr></thead>
+  <tbody><tr><td class="mono">1</td><td><div class="nm">Bench reaction</div><small class="mono">c907b671</small></td><td class="mono">01:00:06:12</td><td class="mono">01:00:11:03</td><td class="mono">00:00:04:16</td><td class="verd ok"><span aria-hidden="true">&#10003;</span> Ready</td></tr><tr><td class="mono">2</td><td><div class="nm">Okonkwo steal and layup</div><small class="mono">c907b671</small></td><td class="mono">01:00:13:05</td><td class="mono">01:00:19:20</td><td class="mono">00:00:06:15</td><td class="verd ok"><span aria-hidden="true">&#10003;</span> Ready</td></tr><tr><td class="mono">3</td><td><div class="nm">Crowd and bench</div><small class="mono">c907b671</small></td><td class="mono">01:00:22:08</td><td class="mono">01:00:31:00</td><td class="mono">00:00:08:17</td><td class="verd ok"><span aria-hidden="true">&#10003;</span> Ready</td></tr><tr><td class="mono">4</td><td><div class="nm">Post-game handshake</div><small class="mono">77d09c3e</small></td><td class="mono">02:10:04:00</td><td class="mono">02:10:09:12</td><td class="mono">00:00:05:12</td><td class="verd no"><span aria-hidden="true">&#10007;</span> Legal hold</td></tr><tr><td class="mono">5</td><td><div class="nm">Bench cam wide</div><small class="mono">5be1a02f</small></td><td class="mono">01:00:40:00</td><td class="mono">01:00:46:10</td><td class="mono">00:00:06:10</td><td class="verd no"><span aria-hidden="true">&#10007;</span> Not cleared</td></tr></tbody></table></div>
+  <div class="bar"><small>Order is the order in the sequence. Reorder on the Shot list tab.</small></div></div>
+ <div class="panel"><h2>Preview &middot; first lines of the file</h2><pre class="code" tabindex="0" role="group" aria-label="Preview of the export file">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;xmeml version="4"&gt;
+  &lt;sequence id="volt-seq-1"&gt;
+    &lt;name&gt;Final Four Watch selects&lt;/name&gt;
+    &lt;rate&gt;&lt;timebase&gt;25&lt;/timebase&gt;&lt;ntsc&gt;FALSE&lt;/ntsc&gt;&lt;/rate&gt;
+    &lt;media&gt;&lt;video&gt;&lt;track&gt;
+      &lt;clipitem id="c1"&gt;
+        &lt;name&gt;Bench reaction&lt;/name&gt;
+        &lt;in&gt;162&lt;/in&gt;&lt;out&gt;277&lt;/out&gt;
+        &lt;start&gt;0&lt;/start&gt;&lt;end&gt;115&lt;/end&gt;
+        &lt;file id="f-c907b671"&gt;&lt;pathurl&gt;file://nas/iso/iso-3.mov&lt;/pathurl&gt;...&lt;/file&gt;
+      &lt;/clipitem&gt;
+      ...
+</pre></div>
+</div>
+<aside class="stack" aria-label="Export options">
+ <div class="panel"><h2>Hand to Premiere</h2><div class="body">
+  <fieldset style="border:0;padding:0;margin:0"><legend class="f" style="padding:0">Format</legend>
+   <div class="opt"><input type="radio" name="fmt" id="f1" checked><label for="f1"><span>Final Cut XML (xmeml)<small>Imports in Premiere. Keeps names, paths, in and out, comments.</small></span></label></div>
+   <div class="opt"><input type="radio" name="fmt" id="f2"><label for="f2"><span>CMX3600 EDL<small>Cuts only. Reel names are cut to 8 characters. No paths.</small></span></label></div></fieldset>
+  <fieldset style="border:0;padding:0;margin:0"><legend class="f" style="padding:0">Media</legend>
+   <div class="opt"><input type="radio" name="med" id="m1" checked><label for="m1"><span>Hi-res<small>Opens without relinking if the NLE sees the same path.</small></span></label></div>
+   <div class="opt"><input type="radio" name="med" id="m2"><label for="m2"><span>Proxy<small>Smaller. Relink to hi-res later.</small></span></label></div></fieldset>
+  <label class="f" for="sq">Sequence name</label><input id="sq" type="text" value="Final Four Watch selects">
+  <label class="f" for="pm">Path as the NLE sees it</label>
+  <select id="pm"><option>D:\iso to \\nas\iso (server setting)</option><option>No mapping</option></select>
+  <div class="opt" style="margin-top:8px"><input type="checkbox" id="skip"><label for="skip"><span>Leave out blocked spans<small>Export 3 of 5. The two left out are listed in the file comment.</small></span></label></div>
+ </div>
+ <div class="bar"><button class="btn" disabled aria-describedby="why">EXPORT 5 SPANS</button></div>
+ <div class="body" style="padding-top:0"><small id="why">Disabled until every span passes or blocked spans are left out.</small></div></div>
+ <div class="good"><strong>After a successful export</strong><br><span class="mono">final-four-watch-selects.xml</span> &middot; 3 clips &middot; 00:00:19:23 &middot; sha256 4be2&hellip;19a0. Saved by the browser; Volt keeps no copy.</div>
+</aside></div></section>
+<section class="screen" id="states" role="tabpanel" aria-labelledby="t-states" tabindex="-1"><p class="note">Every empty and failure state the panel needs. Each refusal shows the stable code the API returns and the reason in words. Nothing is shown optimistically.</p><div class="grid2"><div class="panel state-card"><h2>No asset chosen</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#9a9a9a" stroke-width="2"><rect x="6" y="8" width="28" height="24" rx="3"/><path d="M14 8v24M26 8v24M6 16h8M26 16h8M6 24h8M26 24h8"/></svg></div><p>Pick an asset to list its shots. Assets with a proxy and a closed hi-res come first.</p><div><button class="btn ghost">Choose asset</button></div></div></div><div class="panel state-card"><h2>No shots yet</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#9a9a9a" stroke-width="2"><rect x="6" y="8" width="28" height="24" rx="3"/><path d="M14 8v24M26 8v24M6 16h8M26 16h8M6 24h8M26 24h8"/></svg></div><p>c907b671 has a proxy and has never been scanned. Detect finds the cuts. Or mark by hand: play the proxy and press I, then O.</p><div><button class="btn">DETECT SHOTS</button> <button class="btn ghost">Mark by hand</button></div></div></div><div class="panel state-card"><h2>Detecting shots</h2><div class="empty"><div aria-hidden="true"><svg class="spin" width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#f0b429" stroke-width="3"><path d="M20 5a15 15 0 1 1-15 15"/></svg></div><p>Job queued on a runner, attempt 1 of 5. No progress figure is shown because the job does not report one.</p><div><button class="btn ghost" disabled>Detect shots</button></div></div></div><div class="panel state-card"><h2>Detection failed</h2><div class="body"><div class="banner" role="alert"><strong>Detect did not finish.</strong> ffmpeg exited 1: proxy has no video stream. The job is failed, not retrying. No shots were changed.</div><div><button class="btn">RETRY DETECT</button> <button class="btn ghost">Open job</button></div></div></div><div class="panel state-card"><h2>Asset still recording</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#9a9a9a" stroke-width="2"><rect x="6" y="8" width="28" height="24" rx="3"/><path d="M14 8v24M26 8v24M6 16h8M26 16h8M6 24h8M26 24h8"/></svg></div><p>iso-3 is an open essence. Marks and the player work on the growing proxy. Detection and transcript start after wrap.</p><div><button class="btn ghost" disabled>Detect shots</button> <button class="btn ghost">Mark by hand</button></div></div></div><div class="panel state-card"><h2>No proxy</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#ff4d4d" stroke-width="2"><path d="M20 6l15 27H5z"/><path d="M20 16v8M20 28v2"/></svg></div><p>Thumbnails and the player need a proxy essence. Marks can still be typed as timecode. The proxy job has not run for this asset.</p><div><button class="btn ghost">Enter timecode</button> <button class="btn ghost">Open jobs</button></div></div></div><div class="panel state-card"><h2>No transcript</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#9a9a9a" stroke-width="2"><path d="M6 12h28M6 20h28M6 28h18"/></svg></div><p>Transcription was refused: the asset is not cleared. Clear it on the Rights screen, then the speech worker runs.</p><div><button class="btn ghost">Go to Rights</button></div></div></div><div class="panel state-card"><h2>Transcript pending</h2><div class="empty"><div aria-hidden="true"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="#9a9a9a" stroke-width="2"><path d="M6 12h28M6 20h28M6 28h18"/></svg></div><p>The speech worker has not reached this asset. Words appear here when it does. Shot marks do not wait for it.</p><div><button class="btn ghost">Open jobs</button></div></div></div><div class="panel state-card"><h2>Refused: marks overlap</h2><div class="body"><div class="banner" role="alert"><strong>overlaps_shot.</strong> A shot cannot overlap another shot. 01:00:12:00 to 01:00:21:00 overlaps shot 3 (01:00:11:03 to 01:00:19:20). Make it a clip, or split shot 3 first.</div><div><button class="btn">ADD AS CLIP</button> <button class="btn ghost">Cancel</button></div></div></div><div class="panel state-card"><h2>Refused: span in use</h2><div class="body"><div class="banner" role="alert"><strong>span_in_use.</strong> Shot 4 is on the rundown item "Under review" and has an OTT version. Detach it first. Nothing was deleted.</div></div></div><div class="panel state-card"><h2>Export refused: media not reachable</h2><div class="body"><div class="banner" role="alert"><strong>not_local.</strong> Hi-res for 77d09c3e is an object-store key, not a path an NLE can open. Pick Proxy, or restore the file to disk.</div><div><button class="btn ghost">Use proxy</button></div></div></div><div class="panel state-card"><h2>Export refused: mixed frame rates</h2><div class="body"><div class="banner" role="alert"><strong>mixed_rates.</strong> The selection has 25 fps and 29.97 fps spans. One sequence has one rate. Export them in two files.</div><div><button class="btn ghost">Keep 25 fps spans</button></div></div></div></div></section>
+</main>
+<script>
+const tabs=[...document.querySelectorAll('[role=tab]')];
+function pick(t){tabs.forEach(x=>{const on=x===t;x.setAttribute('aria-selected',on);x.tabIndex=on?0:-1;document.getElementById(x.getAttribute('aria-controls')).classList.toggle('on',on)});}
+tabs.forEach((t,i)=>{t.addEventListener('click',()=>pick(t));
+ t.addEventListener('keydown',e=>{const d={ArrowRight:1,ArrowLeft:-1}[e.key];if(!d)return;const n=tabs[(i+d+tabs.length)%tabs.length];pick(n);n.focus();});});
+if(location.hash){const t=document.querySelector('[aria-controls="'+location.hash.slice(1)+'"]');if(t)pick(t);}
+</script>
+</body>
+</html>
