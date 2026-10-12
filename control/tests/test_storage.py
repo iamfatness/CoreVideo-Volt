@@ -313,6 +313,212 @@ class PresignedUrlHost(unittest.TestCase):
         self.assertTrue(url.startswith("http://localhost:9000/volt-bucket/p/k.mp4?"), url)
 
 
+HAVE_BOTO = bool(importlib.util.find_spec("boto3"))
+_NO_AWS = {"AWS_EC2_METADATA_DISABLED": "true", "AWS_DEFAULT_REGION": "us-east-2"}
+
+
+def _aws_free_env(tmp, **extra):
+    """os.environ patch with every AWS credential source removed (env keys, profile, shared files)."""
+    env = dict(os.environ)
+    for name in list(env):
+        if name.startswith("AWS_"):
+            env.pop(name)
+    env.update(_NO_AWS)
+    env["AWS_SHARED_CREDENTIALS_FILE"] = str(Path(tmp) / "no-credentials")
+    env["AWS_CONFIG_FILE"] = str(Path(tmp) / "no-config")
+    env.update(extra)
+    return mock.patch.dict(os.environ, env, clear=True)
+
+
+class S3Encryption(unittest.TestCase):
+    """SSE-KMS (or SSE-S3) on every put, single and multipart."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def file(self, size):
+        path = self.root / "f.mp4"
+        path.write_bytes(os.urandom(size))
+        return path
+
+    def test_from_env_reads_sse_and_key_id(self):
+        base = {"VOLT_STORAGE": "s3", "VOLT_S3_BUCKET": "b"}
+        c = storage.from_env({**base, "VOLT_S3_SSE": "KMS", "VOLT_S3_KMS_KEY_ID": " alias/volt "}).config
+        self.assertEqual((c.sse, c.kms_key_id), ("aws:kms", "alias/volt"))
+        self.assertEqual(storage.from_env({**base, "VOLT_S3_SSE": "aes256"}).config.sse, "AES256")
+        none = storage.from_env(base).config
+        self.assertEqual((none.sse, none.kms_key_id), (None, None))
+        with self.assertRaises(StorageConfigError):
+            storage.from_env({**base, "VOLT_S3_SSE": "rot13"})
+        with self.assertRaisesRegex(StorageConfigError, "needs VOLT_S3_SSE"):
+            storage.from_env({**base, "VOLT_S3_KMS_KEY_ID": "k"})
+        with self.assertRaisesRegex(StorageConfigError, "http"):
+            storage.from_env({**base, "VOLT_S3_PUBLIC_URL_BASE": "cdn.example.com"})
+
+    def test_put_sends_the_encryption_arguments(self):
+        seen = {}
+
+        class Recording(FakeS3Client):
+            def upload_file(self, Filename, Bucket, Key, ExtraArgs=None, Config=None):
+                seen.update(ExtraArgs)
+                super().upload_file(Filename, Bucket, Key, ExtraArgs, Config)
+
+            def head_object(self, Bucket, Key, ChecksumMode=None):
+                head = super().head_object(Bucket, Key, ChecksumMode)
+                head["ServerSideEncryption"] = "aws:kms"
+                return head
+
+        backend = _s3(Recording(), sse="aws:kms", kms_key_id="alias/volt")
+        backend.put_file(self.file(100), "a/k.mp4")
+        self.assertEqual((seen["ServerSideEncryption"], seen["SSEKMSKeyId"]), ("aws:kms", "alias/volt"))
+        plain = {}
+
+        class Plain(FakeS3Client):
+            def upload_file(self, Filename, Bucket, Key, ExtraArgs=None, Config=None):
+                plain.update(ExtraArgs)
+                super().upload_file(Filename, Bucket, Key, ExtraArgs, Config)
+        _s3(Plain()).put_file(self.file(100), "a/k.mp4")
+        self.assertNotIn("ServerSideEncryption", plain)
+        self.assertNotIn("SSEKMSKeyId", plain)
+
+    def test_a_server_that_did_not_encrypt_is_not_a_good_upload(self):
+        client = FakeS3Client()
+        with self.assertRaisesRegex(StorageError, "not encrypted as configured"):
+            _s3(client, sse="aws:kms").put_file(self.file(100), "a/k.mp4")
+        self.assertEqual(client.objects, {})  # deleted, not left looking good
+
+    def test_kms_upload_verifies_by_sha256_when_the_etag_is_not_an_md5(self):
+        client = FakeS3Client(kms=True, etag=True)
+        obj = _s3(client, sse="aws:kms").put_file(self.file(1000), "a/k.mp4")
+        self.assertEqual(obj.size, 1000)
+
+    @unittest.skipUnless(HAVE_BOTO, "boto3 is not installed")
+    def test_real_boto3_client_puts_the_kms_headers_single_and_multipart(self):
+        """botocore Stubber: boto3 validates the SSE arguments on the real PutObject / CreateMultipartUpload calls
+        (parameter validation, not a wire capture); no network, no AWS."""
+        import boto3
+        from botocore.stub import ANY, Stubber
+        key_arn = "arn:aws:kms:us-east-2:111122223333:key/abc"
+        for size in (2048, 5 * MB + 1):
+            with self.subTest(size=size), _aws_free_env(self.tmp.name, AWS_ACCESS_KEY_ID="AKIAFAKE",
+                                                        AWS_SECRET_ACCESS_KEY="fake"):
+                boto3.setup_default_session()  # a fresh session: the default one caches resolved credentials
+                backend = S3Backend(S3Config(bucket="b", prefix="p", region="us-east-2", sse="aws:kms",
+                                             kms_key_id=key_arn, part_mb=5))
+                client = backend.client
+                src = self.file(size)
+                multipart = size >= 5 * MB
+                sums = storage._part_digests(src, 5 * MB if multipart else size)
+                sha = (storage._b64(hashlib.sha256(b"".join(d for d, _ in sums)).digest()) + f"-{len(sums)}") \
+                    if multipart else storage._b64(sums[0][0])
+                sse = {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_arn}
+                with Stubber(client) as stub:
+                    if multipart:
+                        stub.add_response("create_multipart_upload", {"UploadId": "u", "Bucket": "b", "Key": "k"},
+                                          {"Bucket": "b", "Key": "p/a/k.mp4", "ContentType": "video/mp4",
+                                           "ChecksumAlgorithm": "SHA256", **sse})
+                        for n in range(len(sums)):
+                            stub.add_response("upload_part", {"ETag": f'"e{n}"',
+                                                              "ChecksumSHA256": storage._b64(sums[n][0])})
+                        stub.add_response("complete_multipart_upload", {"Bucket": "b", "Key": "k"})
+                    else:
+                        stub.add_response("put_object", {"ETag": '"x"', "ServerSideEncryption": "aws:kms"},
+                                          {"Bucket": "b", "Key": "p/a/k.mp4", "Body": ANY, "ContentType": "video/mp4",
+                                           "ChecksumAlgorithm": "SHA256", **sse})
+                    stub.add_response("head_object", {"ContentLength": size, "ChecksumSHA256": sha,
+                                                      "ServerSideEncryption": "aws:kms"})
+                    backend.put_file(src, "a/k.mp4")
+                    stub.assert_no_pending_responses()
+
+
+class S3PublicMode(unittest.TestCase):
+    def test_public_base_urls_are_stable_unsigned_and_ignore_expiry(self):
+        backend = _s3(FakeS3Client(), public_url_base="https://cdn.example.com/media/", prefix="shows")
+        first = backend.url("a/b.mp4")
+        self.assertEqual(first, "https://cdn.example.com/media/shows/a/b.mp4")
+        self.assertEqual(backend.url("a/b.mp4", expires=5), first)
+        self.assertNotIn("?", first)
+
+    def test_put_returns_the_public_url_and_never_signs(self):
+        class NoSign(FakeS3Client):
+            def generate_presigned_url(self, *a, **k):
+                raise AssertionError("public mode must not sign")
+        with TemporaryDirectory() as tmp:
+            f = Path(tmp) / "f.mp4"
+            f.write_bytes(b"x" * 50)
+            obj = _s3(NoSign(), public_url_base="https://cdn.example.com").put_file(f, "a/b.mp4")
+        self.assertEqual(obj.url, "https://cdn.example.com/pre/a/b.mp4")
+
+
+@unittest.skipUnless(HAVE_BOTO, "boto3 is not installed")
+class S3DefaultCredentialChain(unittest.TestCase):
+    """No static key is needed or read: whatever boto3's chain finds is used. The container-role endpoint is
+    served from a local port 0 socket, so no AWS is contacted. EC2 IMDS and web-identity are NOT exercised."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _fresh_session(self):
+        import boto3
+        boto3.setup_default_session()  # the default session caches resolved credentials across tests
+        self.addCleanup(boto3.setup_default_session)
+
+    def _serve(self):
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            seen_auth = []
+
+            def do_GET(self):
+                Handler.seen_auth.append(self.headers.get("Authorization"))
+                body = json.dumps({"AccessKeyId": "ASIAROLEKEY", "SecretAccessKey": "rolesecret",
+                                   "Token": "roletoken", "Expiration": "2099-01-01T00:00:00Z"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, Handler
+
+    def test_url_is_signed_with_role_credentials_and_no_static_keys(self):
+        server, handler = self._serve()
+        uri = f"http://127.0.0.1:{server.server_address[1]}/creds"
+        with _aws_free_env(self.tmp.name, AWS_CONTAINER_CREDENTIALS_FULL_URI=uri,
+                           AWS_CONTAINER_AUTHORIZATION_TOKEN="tok"):
+            self._fresh_session()
+            backend = storage.from_env({"VOLT_STORAGE": "s3", "VOLT_S3_BUCKET": "b", "VOLT_S3_REGION": "us-east-2"})
+            url = backend.url("a/k.mp4")
+        self.assertIn("X-Amz-Credential=ASIAROLEKEY", url)
+        self.assertIn("X-Amz-Security-Token=roletoken", url)
+        self.assertEqual(handler.seen_auth, ["tok"])
+
+    def test_no_credentials_anywhere_is_a_storage_error_with_a_reason(self):
+        with _aws_free_env(self.tmp.name):
+            self._fresh_session()
+            backend = storage.from_env({"VOLT_STORAGE": "s3", "VOLT_S3_BUCKET": "b", "VOLT_S3_REGION": "us-east-2"})
+            with self.assertRaisesRegex(StorageError, "could not sign a URL"):
+                backend.url("a/k.mp4")
+
+    def test_the_client_is_built_without_any_key_arguments(self):
+        import boto3
+        with _aws_free_env(self.tmp.name), mock.patch.object(boto3, "client") as client:
+            S3Backend(S3Config(bucket="b", region="us-east-2"))._make_client()
+        kwargs = client.call_args.kwargs
+        self.assertEqual(sorted(kwargs), ["config", "endpoint_url", "region_name"])
+
+
 class PublishThroughStorage(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -442,6 +648,105 @@ class PublishThroughStorage(unittest.TestCase):
         self.assertEqual(publish_mod.refresh_expiring(self.store, LocalBackend(self.root / "out"), 10**9, now=now).refreshed, [])
         public = _s3(FakeS3Client(), public_url_base="https://cdn.example/v")
         self.assertEqual(publish_mod.refresh_expiring(self.store, public, 10**9, now=now).refreshed, [])
+
+    def test_public_mode_moves_old_presigned_urls_to_the_stable_url_once(self):
+        from datetime import datetime, timezone
+        presigned = _s3(self._sigv4_client(["20260101T000000Z"]), url_expires=1000)
+        publish_files(self.store, self.span, None, backend=presigned, scratch=self.root / "s")
+        public = _s3(FakeS3Client(), public_url_base="https://cdn.example/v")
+        now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        report = publish_mod.refresh_expiring(self.store, public, 60, now=now)
+        self.assertEqual(len(report.refreshed), 3)
+        for kind, row in self.versions().items():
+            self.assertEqual(row["url"], f"https://cdn.example/v/pre/{self.asset.id}/{self.span}-{kind}.mp4")
+        again = publish_mod.refresh_expiring(self.store, public, 60, now=now)
+        self.assertEqual((again.refreshed, again.skipped), ([], 3))
+
+    def test_a_second_refresher_does_not_double_refresh_a_version(self):
+        """Another runner commits its refresh between our read and our write: our compare-and-set loses."""
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        stamp = [t0.strftime("%Y%m%dT%H%M%SZ")]
+        base = self._sigv4_client(stamp)
+        publish_files(self.store, self.span, None, backend=_s3(base, url_expires=1000), scratch=self.root / "s")
+        winner = "https://winner.invalid/u?X-Amz-Date=20260101T000900Z&X-Amz-Expires=1000"
+        store = self.store
+
+        class Racy(type(base)):
+            def generate_presigned_url(self, op, Params, ExpiresIn):
+                url = super().generate_presigned_url(op, Params, ExpiresIn)
+                if "house" in Params["Key"]:
+                    store.conn.execute("UPDATE version SET url = ? WHERE storage_key LIKE '%house%'", (winner,))
+                    store.conn.commit()
+                return url
+        racy = _s3(Racy(), url_expires=1000)
+        report = publish_mod.refresh_expiring(self.store, racy, 100, now=t0 + timedelta(seconds=990))
+        house = self.versions()["house"]
+        self.assertNotIn(house["id"], report.refreshed)
+        self.assertEqual(house["url"], winner)
+        self.assertEqual(len(report.refreshed), 2)
+
+    def _aging(self):
+        """Published 990 s into a 1000 s lifetime, and a stamp the test can move to 'now' for new signs."""
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime.now(timezone.utc)
+        stamp = [(t0 - timedelta(seconds=990)).strftime("%Y%m%dT%H%M%SZ")]
+        backend = _s3(self._sigv4_client(stamp), url_expires=1000)
+        publish_files(self.store, self.span, None, backend=backend, scratch=self.root / "s")
+        stamp[0] = t0.strftime("%Y%m%dT%H%M%SZ")
+        return backend
+
+    def _runner(self, config, clock):
+        from volt import runner as runner_mod
+        r = runner_mod.Runner(self.store, {}, mono=lambda: clock[0])
+        r.periodic.append(runner_mod.Periodic("refresh-urls", 60, runner_mod.refresh_urls_task(config)))
+        return r
+
+    def test_runner_periodic_refresh_is_opt_in_timed_and_survives_failure(self):
+        from volt import runner as runner_mod
+        backend = self._aging()
+        before = {k: r["url"] for k, r in self.versions().items()}
+        clock = [0.0]
+        off = runner_mod.Runner(self.store, {}, mono=lambda: clock[0])
+        self.assertEqual(off.run_periodic(), {})  # no task configured: nothing happens
+        self.assertEqual({k: r["url"] for k, r in self.versions().items()}, before)
+        on = self._runner(runner_mod.Config(storage=backend, refresh_urls_every=60, refresh_urls_within=100), clock)
+        self.assertEqual(len(on.run_periodic()["refresh-urls"].refreshed), 3)  # due at start
+        after = {k: r["url"] for k, r in self.versions().items()}
+        self.assertTrue(all(after[k] != before[k] for k in before))
+        clock[0] = 30
+        self.assertEqual(on.run_periodic(), {})  # not due yet
+        clock[0] = 61
+        self.assertEqual(len(on.run_periodic()["refresh-urls"].refreshed), 0)  # due; nothing near expiry now
+
+        def boom(store):
+            raise storage.StorageError("bucket gone")
+        bad = runner_mod.Runner(self.store, {}, mono=lambda: clock[0])
+        bad.periodic.append(runner_mod.Periodic("refresh-urls", 60, boom))
+        with self.assertLogs("volt.runner", "WARNING"):
+            self.assertEqual(bad.run_periodic(), {})
+        self.assertEqual(bad.periodic_failures, 1)
+
+    def test_two_runners_refresh_each_version_once(self):
+        from volt import runner as runner_mod
+        backend = self._aging()
+        config = runner_mod.Config(storage=backend, refresh_urls_every=60, refresh_urls_within=100)
+        runners = [self._runner(config, [0.0]) for _ in range(2)]
+        done = [len(r.run_periodic()["refresh-urls"].refreshed) for r in runners]
+        self.assertEqual(sorted(done), [0, 3])
+
+    def test_runner_periodic_task_does_nothing_for_local_storage(self):
+        from volt import runner as runner_mod
+        publish_files(self.store, self.span, self.root / "out", backend=LocalBackend(self.root / "out"))
+        config = runner_mod.Config(publish_dir=self.root / "out", refresh_urls_every=60)
+        report = runner_mod.refresh_urls_task(config)(self.store)
+        self.assertEqual((report.refreshed, report.failed), ([], []))
+
+    def test_runner_env_for_the_refresh(self):
+        from volt import runner as runner_mod
+        self.assertEqual(runner_mod.Config.from_env({}).refresh_urls_every, 0)
+        c = runner_mod.Config.from_env({"VOLT_REFRESH_URLS_EVERY": "3600", "VOLT_REFRESH_URLS_WITHIN": "7200"})
+        self.assertEqual((c.refresh_urls_every, c.refresh_urls_within), (3600, 7200))
 
     def test_url_expiry_reads_sigv4_and_sigv2_and_ignores_the_rest(self):
         from datetime import datetime, timezone

@@ -244,22 +244,32 @@ def refresh_url(store: Store, version_id: str, backend: Optional[Backend] = None
                 expires: Optional[int] = None) -> str:
     """Make a new URL for a stored version (a presigned URL expires) and write it back. Needs the same
     bucket and prefix the version was stored under; a mismatch is an error rather than a wrong URL."""
+    return _refresh(store, version_id, backend, expires)[0]
+
+
+def _refresh(store: Store, version_id: str, backend: Optional[Backend], expires: Optional[int]):
+    """(url, won). The write is compare-and-set on the URL that was read, so when two refreshers race for one
+    version exactly one changes the row (`won`); the other gets the winner's URL back and `won` is False."""
     row = store.conn.execute(
         "SELECT url, storage_backend, storage_key FROM version WHERE id = ?", (version_id,)).fetchone()
     if row is None:
         raise KeyError(version_id)
     if not row["storage_backend"] or not row["storage_key"]:
-        return row["url"]  # a volt:// placeholder or a version from before the storage seam
+        return row["url"], False  # a volt:// placeholder or a version from before the storage seam
     if row["storage_backend"] == "local":
-        return row["url"]  # file:// URLs do not expire
+        return row["url"], False  # file:// URLs do not expire
     backend = backend if backend is not None else storage.from_env()
     if backend.id != row["storage_backend"]:
         raise StorageError(f"this version is stored in {row['storage_backend']} but the configured "
                            f"storage is {backend.id}")
     url = backend.url(row["storage_key"], expires)
-    store.conn.execute("UPDATE version SET url = ? WHERE id = ?", (url, version_id))
+    cur = store.conn.execute("UPDATE version SET url = ? WHERE id = ? AND url = ?",
+                             (url, version_id, row["url"]))
     store.conn.commit()
-    return url
+    if cur.rowcount == 1:
+        return url, True
+    current = store.conn.execute("SELECT url FROM version WHERE id = ?", (version_id,)).fetchone()
+    return (current["url"] if current else url), False
 
 
 def url_expiry(url: Optional[str]) -> Optional[datetime]:
@@ -300,26 +310,37 @@ def refresh_expiring(store: Store, backend: Optional[Backend] = None, within_sec
     """Re-sign every done version whose presigned URL expires within `within_seconds` (or already has).
 
     Only versions stored under `backend` (same bucket and prefix) are looked at. Nothing happens for the local
-    backend or an S3 backend with a public URL base: those URLs do not expire. A URL whose expiry cannot be
-    read is counted as skipped, not guessed at. One bad version is recorded in `failed` and the loop goes on."""
+    backend: file:// URLs do not expire. With an S3 public URL base the URLs never expire either, so nothing is
+    re-signed; instead any done version still holding an older (presigned) URL is moved to its stable public URL
+    once. A URL whose expiry cannot be read is counted as skipped, not guessed at. One bad version is recorded in
+    `failed` and the loop goes on. Safe from several processes: a version is refreshed by exactly one."""
     report = RefreshReport()
     backend = backend if backend is not None else storage.from_env()
-    if isinstance(backend, LocalBackend) or getattr(getattr(backend, "config", None), "public_url_base", None):
+    if isinstance(backend, LocalBackend):
         return report
+    public = bool(getattr(getattr(backend, "config", None), "public_url_base", None))
     now = now or datetime.now(timezone.utc)
     horizon = now + timedelta(seconds=within_seconds)
     rows = store.conn.execute(
-        """SELECT id, url FROM version
+        """SELECT id, url, storage_key FROM version
            WHERE status = 'done' AND storage_backend = ? AND storage_key IS NOT NULL ORDER BY id""",
         (backend.id,)).fetchall()
     for row in rows:
         try:
-            expiry = url_expiry(row["url"])
-            if expiry is None or expiry > horizon:
-                report.skipped += 1
-                continue
-            refresh_url(store, row["id"], backend=backend, expires=expires)
-            report.refreshed.append(row["id"])
+            if public:
+                if row["url"] == backend.url(row["storage_key"]):
+                    report.skipped += 1
+                    continue
+            else:
+                expiry = url_expiry(row["url"])
+                if expiry is None or expiry > horizon:
+                    report.skipped += 1
+                    continue
+            _, won = _refresh(store, row["id"], backend, expires)
+            if won:
+                report.refreshed.append(row["id"])
+            else:
+                report.skipped += 1  # another refresher got there first
         except Exception as exc:  # noqa: BLE001 - one bad version must not stop the pass
             report.failed.append((row["id"], str(exc) or type(exc).__name__))
     return report
