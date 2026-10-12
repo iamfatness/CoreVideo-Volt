@@ -588,7 +588,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
 
 def _claim_slot(store: Store, asset_id: str):
     """One engine run per asset. A second transcribe does not start the model."""
-    job = store.enqueue(asset_id, "asr", f"asr-slot:{asset_id}")
+    job = store.enqueue(asset_id, "asr-slot", f"asr-slot:{asset_id}")
     owner = f"asr-{os.getpid()}"
     now = _now()
     expires = (datetime.now(timezone.utc) + timedelta(seconds=1800)).strftime("%Y-%m-%dT%H:%M:%SZ")

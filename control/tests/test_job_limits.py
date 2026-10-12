@@ -35,6 +35,7 @@ class JobLimitTests(unittest.TestCase):
             self.assertTrue(all(v.status == "done" for v in versions))
             self.assertTrue(seen["lease"])
             self.assertTrue(seen["owner"])
+            store.close()
 
     def test_second_proxy_does_not_encode(self):
         with TemporaryDirectory() as tmp:
