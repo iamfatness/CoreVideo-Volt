@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
@@ -21,8 +22,8 @@ from volt.store import Store, _id, _now
 KINDS = ("house", "ott", "social")
 
 # How long a writer's claim on one version (the job row `publish:<span>:<kind>`) holds before another writer may
-# take it over. A render has no heartbeat, so this is longer than any cut should take; a writer that dies
-# mid-render blocks that one version for at most this long. Runner.recover_expired also re-queues such a row.
+# take it over. A heartbeat renews it while the renderer runs, so a long cut keeps its claim. A writer that
+# dies mid-render blocks that one version until the lease lapses. Runner.recover_expired also re-queues it.
 CLAIM_LEASE = 1800.0
 
 
@@ -72,6 +73,36 @@ def _settle(store: Store, job_id: str, owner: str, status: str, error: str | Non
            WHERE id = ? AND claimed_by = ? AND status = 'running'""",
         (status, error, _stamp(), job_id, owner))
     return cur.rowcount == 1
+
+
+class _Heartbeat(threading.Thread):
+    """Renew this writer's claim while a render runs. Own connection: the render holds the caller's."""
+
+    def __init__(self, store: Store, job_id: str, owner: str, lease: float):
+        super().__init__(daemon=True)
+        self.store, self.job_id, self.owner, self.lease = store, job_id, owner, lease
+        self._done = threading.Event()
+
+    def run(self) -> None:
+        if not self.store.path or self.store.path == ":memory:":
+            return
+        interval = max(self.lease / 3, 0.05)
+        other = Store(self.store.path, init=False)
+        try:
+            while not self._done.wait(interval):
+                cur = other.conn.execute(
+                    """UPDATE job SET lease_expires_at = ? WHERE id = ? AND claimed_by = ?
+                       AND status = 'running'""",
+                    (_stamp(self.lease), self.job_id, self.owner))
+                other.conn.commit()
+                if cur.rowcount != 1:
+                    break
+        finally:
+            other.close()
+
+    def stop(self) -> None:
+        self._done.set()
+        self.join(timeout=5)
 
 
 def publish(
@@ -127,6 +158,8 @@ def publish(
         url = None
         stored: StoredObject | None = None
         if error is None and renderer is not None:
+            beat = _Heartbeat(store, job.id, owner, lease)
+            beat.start()
             try:
                 url = renderer(store, span, kind)
             except (DeliverableError, StorageError) as exc:
@@ -138,6 +171,8 @@ def publish(
                 with store.transaction():
                     _settle(store, job.id, owner, "failed", str(exc) or exc.__class__.__name__)
                 raise
+            finally:
+                beat.stop()
             if isinstance(url, StoredObject):
                 stored, url = url, url.url
         # The outcome of the job and of the version is one commit, and only the writer holding the claim

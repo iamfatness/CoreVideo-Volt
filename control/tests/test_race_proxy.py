@@ -39,11 +39,13 @@ class ProxyRaceTests:
     def test_two_builds_at_once_do_not_write_the_same_output_path(self):
         self._asset()
         with self._ffmpeg():
-            self.fake_hook = lambda: record.build_proxy(self.b, self.asset, self.proxy_dir, owned=True)
+            def second():
+                with self.assertRaises(record.ProxyBusy):
+                    record.build_proxy(self.b, self.asset, self.proxy_dir, owned=True)
+            self.fake_hook = second
             record.build_proxy(self.a, self.asset, self.proxy_dir, owned=True)
-        self.assertEqual(len(self.outs), 2)
-        self.assertNotEqual(self.outs[0], self.outs[1], "the record-start proxy and the final proxy share an output file")
-        self.assertEqual(sorted(p.name for p in self.proxy_dir.iterdir()), [f"{self.asset}.mp4"])  # no scratch left
+        self.assertEqual(len(self.outs), 1)
+        self.assertFalse(any(p.name.endswith(".proxy.lock") for p in self.proxy_dir.iterdir()))
 
     def test_a_failed_rebuild_leaves_the_good_proxy_alone(self):
         self._asset()

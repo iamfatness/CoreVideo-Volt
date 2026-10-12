@@ -228,6 +228,7 @@ class Store:
         init=False skips schema bootstrap on postgres, for callers that did it.
         """
         self.postgres = pg.is_dsn(path)
+        self.path = path
         if self.postgres:
             self.conn = pg.PgConnection(path)
             self.IntegrityError = self.conn.IntegrityError
