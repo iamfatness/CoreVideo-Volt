@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, pg, publish as publish_mod, record, speech, storage
+from volt import chunking, pg, publish as publish_mod, record, shots, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -220,7 +220,15 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
                 reasons.append(f"{v.kind}: {(row['error'] if row else None) or 'failed'}")
             raise RuntimeError("; ".join(reasons))
 
-    return {"proxy": proxy, "asr": asr, "publish": publish}
+    def shots_handler(store: Store, job: Claimed) -> None:
+        try:
+            shots.index_shots(store, job.asset_id)
+        except shots.ShotError as exc:
+            if "still recording" in str(exc) or "no hi-res" in str(exc):
+                raise Permanent(str(exc)) from exc
+            raise
+
+    return {"proxy": proxy, "asr": asr, "publish": publish, "shots": shots_handler}
 
 
 # ---- the runner ------------------------------------------------------------------------------------

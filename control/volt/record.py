@@ -205,6 +205,7 @@ def chain_after_wrap(store: Store, asset_id: str) -> None:
     (without using an attempt) until the asset is cleared."""
     store.enqueue(asset_id, "proxy", f"proxy-final:{asset_id}")
     store.enqueue(asset_id, "asr", f"asr:{asset_id}")
+    store.enqueue(asset_id, "shots", f"shots:{asset_id}")
 
 
 def _proxy_job(store: Store, asset_id: str) -> str:

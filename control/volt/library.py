@@ -39,7 +39,7 @@ def search(store: Store, query: str) -> list[Hit]:
     rows = store.conn.execute(
         """SELECT id, asset_id, tc_in, tc_out, text
            FROM span
-           WHERE kind = 'transcript' AND lower(text) LIKE ?
+           WHERE kind IN ('transcript', 'shot') AND lower(text) LIKE ?
            ORDER BY tc_in""",
         (f"%{needle}%",),
     ).fetchall()
