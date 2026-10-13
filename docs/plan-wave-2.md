@@ -18,7 +18,8 @@ Wave A and Wave B are on `main`. The suite is 485 tests, run on SQLite and on li
 | B4 Postgres hardening | #22 | Merged. Versioned migrations in `volt/migrations.py`. |
 | B5 Operator UI | #21, #23 | Merged; #23 makes Space the take key. |
 | Small fixes | #27 | Merged. `/rundown?show=<unknown>` returns 404; failed cues persist (migration 8); opt-in S3 URL refresh. |
-| Cross-process races | #28 | Merged. Publish claim, kill vs go, transcribe replace, proxy builds. Limits are in the specs. |
+| Cross-process races | #28 | Merged. Publish claim, kill vs go, transcribe replace, proxy builds. |
+| Job limits | #30 | Merged. Publish heartbeat, one proxy encode, late open-file proxy, one transcribe (`docs/job-limits.md`). |
 
 Schema changes go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number (next is 9).
 
@@ -28,7 +29,6 @@ Still open:
 
 - Live proof of record, stream and lower third against a real core. Needs the core running.
 - Azure Blob and GCS backends. S3: SSE-KMS, CDN or public-read, instance-role credentials. Nothing runs `publish refresh-urls` on a schedule yet.
-- Limits left by #28: the publish claim lease has no heartbeat (30 minutes); two proxy jobs can both encode; a proxy build begun during recording may finish after the final proxy (not reproduced); two runners can both transcribe.
 - Shot spans and the NLE panel.
 
 ## What the investigation found
