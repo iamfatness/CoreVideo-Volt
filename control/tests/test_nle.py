@@ -603,6 +603,41 @@ class Export(Behaviour):
         os.environ["VOLT_EXPORT_PATH_MAP"] = "garbage"
         self.refused(500, "bad_path_map", self.body([s1]))
 
+    def test_dry_run_tells_the_page_the_file_name_and_what_the_path_map_did(self):
+        # The export screen (slice 6) shows the file name before anything is written and says whether paths were rewritten.
+        a = self.asset(location="D:\\iso\\show\\cam1.mxf")
+        s1 = self.span(a, "01:00:00:00", "01:00:01:00")
+        s, p = self.post(self.body([s1], name="Final Four Watch selects", dry_run=True))
+        self.assertEqual(s, 200)
+        self.assertEqual(p["filename"], "Final_Four_Watch_selects.xml")
+        self.assertFalse(p["pathMapSet"])
+        self.assertEqual(p["paths"], [{"asset": a.id, "location": "D:\\iso\\show\\cam1.mxf", "path": "D:\\iso\\show\\cam1.mxf", "mapped": False}])
+        self.assertNotIn("content", p)
+        os.environ["VOLT_EXPORT_PATH_MAP"] = "D:\\iso=\\\\nas\\iso"
+        s, p = self.post(self.body([s1, s1], dry_run=True, format="edl"))
+        self.assertTrue(p["pathMapSet"])
+        self.assertEqual(p["filename"], "Volt_selects.edl")
+        self.assertEqual(len(p["paths"]), 1)                                 # one essence, however many spans use it
+        self.assertEqual((p["paths"][0]["mapped"], p["paths"][0]["location"]), (True, "D:\\iso\\show\\cam1.mxf"))
+        self.assertTrue(p["paths"][0]["path"].startswith("\\\\nas\\iso"))
+        s, real = self.post(self.body([s1], name="Final Four Watch selects"))    # the real run carries the same fields
+        self.assertEqual((real["filename"], real["pathMapSet"], len(real["paths"])), ("Final_Four_Watch_selects.xml", True, 1))
+
+    def test_dry_run_verdicts_and_refusals_the_page_relies_on(self):
+        cleared = self.asset()
+        held = self.asset(cleared=False)
+        s1 = self.span(cleared, "01:00:00:00", "01:00:01:00")
+        s2 = self.span(held, "01:00:00:00", "01:00:01:00")
+        s, p = self.post(self.body([s1, s2, s1], dry_run=True))
+        self.assertEqual(s, 200)
+        # one verdict per span sent, in the order sent, so the page can line them up with its own rows
+        self.assertEqual([v["id"] for v in p["spans"]], [s1, s2, s1])
+        self.assertEqual([v["status"] for v in p["spans"]], ["ready", "blocked", "ready"])
+        self.assertEqual(p["spans"][1]["blockedBy"], "not cleared")
+        self.assertTrue(p["preview"])
+        e = self.refused(409, "blocked", self.body([s1, s2]))
+        self.assertEqual([v["status"] for v in e["spans"]], ["ready", "blocked"])      # `spans` is top level, not inside `error`
+
     def test_bad_input(self):
         a = self.asset()
         s1 = self.span(a, "01:00:00:00", "01:00:01:00")

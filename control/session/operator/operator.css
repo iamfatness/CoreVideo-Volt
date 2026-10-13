@@ -274,3 +274,19 @@ table.keys th.group{padding-top:14px;color:var(--text)}
 .info{border:1px solid var(--hair);border-left:4px solid var(--signal);background:var(--signal-bg);padding:10px 14px;border-radius:4px}
 .info strong{color:var(--signal)}
 .state-card .empty .acts,.empty .acts{justify-content:center}
+
+/* library: export to an NLE (slice 6; docs/mockups/shot-spans.html, "Selection to export"). Same tokens; status is a glyph and a word. */
+.tablewrap{overflow-x:auto}
+.verd{white-space:nowrap;font-weight:600}
+.x-msg .info,.x-msg .banner{margin:0 0 16px}
+pre.code{margin:0;padding:12px 14px;overflow:auto;font:12px/1.5 Consolas,"Cascadia Mono",monospace;color:var(--text);background:#101010;max-height:300px;tab-size:2;border-radius:4px}
+.good{border:1px solid var(--ok);border-left:4px solid var(--ok);background:var(--ok-bg);padding:10px 14px;border-radius:4px;overflow-wrap:anywhere}
+.good strong{color:var(--ok)}
+fieldset.plainset{border:0;padding:0;margin:0}
+fieldset.plainset legend{padding:0;font-size:.8rem;letter-spacing:1px;text-transform:uppercase;margin:12px 0 0}
+ul.plain{margin:6px 0 0;padding-left:1.2em}
+ul.paths li{overflow-wrap:anywhere;color:var(--muted)}
+.x-act dl.kv{padding-bottom:0}
+.x-act .note{border-top:0;padding-top:0}
+#lib-x-opts .note{padding-left:0;padding-right:0;border-top:0}
+.nm{font-weight:600}

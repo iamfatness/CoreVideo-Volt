@@ -182,6 +182,7 @@ class Source:
     duration: Optional[int]       # frames, None unknown
     channels: Optional[int]       # audio channels, None unknown or none
     reel: str = ""                # EDL reel, set by build_edl when empty
+    location: str = ""            # the essence's location as stored, before the path map
 
 
 @dataclass(frozen=True)
@@ -568,7 +569,7 @@ def _source(store, asset_id, media, pairs, cache) -> tuple:
     channels = parse_layout(chosen["audio_layout"]) or parse_layout(hi["audio_layout"])
     duration = chosen["duration_frames"] if chosen["duration_frames"] is not None else f.duration
     src = Source(f"{asset_id}:{media}", asset_id, path, f.rate, f.drop, f.start,
-                 None if duration is None else int(duration), channels)
+                 None if duration is None else int(duration), channels, location=chosen["location"])
     cache[key] = (src, f)
     return cache[key]
 
@@ -578,6 +579,18 @@ def item_name(row) -> str:
     if label:
         return label
     return clean(f"{row['camera'] or row['asset_id'][:8]} {row['tc_in']}", 200)
+
+
+def _paths(cache: dict) -> list:
+    """Where each exported essence is: as stored and as written to the file. Lets the page say whether the path
+    map did anything (an EDL carries no paths at all, but the list is the same)."""
+    seen, out = set(), []
+    for src, _f in cache.values():
+        if src.key in seen:
+            continue
+        seen.add(src.key)
+        out.append({"asset": src.asset_id, "location": src.location, "path": src.path, "mapped": src.path != src.location})
+    return out
 
 
 def export(store: Store, body: dict, path_map: Optional[str] = None) -> dict:
@@ -615,11 +628,12 @@ def export(store: Store, body: dict, path_map: Optional[str] = None) -> dict:
     warnings += built.warnings
     resp = {"ok": True, "format": req["format"], "spans": statuses, "warnings": warnings,
             "durationFrames": built.duration_frames, "rate": str(built.rate), "startTc": built.start_tc,
-            "dropFrame": built.drop}
+            "dropFrame": built.drop, "filename": filename(req["name"], built.extension),
+            "pathMapSet": bool(pairs), "paths": _paths(cache)}
     if req["dry_run"]:
         resp.update(dryRun=True, preview=built.content.splitlines()[:PREVIEW_LINES])
         return resp
     sha = hashlib.sha256(built.content.encode("utf-8")).hexdigest()
     LOG(f"nle export {req['format']} spans={','.join(req['spans'])} sha256={sha}")
-    resp.update(filename=filename(req["name"], built.extension), mime=built.mime, content=built.content, sha256=sha)
+    resp.update(mime=built.mime, content=built.content, sha256=sha)
     return resp

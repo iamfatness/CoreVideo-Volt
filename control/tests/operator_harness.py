@@ -5,14 +5,16 @@
 
 `--no-runner` leaves queued detection and indexing jobs queued, so those states can be looked at.
 Scenarios: normal, held, take_fail, record_requested, record_producing, record_finalizing,
-record_completed, publish_progress, publish_partial, library. The page is then at /operator.
-`library` adds assets for the Library screen (see seed_library). `--token T` makes the server require a bearer token.
+record_completed, publish_progress, publish_partial, library, export. The page is then at /operator.
+`library` adds assets for the Library screen (see seed_library). `export` is `library` plus assets that make each
+export refusal reachable (see seed_export) and a path map. `--token T` makes the server require a bearer token.
 Used for the screenshots in docs/mockups and by the accessibility and keyboard passes.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import tempfile
@@ -32,7 +34,7 @@ from volt.rundown import add_item, attach, open_show
 from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
-             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library"]
+             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -140,7 +142,51 @@ def seed_library(store: Store, media_dir: Path) -> dict:
     return out
 
 
+def seed_export(store: Store, media_dir: Path, ids: dict) -> dict:
+    """Extra assets for the Library's export tab, on top of seed_library. Returns {name: asset id}.
+
+    iso-9   closed, cleared, LEGAL HOLD, proxy, one shot       -> blocked: legal hold
+    iso-10  closed, cleared, proxy, hi-res is an s3:// key      -> hi-res: not_local; proxy exports
+    iso-11  closed, cleared, 29.97 drop-frame, proxy, one shot  -> with a 25 fps span: mixed_rates
+    iso-7 (from seed_library, still recording) gets one clip    -> hi-res: essence_open; proxy: no_proxy
+    iso-6 (29.97, not cleared) and iso-4 (25) together          -> blocked: not cleared; with it left out, the rest is 25 only
+    The harness also points VOLT_EXPORT_PATH_MAP at a made-up share (see serve_scenario), so paths are rewritten.
+    """
+    out = {}
+    nine = store.mint_asset(owner="desk", show_name="Final Four Watch", camera="iso-9")
+    store.set_cleared(nine.id, True)
+    store.set_hold(nine.id, True)
+    store.add_essence(nine.id, "hi-res", str(media_dir / "iso-9.mxf"), frame_rate="25", timecode_start="01:00:00:00", duration_frames=500)
+    p = media_dir / "iso-9-proxy.mp4"
+    _proxy_file(p, 20, "25")
+    store.add_essence(nine.id, "proxy", str(p))
+    shots.create(store, nine.id, "shot", "01:00:04:00", "01:00:09:12", label="Post-game handshake")
+    out["iso-9"] = nine.id
+
+    ten = store.mint_asset(owner="desk", show_name="Final Four Watch", camera="iso-10")
+    store.set_cleared(ten.id, True)
+    store.add_essence(ten.id, "hi-res", "s3://volt-archive/iso-10.mxf", frame_rate="25", timecode_start="01:00:00:00", duration_frames=500)
+    p = media_dir / "iso-10-proxy.mp4"
+    _proxy_file(p, 20, "25")
+    store.add_essence(ten.id, "proxy", str(p), frame_rate="25", timecode_start="01:00:00:00")
+    shots.create(store, ten.id, "shot", "01:00:02:00", "01:00:08:00", label="Archive wide")
+    out["iso-10"] = ten.id
+
+    eleven = store.mint_asset(owner="desk", show_name="Final Four Watch", camera="iso-11")
+    store.set_cleared(eleven.id, True)
+    store.add_essence(eleven.id, "hi-res", str(media_dir / "iso-11.mxf"), frame_rate="30000/1001", timecode_start="01:00:00;00", duration_frames=1800)
+    p = media_dir / "iso-11-proxy.mp4"
+    _proxy_file(p, 20, "30000/1001")
+    store.add_essence(eleven.id, "proxy", str(p))
+    shots.create(store, eleven.id, "shot", "01:00:02;00", "01:00:09;10", label="Tip-in, 29.97")
+    out["iso-11"] = eleven.id
+
+    shots.create(store, ids["iso-7"], "clip", "01:00:05:00", "01:00:08:00", label="Live moment")
+    return out
+
+
 def seed(store: Store, scenario: str, media_dir=None):
+    """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
     cam3 = store.mint_asset(owner="desk", show_name="Final Four Watch", camera="iso-3")
     store.set_cleared(cam3.id, True)
@@ -187,8 +233,12 @@ def seed(store: Store, scenario: str, media_dir=None):
             "record_finalizing": obs("finalizing", path=r"C:\iso\iso-3.mp4"),
             "record_completed": obs("completed", path=r"C:\iso\iso-3.mp4", finalized=True),
         }[scenario]
-    if scenario == "library":
-        for camera, asset_id in seed_library(store, Path(media_dir or tempfile.mkdtemp())).items():
+    if scenario in ("library", "export"):
+        media = Path(media_dir or tempfile.mkdtemp())
+        lib = seed_library(store, media)
+        if scenario == "export":
+            lib.update(seed_export(store, media, lib))
+        for camera, asset_id in lib.items():
             spans["asset:" + camera] = asset_id
     return FakeRoom([room_obs], senders=senders, states=[{"lowerThirdOnAir": True}]), show, spans
 
@@ -227,6 +277,8 @@ def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None, ru
         # Publish the Open clip first with a failing social render so the page opens on the aftermath.
         publish(store, spans["open"], fail="social")
     store.close()
+    if scenario == "export":    # this process is the harness server, so setting its environment is its own business
+        os.environ["VOLT_EXPORT_PATH_MAP"] = tmp.name + "=\\\\nas\\iso"
     serve.DB_PATH, serve.TOKEN, serve.ROOM = path, token, room
     serve.OUT_DIR = Path(tmp.name) / "out"          # thumbnails land here, not in the repo
     serve.POLL.update(attempts=3, interval=0.05, sleep=time.sleep)

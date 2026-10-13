@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -152,6 +153,39 @@ class Library(Api):
             self.assertNotIn(show_only, keys)
         # the shot list's keys stand down on this tab, so Enter and Space cannot do two things
         self.assertIn("W.tab === 'words') return;", js[js.index("function libKey"):js.index("function libKey") + 200])
+
+    def test_the_export_tab_is_wired_warns_and_has_no_keys(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        for needle in ('id="lib-tab-export"', 'id="lib-export"', 'id="lib-x-table"', 'id="lib-x-prev"', 'id="lib-x-opts"',
+                       'id="lib-x-act"', 'id="lib-x-done"', "Library, Selection to export tab"):
+            self.assertIn(needle, html)
+        self.assertIn("exportNle:   ['POST', '/api/exports/nle']", js)
+        body = js[js.index("// ---- Library: export to an NLE"):js.index("// ---- dialogs, keys, screens")]
+        # the format is unverified until the owner records the import check; the page says so and the switch is one constant
+        self.assertIn("const FORMAT_VERIFIED = false;", body)
+        self.assertIn("Not checked in an NLE yet.", body)
+        self.assertIn("Manual import check", body)
+        self.assertIn("Result: not yet recorded.", (Path(serve.ROOT).parents[1] / "docs" / "specs" / "shot-spans.md").read_text(encoding="utf-8"))
+        # no key handler of its own, nothing of the Show keys, and the shot list's keys stand down on the tab
+        for forbidden in ("keydown", "takeNow", "toggleHold", "skipItem", "killItem", "location.hash", "e.key"):
+            self.assertNotIn(forbidden, body)
+        libkey = js[js.index("function libKey"):js.index("function libKey") + 400]
+        self.assertIn("W.tab === 'export') return;", libkey)
+        # the file is saved from a Blob after a fetch (so the bearer token travels), never from a URL with a token in it
+        self.assertIn("new Blob([done.content]", body)
+        self.assertIn("URL.createObjectURL", body)
+        self.assertIn("await call('exportNle'", body)
+        self.assertNotIn("?token", body)
+        self.assertNotIn("access_token", body)
+        # the tray's button now opens the tab instead of being disabled
+        tray = js[js.index("function paintTray"):js.index("function paintSpan")]
+        self.assertIn("onclick: xOpen", tray)
+        self.assertNotIn("disabled: true", tray)
+        # every refusal code the server can send has words
+        server_codes = set(re.findall(r'NleError\(\d+,\s*"(\w+)"', (Path(serve.ROOT).parent / "volt" / "nle.py").read_text(encoding="utf-8")))
+        server_codes |= {"bad_input", "not_found"}
+        for code in sorted(server_codes):
+            self.assertRegex(body, rf"\b{code}: \[", code)
 
     def test_the_old_keys_are_unchanged(self):
         js = FILES["operator.js"]
@@ -311,6 +345,72 @@ class LibraryScenario(Api):
     def test_detect_waits_for_the_asset_that_is_still_recording(self):
         status, p = self.post(f"/api/assets/{self.ids['iso-7']}/shots/detect", {})
         self.assertEqual((status, p["error"]["code"]), (409, "essence_open"))
+
+
+class ExportScenario(Api):
+    """The harness's `export` scenario: each refusal the export tab words is reachable, through the same route the page calls."""
+
+    def setUp(self):
+        super().setUp()
+        serve.OUT_DIR = Path(self.tmp.name) / "out"
+        serve.ROOM, self.show, self.spans = seed(self.store, "export", media_dir=Path(self.tmp.name))
+        self.ids = {k[6:]: v for k, v in self.spans.items() if k.startswith("asset:")}
+        self._env = os.environ.get("VOLT_EXPORT_PATH_MAP")
+        self.addCleanup(lambda: os.environ.pop("VOLT_EXPORT_PATH_MAP", None) if self._env is None else os.environ.__setitem__("VOLT_EXPORT_PATH_MAP", self._env))
+        os.environ.pop("VOLT_EXPORT_PATH_MAP", None)
+
+    def span(self, camera, label):
+        _, p, _ = self.call("GET", f"/api/assets/{self.ids[camera]}/spans?limit=500")
+        return next(s["id"] for s in p["spans"] if s["label"] == label)
+
+    def dry(self, spans, **kw):
+        return self.post("/api/exports/nle", {"format": "xmeml", "spans": spans, "dry_run": True, **kw})
+
+    def test_a_clean_selection_previews_and_exports_with_the_file_name(self):
+        a, b = self.span("iso-4", "Bench reaction"), self.span("iso-4", "Steal and drive")
+        s, p = self.dry([a, b], name="Final Four Watch selects")
+        self.assertEqual((s, p["ok"], p["filename"], p["rate"]), (200, True, "Final_Four_Watch_selects.xml", "25"))
+        self.assertEqual([v["status"] for v in p["spans"]], ["ready", "ready"])
+        self.assertTrue(p["preview"][0].startswith("<?xml"))
+        s, p = self.post("/api/exports/nle", {"format": "xmeml", "spans": [a, b], "name": "Final Four Watch selects"})
+        self.assertEqual((s, p["filename"]), (200, "Final_Four_Watch_selects.xml"))
+        self.assertIn("<xmeml", p["content"])
+
+    def test_rights_are_verdicts_in_a_dry_run_and_a_refusal_in_a_real_one(self):
+        ok, hold, nc = self.span("iso-4", "Bench reaction"), self.span("iso-9", "Post-game handshake"), self.span("iso-6", "Tip")
+        s, p = self.dry([ok, hold, nc])
+        self.assertEqual(s, 200)
+        self.assertEqual([(v["status"], v.get("blockedBy")) for v in p["spans"]], [("ready", None), ("blocked", "legal hold"), ("blocked", "not cleared")])
+        body = {"format": "xmeml", "spans": [ok, hold, nc]}
+        e = self.refused(409, "blocked", "/api/exports/nle", body)
+        self.assertEqual(len(e["spans"]), 3)
+        s, p = self.post("/api/exports/nle", {**body, "skip_blocked": True})
+        self.assertEqual(s, 200)
+        self.assertIn("VOLT SKIPPED", p["content"])
+        self.assertTrue(any("left out" in w for w in p["warnings"]))
+
+    def test_every_other_refusal_has_a_reachable_case(self):
+        wide, arch = self.span("iso-4", "Bench reaction"), self.span("iso-10", "Archive wide")
+        live, tip = self.span("iso-7", "Live moment"), self.span("iso-11", "Tip-in, 29.97")
+        self.refused(409, "not_local", "/api/exports/nle", {"format": "xmeml", "spans": [wide, arch], "dry_run": True})
+        s, p = self.dry([wide, arch], media="proxy")                                       # the page's "Use the proxy"
+        self.assertEqual(s, 200, p)
+        self.refused(409, "essence_open", "/api/exports/nle", {"format": "xmeml", "spans": [live], "dry_run": True})
+        self.refused(409, "no_proxy", "/api/exports/nle", {"format": "xmeml", "spans": [live], "media": "proxy", "dry_run": True})
+        e = self.refused(422, "mixed_rates", "/api/exports/nle", {"format": "xmeml", "spans": [wide, tip], "dry_run": True})
+        self.assertEqual(sorted(e["rates"]), ["25", "30000/1001"])                         # what the page's "Keep only ..." buttons use
+        self.refused(404, "not_found", "/api/exports/nle", {"format": "xmeml", "spans": [wide, "no-such-span"], "dry_run": True})
+        self.refused(422, "bad_input", "/api/exports/nle", {"format": "xmeml", "spans": [wide], "start_tc": "99", "dry_run": True})
+
+    def test_the_path_map_shows_in_the_dry_run(self):
+        a = self.span("iso-4", "Bench reaction")
+        s, p = self.dry([a])
+        self.assertFalse(p["pathMapSet"])
+        os.environ["VOLT_EXPORT_PATH_MAP"] = self.tmp.name + "=\\\\nas\\iso"
+        s, p = self.dry([a])
+        self.assertTrue(p["pathMapSet"])
+        self.assertTrue(p["paths"][0]["mapped"])
+        self.assertIn("nas", "\n".join(p["preview"]) + p["paths"][0]["path"])
 
 
 class State(Api):

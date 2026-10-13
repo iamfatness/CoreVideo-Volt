@@ -73,6 +73,7 @@
     <div id="lib-tabs" class="lib-tabs" role="tablist" aria-label="Library views" hidden>
       <button type="button" role="tab" id="lib-tab-shots" aria-controls="lib-body" aria-selected="true">Shots and clips</button>
       <button type="button" role="tab" id="lib-tab-words" aria-controls="lib-words" aria-selected="false" tabindex="-1">Mark from transcript</button>
+      <button type="button" role="tab" id="lib-tab-export" aria-controls="lib-export" aria-selected="false" tabindex="-1">Selection to export</button>
     </div>
     <div id="lib-body" class="cols lib" hidden>
       <div class="stack">
@@ -141,6 +142,21 @@
         <div class="info"><strong>Words are not frame accurate.</strong> Measured on one TTS clip: worst start error 0.24 s. The in and out come from the words plus the handles; the server builds them. Check the out frame on the player after adding the clip.</div>
       </aside>
     </div>
+    <div id="lib-export" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-export" tabindex="-1" hidden>
+      <div class="stack">
+        <div id="lib-x-msg" class="x-msg"></div>
+        <section class="panel" aria-labelledby="h-x-sel"><h2 id="h-x-sel">Selection &middot; export order</h2><div id="lib-x-table"></div></section>
+        <section class="panel" aria-labelledby="h-x-prev"><h2 id="h-x-prev">Preview &middot; first lines of the file</h2><div id="lib-x-prev"></div></section>
+      </div>
+      <aside class="stack" aria-label="Export options">
+        <section class="panel" aria-labelledby="h-x-opt">
+          <h2 id="h-x-opt">Hand to Premiere</h2>
+          <div id="lib-x-opts"></div>
+          <div id="lib-x-act" class="x-act"></div>
+        </section>
+        <div id="lib-x-done"></div>
+      </aside>
+    </div>
   </section>
 </main>
 
@@ -186,6 +202,8 @@
       <tr><td><kbd>Space</kbd></td><td>Pick the word under the cursor as a one-word range, or drop it. Space does not take on this screen.</td></tr>
       <tr><td><kbd>Enter</kbd></td><td>Add a clip from the selected words, with the handles and snap choice beside them.</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Clear the selection; with nothing selected, leave the transcript.</td></tr>
+      <tr><th scope="rowgroup" colspan="2" class="group">Library, Selection to export tab</th></tr>
+      <tr><td>(none)</td><td>No keys of its own. Tab moves between the options, arrows move inside a group of choices, Space ticks a box, Enter presses the focused button. Space does not take on this screen.</td></tr>
     </tbody>
   </table>
   <div class="bar"><button type="button" class="btn" id="keys-close">Close</button></div>
