@@ -29,7 +29,11 @@ The first adapter is CoreVideo Pro. The next adapter is whichever mixer the show
 - `start_recording` sends `transport.record.set [true]`, then mints only once the snapshot shows `recording.lifecycle.state` producing, fresh, not failed, with an `artifactPath`. The asset key is `cv:<sessionId>`, so a replay does not mint twice.
 - `finish_recording` sends `[false]`, then wraps only on `completed` with `finalized` true for the same session. `failed`, `interrupted` and unknown states never wrap.
 
-The wire shape comes from CoreVideoPro source. It has not been run against a live core yet.
+Run live 2026-10-13 against CoreVideo Pro on `127.0.0.1:8011` (`bench/live_record_check.py`): `transport.record.set [true]` is the right shape, but the core refuses it with HTTP 422 ("Cannot set recording right now (the control is unavailable in the current state)") while the engine is off; `transport.engine.set [true]` first. Then `recording.lifecycle` went to `producing`/`healthy` with an `artifactPath` and a `corevideo-recording-...:<n>:1` session id, the asset minted only at that point, `[false]` ended it as `completed` and finalized, and the wrapped sha256 matched the file on disk (a 6.7 s 1080p60 H.264+AAC `Program.mp4`; the recording folder also held one iso per participant and a `manifest.json`). A core can refuse with 422, so `LiveError` on a refused invoke is the expected path when the engine is off.
+
+Lower third, live: `graphics.lowerThird.set [true]` was accepted; `GET /state` `lowerThirdOnAir` went true as the phase moved `building-in` to `on-air`, and false after `[false]` through `building-out`.
+
+Not run: `stream.start`. This core's saved stream destination was a platform RTMP endpoint, so starting it would have gone live; the stream cue stays unproven until it can be pointed at a local SRT listener (close the app, edit `production-output-preferences.json`, restore it after). Not run through the cue dispatcher either: record and lower third were driven by `live.py` and direct `/invoke` calls, not by armed cues on a rundown item. The `outputSenders` snapshot key was not exercised, and `recording` is absent from the snapshot until the first session, so `observe()` reads `unknown` before it.
 
 ## Cue dispatch
 
