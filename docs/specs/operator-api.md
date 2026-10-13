@@ -59,9 +59,27 @@ IDs are path segments. All are `POST`.
 
 `cue_unsupported` is the same shape for a command that has no verified adapter.
 
+## Read endpoints (shot spans, slice 2)
+
+All are `GET`, behind the same auth and host rules as every other data route (bearer token when set; `403 bad_host` on a non-loopback `Host` with no token). Errors use the same `{ok: false, error: {code, reason}}` shape. Unknown query parameters, a repeated parameter and bad values are `422 bad_input`; an unknown asset or span is `404 not_found`. Nothing here writes control-plane state.
+
+| Path | Returns |
+| --- | --- |
+| `/api/assets/{asset}/spans?kind=&from=&to=&limit=&after=` | `{ok, assetId, rate, start, durationFrames, open, cleared, legalHold, hasProxy, pendingFrames, lastRun, spans, next}`. `kind` is a comma list of `shot`, `clip`, `transcript` (default `shot,clip`, so words never flood the panel). `from` and `to` are timecode labels on the essence's timebase (drop-frame `;` honoured); a span is returned when it overlaps `[from, to)`. Order is `frame_in, id`. `limit` 1 to 500 (default 200). `next` is an opaque cursor for `after`, or `null` on the last page. `422 bad_timecode` for a label that does not exist; `from` and `to` need an asset with a hi-res essence that has a frame rate. |
+| `/api/assets/{asset}/transcript?from=&to=&limit=&after=` | `{ok, assetId, words, next, pendingFrames}`: transcript spans in a window, same ordering, window rule and cursor. `limit` 1 to 1000 (default 500). |
+| `/api/assets/{asset}/proxy` | The proxy file, streamed. Honours one `Range` (`206` with `Content-Range`; `bytes=a-b`, `a-`, `-n`). A range past the end, malformed, or on an empty file is `416 bad_range` with `Content-Range: bytes */<size>`. Several ranges, a non-`bytes` unit and any request with `If-Range` get the whole file (`200`), which the spec allows. `404 no_proxy` when there is no proxy row or its file is gone. |
+| `/media?path=<location>` | The old shell's player. `path` must equal, as a string, the `location` of a registered proxy essence; anything else (an unregistered file, a hi-res, `..`, a missing parameter's value) is `404 not_found`. The string is only compared, never opened. Same `Range` behaviour. |
+| `/api/spans/{span}/thumb` | `image/jpeg`, 320 px wide, `Cache-Control: private, max-age=3600`. Cached at `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`; made on first request with one ffmpeg seek on the proxy (frame is `frame_in + max(2, 10% of length)`, kept inside the span). `404 no_proxy`; `502 thumb_failed` (ffmpeg missing, non-zero exit, or no image); `504 thumb_timeout` (15 s limit). A failure or timeout leaves no file behind, so the next request tries again. |
+
+Span JSON: `id, assetId, kind, origin, label, tcIn, tcOut, frameIn, frameOut, text, runId, blockedBy, usedBy: {items, versions}`. `blockedBy` is `null`, `"not cleared"` or `"legal hold"`, same words as `/api/state`. `lastRun` is the newest `shot_run` row (`job, essence, engine, engineVersion, threshold, minFrames, shotCount, createdAt`) or `null`.
+
+`pendingFrames` counts spans whose `frame_in`/`frame_out` are not yet backfilled (migration 9 leaves old rows NULL until the `span-frames` job runs). Such spans cannot be ordered or windowed, so these routes leave them out and say how many.
+
+Limits of these routes: a browser `<video src>` or `<img src>` cannot send a bearer header, so with `VOLT_TOKEN` set a page has to fetch the bytes itself (or a later slice adds a short-lived signed URL). The proxy route reads the file as registered; a proxy still being written (open) is served as far as it has been written. Thumbnails assume the proxy starts at the hi-res's timecode and rate, as the spec does; that is not checked.
+
 ## Other codes
 
-`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `422 bad_input`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `416 bad_range`, `422 bad_input`, `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 

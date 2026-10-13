@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import operator_state
+from volt import media, operator_state
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
@@ -70,9 +70,10 @@ class ConfigError(Exception):
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, reason: str, **extra):
+    def __init__(self, status: int, code: str, reason: str, headers=None, **extra):
         super().__init__(reason)
         self.status, self.code, self.reason, self.extra = status, code, reason, extra
+        self.headers = headers or {}
 
 
 def _is_loopback(host: str) -> bool:
@@ -352,6 +353,10 @@ def act_publish(store, span_id, body):
     return payload
 
 
+# Reads on an asset and on a span, served by do_GET. IDs are path segments, never file names.
+READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
+THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
+
 ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/go$"), act_go),
     (re.compile(rf"^/api/shows/{_ID}/hold$"), act_hold),
@@ -406,6 +411,8 @@ class Handler(BaseHTTPRequestHandler):
             self._route(store)
         except ApiError as err:
             self._error(err)
+        except media.MediaError as err:
+            self._error(ApiError(err.status, err.code, err.reason, headers=err.headers))
         except Exception:  # same rule as POST: no leaked internals, and the client always gets a response
             import traceback
             traceback.print_exc()
@@ -504,7 +511,72 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._send(200, "application/json", json.dumps(payload).encode())
             return
+        m = READ_ROUTES.match(parsed.path)
+        if m:
+            asset_id, what = m.group(1), m.group(2)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            if what == "spans":
+                self._json(200, media.list_spans(STORE, asset_id, query))
+            elif what == "transcript":
+                self._json(200, media.transcript(STORE, asset_id, query))
+            else:
+                if query:
+                    raise ApiError(422, "bad_input", "the proxy route takes no parameters")
+                self._proxy(media.proxy_for_asset(STORE, asset_id))
+            return
+        m = THUMB_ROUTE.match(parsed.path)
+        if m:
+            if parsed.query:
+                raise ApiError(422, "bad_input", "the thumb route takes no parameters")
+            path = media.ensure_thumb(STORE, m.group(1), OUT_DIR)
+            self._send_headers(200, "image/jpeg", path.stat().st_size,
+                               {"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+            self.wfile.write(path.read_bytes())
+            return
+        if parsed.path == "/media":
+            # The old shell's player. `path` must be a registered proxy's own location, compared as a string.
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            given = query.get("path", [])
+            if set(query) != {"path"} or len(given) != 1:
+                raise ApiError(422, "bad_input", "give exactly one path parameter")
+            self._proxy(media.proxy_by_location(STORE, given[0]))
+            return
         self._send(404, "text/plain", b"not found")
+
+    def _send_headers(self, status: int, content_type: str, length: int, extra=None):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        for name, value in (extra or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+
+    def _proxy(self, proxy: media.Proxy):
+        """Stream a registered proxy, honouring one byte range. The file is opened before any header is sent, so
+        a missing file is a clean 404; the size comes from the open handle so range and length agree."""
+        with media.open_proxy(proxy) as fh:
+            size = os.fstat(fh.fileno()).st_size
+            # An If-Range we cannot validate (no ETag, and the file may still be growing) means: send it all.
+            rng = None if self.headers.get("If-Range") else media.parse_range(self.headers.get("Range"), size)
+            first, last = (0, size - 1) if rng is None else rng
+            length = max(0, last - first + 1)
+            extra = {"Accept-Ranges": "bytes", "Cache-Control": "private, no-cache",
+                     "X-Content-Type-Options": "nosniff"}
+            if rng is not None:
+                extra["Content-Range"] = f"bytes {first}-{last}/{size}"
+            self._send_headers(206 if rng is not None else 200, media.content_type(proxy.path), length, extra)
+            fh.seek(first)
+            left = length
+            try:
+                while left > 0:
+                    chunk = fh.read(min(65536, left))
+                    if not chunk:           # the file shrank under us: the length is now a lie, so drop the connection
+                        self.close_connection = True
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                self.close_connection = True
 
     def _static(self, path: str):
         name, ctype = STATIC[path]
@@ -549,6 +621,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(err.status)
         if err.status == 401:
             self.send_header("WWW-Authenticate", "Bearer")
+        for name, value in err.headers.items():
+            self.send_header(name, value)
         body = json.dumps(payload).encode()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
