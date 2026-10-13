@@ -379,13 +379,32 @@ def _span_payload(store: Store, span: dict) -> dict:
 
 
 def act_span_create(store, asset_id, body):
-    # from_words, handle_in, handle_out and snap are slice 5 (transcript marking); until then they are unknown.
-    _unknown_keys(body, {"kind", "tc_in", "tc_out", "label"})
+    """Either `tc_in` + `tc_out`, or `from_words` (the first and last word span IDs) with optional `handle_in`,
+    `handle_out` (frames) and `snap` ("shot"): then the server computes the times from the stored words."""
+    _unknown_keys(body, {"kind", "tc_in", "tc_out", "label", "from_words", "handle_in", "handle_out", "snap"})
     kind = _str(body, "kind", required=True, limit=20)
-    tc_in = _str(body, "tc_in", required=True, limit=32)
-    tc_out = _str(body, "tc_out", required=True, limit=32)
     label = _str(body, "label", limit=shots.LABEL_LIMIT)
     _asset_exists(store, asset_id)
+    if "from_words" in body:
+        stray = [k for k in ("tc_in", "tc_out") if k in body]
+        if stray:
+            raise ApiError(422, "bad_input", f"from_words and {stray[0]} cannot both be given: the server computes the times")
+        words = body["from_words"]
+        if (not isinstance(words, list) or len(words) != 2
+                or not all(isinstance(w, str) and 0 < len(w) <= 128 for w in words)):
+            raise ApiError(422, "bad_input", "from_words must be [first word span id, last word span id]")
+        if kind != shots.CLIP:
+            raise ApiError(422, "bad_input", "from_words makes a clip; kind must be 'clip'")
+        snap = body.get("snap")
+        span = _shot_errors(lambda: shots.create_from_words(
+            store, asset_id, words[0], words[1], handle_in=body.get("handle_in"), handle_out=body.get("handle_out"),
+            snap=snap, label=label))
+        return {"ok": True, "span": _span_payload(store, span)}
+    stray = [k for k in ("handle_in", "handle_out", "snap") if k in body]
+    if stray:
+        raise ApiError(422, "bad_input", f"{stray[0]} only applies with from_words")
+    tc_in = _str(body, "tc_in", required=True, limit=32)
+    tc_out = _str(body, "tc_out", required=True, limit=32)
     span = _shot_errors(lambda: shots.create(store, asset_id, kind, tc_in, tc_out, label=label))
     return {"ok": True, "span": _span_payload(store, span)}
 
