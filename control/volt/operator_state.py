@@ -7,7 +7,7 @@ the room's lifecycle) so the page never has to guess. Nothing here writes.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from volt.cues import cues
 from volt.rooms import LiveError
@@ -53,12 +53,23 @@ def assets(store: Store) -> list[dict]:
     return out
 
 
-def spans(store: Store) -> list[dict]:
+def spans(store: Store, kinds: Optional[Sequence[str]] = None) -> list[dict]:
+    """Up to SPAN_LIMIT spans, ordered by tc_in. `kinds=None` (the default) lists every kind, exactly as before;
+    which kinds the Publish screen should list is the owner's call (spec open question 9), not made here.
+    A kind list narrows to those kinds; an empty list lists nothing."""
+    where, params = "", []
+    if kinds is not None:
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        where = f"WHERE s.kind IN ({', '.join('?' for _ in kinds)})"
+        params = kinds
     rows = store.conn.execute(
-        """SELECT s.id, s.asset_id, s.kind, s.tc_in, s.tc_out, s.text, a.cleared, a.legal_hold, a.camera
+        f"""SELECT s.id, s.asset_id, s.kind, s.tc_in, s.tc_out, s.text, a.cleared, a.legal_hold, a.camera
            FROM span s JOIN asset a ON a.id = s.asset_id
+           {where}
            ORDER BY s.tc_in, s.id LIMIT ?""",
-        (SPAN_LIMIT,),
+        (*params, SPAN_LIMIT),
     ).fetchall()
     versions: dict[str, list[dict]] = {}
     for v in store.conn.execute(

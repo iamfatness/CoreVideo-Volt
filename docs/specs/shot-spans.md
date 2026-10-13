@@ -1,6 +1,6 @@
 # Shot spans and the NLE panel
 
-Status: design only. Nothing in this file is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
+Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slices 2 to 6 (read API, detection, the Library screen, transcript marking, NLE export) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
 
 Roadmap and areas both list "shot spans" and "one NLE panel" as next for MAM. A second NLE is later and out of scope here.
 
@@ -54,7 +54,7 @@ Rules, enforced in code in one place (`volt/shots.py`, new) not in the page:
 
 Rights: spans carry no rights; the asset does (data-model). Marking and detection are allowed on any asset, cleared or not, because an operator has to be able to log footage to decide what to clear. Export, publish and air are gated on the asset exactly as today (`Store.assert_publishable`: cleared and not on legal hold). This is a proposal; see open question 2.
 
-Observation, not part of this work: `speech.py` deletes all `transcript` spans of an asset on a re-run, and `item.span_id` and `version.span_id` reference spans. A transcript span that an item uses would block that delete on Postgres (or orphan the reference on SQLite if foreign keys are off). I did not run this. Worth a test before anyone attaches a word span to an item and re-runs transcription.
+Found and fixed in slice 1: `speech.py` deleted all `transcript` spans of an asset on a re-run, and `item.span_id` and `version.span_id` reference spans. Run, not assumed: on Postgres the delete failed with a foreign key violation (so the re-run, and the transcription job with it, failed for any asset with a word span on an item or version); on SQLite, which does not enforce foreign keys here, it succeeded and left the item pointing at a span that no longer existed. Fix: a word span an item or version uses is kept and re-kinded to `clip` (`origin = 'transcript'`, same in, out and text) in the same transaction as the replacement, so the reference holds, search stops seeing the old word, and the new transcript is written beside it. Tests in `tests/test_shots.py` (`SpeechRerun`) on both backends.
 
 ## How shot spans are created
 
@@ -141,7 +141,7 @@ CSP already allows `img-src 'self' data:`; no change.
 
 ## Migration 9
 
-Per `migrations.py`: add the columns to `store.SCHEMA` and `control/schema.sql` in the same order (the parity test checks it), and append one `Migration(9, ...)`. Not implemented here.
+Per `migrations.py`: add the columns to `store.SCHEMA` and `control/schema.sql` in the same order (the parity test checks it), and append one `Migration(9, ...)`. Implemented in slice 1 as written below. The index is created only in the migration (not in `store.SCHEMA`), because SCHEMA runs before the columns exist on an older database.
 
 ```
 Migration(9, "span shot columns, essence duration, shot_run table",
@@ -243,7 +243,7 @@ No record of exports is kept in slice 4 (the server logs the span IDs and sha256
 - No ffmpeg scene detection was run, so the threshold, the min-frames guard and the claim that it finds cuts within a frame are untested.
 - That the proxy keeps the hi-res's frame count and start timecode is assumed and guarded, not checked.
 - The `/media` gap and the `operator_state` span flooding come from reading code, not from running the server.
-- The proposed transcript-span delete hazard in `speech.py` is from reading the code and the schema, not from running it.
+- The transcript-span delete hazard was run (SQLite and a live postgres:16) and is fixed in slice 1. Slice 1 itself was not run against real footage: ingest and wrap durations were checked on ffmpeg testsrc clips only, and the `span-frames` job only on small seeded databases.
 - The mockups use made-up footage, names and numbers (Final Four Watch, iso-3, Okonkwo come from existing docs and mockups) and drawn placeholder frames.
 
 ## Open questions for the owner
@@ -272,4 +272,4 @@ Small PRs, each shippable on its own, each with tests. The mockup is approved be
 5. **Transcript marking.** Word cursor, `from_words`, handles, snap. Tests on the server rule and the keyboard path.
 6. **NLE export.** `volt/nle.py` (xmeml and EDL builders), `POST /api/exports/nle`, the export screen, path map setting. Arithmetic tests. Closed only after the manual Premiere import check is recorded.
 
-Slices 1 to 3 need no UI decision beyond question 9. Slice 6 can start in parallel with 4 and 5 once slice 1 lands, since export takes span IDs. Not in this list: AAF, a second NLE, saved bins, point markers, an NLE-side panel.
+Slice 1 is done (see the status line; decisions taken in it are listed in its PR: the kind filter defaults to every kind, so the Publish screen is unchanged; marking is allowed on any asset; `frame_in`/`frame_out` columns with the lazy backfill). Slices 1 to 3 need no UI decision beyond question 9. Slice 6 can start in parallel with 4 and 5 once slice 1 lands, since export takes span IDs. Not in this list: AAF, a second NLE, saved bins, point markers, an NLE-side panel.

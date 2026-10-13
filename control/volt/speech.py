@@ -551,7 +551,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         for w in words:
             f_in = origin + timecode.seconds_to_frames(w.start, rate)
             f_out = origin + timecode.seconds_to_frames(max(Fraction(repr(float(w.end))), Fraction(repr(float(w.start))) + one), rate)
-            rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop)))
+            rows.append((w.text, timecode.frames_to_tc(f_in, rate, drop), timecode.frames_to_tc(f_out, rate, drop), f_in, f_out))
     except Exception as exc:
         store.conn.rollback()
         _release_slot(store, slot)
@@ -566,13 +566,20 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     # or the new one and never a half. The per-asset lock serializes two transcribes of one asset (they
     # queue here, after the slow engine work above, and the later one replaces the earlier one whole).
     with store.transaction(f"transcript:{asset_id}"):
+        # A word span an item or a version uses cannot be deleted (Postgres refuses; SQLite would orphan the
+        # reference). It is pinned instead: re-kinded to a clip, same in and out and text, so the item keeps
+        # the frames it was cut from, search stops seeing it, and the new transcript is written beside it.
+        in_use = ("(EXISTS (SELECT 1 FROM item WHERE item.span_id = span.id) "
+                  "OR EXISTS (SELECT 1 FROM version WHERE version.span_id = span.id))")
+        conn.execute(f"UPDATE span SET kind = 'clip', origin = 'transcript' "
+                     f"WHERE asset_id = ? AND kind = 'transcript' AND {in_use}", (asset_id,))
         conn.execute("DELETE FROM span WHERE asset_id = ? AND kind = 'transcript'", (asset_id,))
         stamp = _now()
-        for text, tc_in, tc_out in rows:
+        for text, tc_in, tc_out, f_in, f_out in rows:
             conn.execute(
-                """INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at)
-                   VALUES (?, ?, 'transcript', ?, ?, ?, ?)""",
-                (_id(), asset_id, tc_in, tc_out, text, stamp))
+                """INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at, origin, frame_in, frame_out)
+                   VALUES (?, ?, 'transcript', ?, ?, ?, ?, 'transcript', ?, ?)""",
+                (_id(), asset_id, tc_in, tc_out, text, stamp, f_in, f_out))
         conn.execute("DELETE FROM asr_run WHERE job_id = ?", (job.id,))
         conn.execute(
             "INSERT INTO asr_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
