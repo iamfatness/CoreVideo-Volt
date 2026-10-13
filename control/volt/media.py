@@ -11,9 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
 import subprocess
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -28,8 +26,12 @@ ALL_KINDS = ("shot", "clip", "transcript")
 SPANS_DEFAULT, SPANS_MAX = 200, 500
 WORDS_DEFAULT, WORDS_MAX = 500, 1000
 
-THUMB_WIDTH = 320
-THUMB_TIMEOUT = 15            # seconds; tests shrink it
+# The thumbnail rule, path and ffmpeg call live in volt.shots (the detection job writes the same files). These
+# names stay here because the tests, and anything that tunes the route, set them on this module.
+THUMB_WIDTH = shots.THUMB_WIDTH
+THUMB_TIMEOUT = shots.THUMB_TIMEOUT            # seconds; tests shrink it
+thumb_frame = shots.thumb_frame
+thumb_path = shots.thumb_path
 # How ffmpeg is run for thumbnails. Tests swap this to inject a failure or a hang.
 RUN = subprocess.run
 
@@ -157,6 +159,9 @@ def header(store: Store, asset_id: str, asset) -> dict:
         "cleared": bool(asset["cleared"]), "legalHold": bool(asset["legal_hold"]),
         "hasProxy": proxy is not None,
         "pendingFrames": shots.pending_frames(store, asset_id),
+        # Background work the page watches: the newest detection job and the span-frames backfill (null = never queued).
+        "detect": shots.detect_job(store, asset_id),
+        "indexing": shots.indexing_job(store, asset_id),
         "lastRun": None if run is None else {
             "job": run["job_id"], "essence": run["essence_id"], "engine": run["engine"],
             "engineVersion": run["engine_version"], "threshold": run["threshold"],
@@ -269,22 +274,11 @@ def content_type(path: Path) -> str:
 
 # ---- thumbnails -----------------------------------------------------------------------------------
 
-def thumb_frame(frame_in: int, frame_out: int) -> int:
-    """Frame rule from the spec: frame_in + max(2, 10% of length), kept inside the span, so the image is past
-    the cut and not a transition blend. A one-frame span gets its only frame."""
-    length = frame_out - frame_in
-    return frame_in + min(max(2, length // 10), length - 1)
-
-
-def thumb_path(out_dir: Path, asset_id: str, span_id: str, frame: int) -> Path:
-    return Path(out_dir) / "thumbs" / asset_id / f"{span_id}-{frame}.jpg"
-
-
 def ensure_thumb(store: Store, span_id: str, out_dir: Path) -> Path:
     """The cached thumbnail of a span, made first if missing: one ffmpeg seek on the proxy, THUMB_TIMEOUT
     seconds at most, THUMB_WIDTH wide. ffmpeg writes a private part file that is renamed into place only when
     it is a whole non-empty image, so a failure or timeout leaves nothing a later request could mistake for a
-    thumbnail."""
+    thumbnail. The frame rule, the path and the ffmpeg call are shots.thumb_frame, thumb_path and write_thumb."""
     row = store.conn.execute(
         "SELECT id, asset_id, tc_in, tc_out, frame_in, frame_out FROM span WHERE id = ?", (span_id,)).fetchone()
     if row is None:
@@ -304,21 +298,10 @@ def ensure_thumb(store: Store, span_id: str, out_dir: Path) -> Path:
         raise MediaError(404, "no_proxy", "the proxy file is not on disk")
     # The proxy is assumed to share the hi-res's start timecode and rate (docs/specs/shot-spans.md).
     seconds = float(timecode.frames_to_seconds(frame - f.start, f.rate))
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(f"{dest.stem}.{uuid.uuid4().hex[:12]}.part.jpg")
-    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{seconds:.4f}", "-i", str(proxy.path),
-           "-frames:v", "1", "-an", "-vf", f"scale={THUMB_WIDTH}:-2", "-q:v", "4", str(part)]
     try:
-        try:
-            run = RUN(cmd, capture_output=True, text=True, timeout=THUMB_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            raise MediaError(504, "thumb_timeout", f"ffmpeg took longer than {THUMB_TIMEOUT} s") from None
-        except OSError as exc:
-            raise MediaError(502, "thumb_failed", f"ffmpeg could not be run: {exc}") from None
-        if run.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
-            detail = (run.stderr or "").strip()[-200:] or "no frame at that position"
-            raise MediaError(502, "thumb_failed", f"ffmpeg produced no thumbnail: {detail}")
-        os.replace(part, dest)
-    finally:
-        part.unlink(missing_ok=True)
+        shots.write_thumb(proxy.path, seconds, dest, run=RUN, timeout=THUMB_TIMEOUT)
+    except ShotError as exc:
+        if exc.code == "thumb_timeout":
+            raise MediaError(504, "thumb_timeout", exc.reason) from None
+        raise MediaError(502, "thumb_failed", exc.reason) from None
     return dest

@@ -90,6 +90,10 @@
     spanTrim:    ['POST', '/api/spans/{id}/trim'],
     spanLabel:   ['POST', '/api/spans/{id}/label'],
     spanDelete:  ['POST', '/api/spans/{id}/delete'],
+    spanSplit:   ['POST', '/api/spans/{id}/split'],
+    spanMerge:   ['POST', '/api/spans/{id}/merge'],
+    detect:      ['POST', '/api/assets/{id}/shots/detect'],
+    spanFrames:  ['POST', '/api/assets/{id}/span-frames'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -109,6 +113,8 @@
     outside_source: 'Outside the source', no_proxy: 'No proxy', not_deletable: 'Cannot delete',
     not_editable: 'Cannot edit', conflict: 'Try again', thumb_failed: 'Thumbnail failed',
     thumb_timeout: 'Thumbnail timed out', bad_range: 'Bad range',
+    detect_busy: 'Detection already running', essence_open: 'Still recording', not_adjacent: 'Not neighbours',
+    indexing: 'Still indexing', engine_missing: 'ffmpeg missing',
   };
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
@@ -474,7 +480,7 @@
   function flashNode(f) {
     return el('div', { class: 'banner ' + (f.kind === 'good' ? 'good' : f.kind === 'warn' ? 'warn' : 'bad'), role: f.kind === 'good' ? 'status' : 'alert' },
       el('div', { class: 'msg' },
-        el('strong', { text: (f.kind === 'good' ? '✓ ' : '✕ ') + f.title }),
+        el('strong', { text: (f.kind === 'good' ? '✓ ' : f.kind === 'warn' ? '! ' : '✕ ') + f.title }),
         f.reason ? el('span', { class: 'why', text: f.reason }) : null,
         f.sub ? el('span', { class: 'sub', text: f.sub }) : null,
         f.code ? el('span', { class: 'sub', text: 'code: ' + f.code }) : null),
@@ -875,6 +881,7 @@
       thumbsPrune();
       L.load = 'ready';
       L.err = null;
+      libBackground(head);
       if (L.cur && !spans.some((s) => s.id === L.cur)) { L.cur = null; L.draft = null; }
       syncTray(spans, !after);
     } catch (e) {
@@ -1215,8 +1222,9 @@
       if (status === 401) { setConn('token'); openToken(); }
       if (data && data.ok) {
         if (o.after) o.after(data);
-        setFlash({ kind: 'good', title: o.okTitle || 'Done', reason: o.ok ? o.ok(data) : '' });
-        announce((o.okTitle || 'Done') + ' ' + (o.ok ? o.ok(data) : ''));
+        const title = typeof o.okTitle === 'function' ? o.okTitle(data) : (o.okTitle || 'Done');
+        setFlash({ kind: (o.tone && o.tone(data)) || 'good', title, reason: o.ok ? o.ok(data) : '' });
+        announce(title + ' ' + (o.ok ? o.ok(data) : ''));
         await libLoad(true);
       } else {
         const e = codeOf(data, status);
@@ -1297,6 +1305,183 @@
     act('attach', itemId, { span: s.id }, { key: 'lib:attach:' + s.id, okTitle: 'Attached.', ok: () => s.id.slice(0, 8) + ' is on "' + slug + '".' });
   }
 
+  // ---- detection, split, merge, indexing (slice 4b of docs/specs/shot-spans.md) -----------------------------
+  // Detection is a job a runner executes, so the page only queues it and then reads the job's state back from the
+  // span list's header (`detect`, `indexing`) on the poll it already makes. Split and merge are plain writes. Every
+  // rule and refusal is the server's (volt/shots.py); this section shows what it said. Rights never block any of it.
+  const D = { threshold: '', minFrames: '', open: false, asked: new Set(), seen: null };
+  const detActive = (j) => !!j && (j.status === 'queued' || j.status === 'running');
+  const mmss = (n) => Math.floor(n / 60) + ':' + String(n % 60).padStart(2, '0');
+
+  // Runs on every successful read of the list: queue the backfill once per asset per page, and say when a job ends.
+  function libBackground(head) {
+    const id = L.assetId;
+    const idx = head.indexing;
+    if (head.pendingFrames > 0 && !D.asked.has(id) && (!idx || idx.status === 'failed')) {
+      D.asked.add(id);
+      call('spanFrames', id, {}).then(() => { if (id === L.assetId) libLoad(true); }).catch(() => { /* the next open asks again */ });
+    }
+    const j = head.detect;
+    if (j) {
+      const was = D.seen && D.seen.asset === id && D.seen.id === j.id ? D.seen.status : null;
+      if (was && (was === 'queued' || was === 'running')) {
+        if (j.status === 'done') announce('Detection finished.');
+        else if (j.status === 'failed') announce('Detection failed. ' + (j.error || ''));
+      }
+      D.seen = { asset: id, id: j.id, status: j.status };
+    }
+  }
+
+  // What the backfill is doing, in calm words. null when nothing is waiting on it.
+  function indexInfo(d) {
+    const n = d.pendingFrames;
+    if (!n) return null;
+    const j = d.indexing;
+    const spans = n + ' span' + (n === 1 ? '' : 's');
+    if (!j || detActive(j)) return { state: 'working', text: 'Indexing: placing ' + spans + ' on frames. They join the list when it is done.' };
+    if (j.status === 'failed') return { state: 'failed', text: 'Indexing did not finish (' + (j.error || 'no reason recorded') + '). ' + spans + ' not listed yet.' };
+    return { state: 'stuck', text: spans + ' could not be placed on frames, because their timecodes do not exist on this essence, so ' + (n === 1 ? 'it is' : 'they are') + ' not listed.' };
+  }
+
+  function detectInfo(d) {
+    const j = d.detect;
+    const last = d.lastRun
+      ? 'Last detection ' + d.lastRun.createdAt.slice(0, 16).replace('T', ' ') + ' · threshold ' + d.lastRun.threshold + ' · ' + d.lastRun.shotCount + ' shots'
+      : 'Shots have not been detected for this asset.';
+    if (j && j.status === 'running') {
+      return { tone: 'busy', text: 'Detecting shots. Running' + (j.ageSeconds == null ? '' : ' for ' + mmss(j.ageSeconds)) + '.',
+        sub: 'The scan reads the whole file in one pass and reports no percentage. The list fills in when it ends.' };
+    }
+    if (j && j.status === 'queued') {
+      const stuck = j.ageSeconds != null && j.ageSeconds > 20;
+      return { tone: 'busy', text: 'Detection queued' + (j.ageSeconds == null ? '' : ' ' + mmss(j.ageSeconds) + ' ago') + (j.error ? '. Last note: ' + j.error : '') + '.',
+        sub: stuck ? 'No runner has picked it up yet. Detection runs in the runner (python -m volt.runner); it stays queued until one is running.' : 'Waiting for a runner to pick it up.' };
+    }
+    if (j && j.status === 'failed') return { tone: 'bad', text: 'Detection failed: ' + (j.error || 'no reason recorded') + '.', sub: 'Nothing was changed. ' + last };
+    return { tone: '', text: last, sub: '' };
+  }
+
+  function paintDetect(view) {
+    const d = view.d;
+    const info = detectInfo(d), idx = indexInfo(d);
+    const detected = view.list.filter((x) => x.s.origin === 'detect');
+    const replaceable = detected.filter((x) => !inUse(x.s)).length;
+    const hand = view.list.filter((x) => x.s.kind === 'shot' && x.s.origin !== 'detect').length;
+    const busy = detActive(d.detect) || S.pending.has('lib:detect');
+    const blockedWhy = d.open ? 'Detection waits until the recording is wrapped.' : busy ? 'A detection is already queued or running.' : '';
+    const armed = S.armed === 'detect:' + L.assetId;
+    const label = armed ? 'Confirm re-detect' : (d.detect && d.detect.status === 'failed') ? 'Try again' : (d.lastRun || detected.length) ? 'Re-detect' : 'Detect shots';
+    paint('lib-detectbar', [L.assetId, info, idx, label, blockedWhy, replaceable, hand, armed, D.threshold, D.minFrames, D.open], () => [
+      el('div', { class: 'bar flush' },
+        el('button', { type: 'button', class: 'btn' + (armed ? ' armed' : ' ghost'), id: 'lib-detect', 'data-fk': 'lib-detect', 'aria-disabled': blockedWhy ? 'true' : null,
+          'aria-describedby': blockedWhy ? 'lib-detect-why' : null, onclick: () => { if (!blockedWhy) detectClick(view); } }, label),
+        el('details', { class: 'detect-set', open: D.open, ontoggle: (e) => { D.open = e.target.open; } },
+          el('summary', { text: 'Settings' }),
+          el('div', { class: 'bar flush' },
+            el('div', {}, el('label', { for: 'lib-det-t', text: 'Threshold (above 0, below 1)' }),
+              el('input', { id: 'lib-det-t', type: 'text', class: 'mono', inputmode: 'decimal', placeholder: '0.13', value: D.threshold, 'data-fk': 'lib-det-t', autocomplete: 'off',
+                oninput: (e) => { D.threshold = e.target.value; } })),
+            el('div', {}, el('label', { for: 'lib-det-m', text: 'Shortest shot (frames)' }),
+              el('input', { id: 'lib-det-m', type: 'text', class: 'mono', inputmode: 'numeric', placeholder: '12', value: D.minFrames, 'data-fk': 'lib-det-m', autocomplete: 'off',
+                oninput: (e) => { D.minFrames = e.target.value; } })),
+            el('small', { text: 'Blank uses the default. A change of either is a new run.' }))),
+        blockedWhy ? el('small', { id: 'lib-detect-why', text: blockedWhy }) : null),
+      el('p', { class: 'detect-state' + (info.tone ? ' ' + info.tone : ''), role: 'status', id: 'lib-detect-state' },
+        info.tone === 'busy' ? el('progress', { 'aria-label': 'Detection in progress', class: 'detect-bar' }) : null,
+        el('span', { text: info.text }), info.sub ? el('small', { text: ' ' + info.sub }) : null),
+      replaceable && !blockedWhy ? el('small', { id: 'lib-detect-warn', text: 'Re-detecting replaces ' + replaceable + ' detected shot' + (replaceable === 1 ? '' : 's') +
+        '. ' + (hand ? hand + ' shot' + (hand === 1 ? '' : 's') + ' you marked, split or merged by hand and any shot in use are kept.' : 'Any shot you mark, split or merge by hand, and any shot in use, is kept.') }) : null,
+      idx ? el('p', { class: 'detect-state ' + (idx.state === 'working' ? 'busy' : 'bad'), role: 'status', id: 'lib-index-state' },
+        el('span', { text: idx.text }),
+        idx.state === 'failed' ? el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'lib-idx-retry', onclick: () => { D.asked.delete(L.assetId); libLoad(true); } }, 'Try again') : null) : null,
+    ]);
+  }
+
+  function detectClick(view) {
+    const replaceable = view.list.filter((x) => x.s.origin === 'detect' && !inUse(x.s)).length;
+    if (replaceable) armedAction('detect:' + L.assetId, runDetect); else runDetect();
+  }
+
+  function runDetect() {
+    const body = {};
+    const t = D.threshold.trim(), m = D.minFrames.trim();
+    if (t) body.threshold = Number(t);
+    if (m) body.min_frames = Number(m);
+    for (const k in body) {
+      if (!isFinite(body[k])) {
+        setFlash({ kind: 'bad', title: 'Bad input.', code: 'bad_input', reason: (k === 'threshold' ? 'The threshold' : 'The shortest shot') + ' must be a number, or blank for the default.' });
+        render();
+        return;
+      }
+    }
+    libAct('detect', L.assetId, body, {
+      key: 'lib:detect', okTitle: (r) => (r.alreadyDone ? 'Already detected.' : 'Detection queued.'), tone: (r) => (r.alreadyDone ? 'warn' : 'good'),
+      ok: (r) => (r.alreadyDone
+        ? 'This asset was already detected with these settings, so nothing was queued. Change the threshold or the shortest shot to run again.'
+        : 'A runner will pick it up; this screen follows it. Shots you made by hand are not touched.'),
+    });
+  }
+
+  // The shot after `s` in frame order (the list is sorted), or null.
+  function nextShot(s, view) {
+    if (s.kind !== 'shot') return null;
+    const i = view.list.findIndex((x) => x.s.id === s.id);
+    for (let j = i + 1; i >= 0 && j < view.list.length; j++) if (view.list[j].s.kind === 'shot') return view.list[j];
+    return null;
+  }
+
+  function splitMergeBlock(s, view, d, used, next) {
+    const isShot = s.kind === 'shot';
+    const adjacent = !!next && next.s.frameIn === s.frameOut;
+    let why;
+    if (!isShot) why = 'Only shots can be split or merged. A clip can be trimmed.';
+    else if (used) why = 'In use by a rundown item or a version: split and merge are refused. Rename is allowed.';
+    else if (!next) why = 'This is the last shot, so there is nothing to merge with. To split, type a timecode inside the shot or use the playhead.';
+    else if (!adjacent) why = 'The next shot starts later (there is a gap), so it is not a neighbour. To split, type a timecode inside the shot or use the playhead.';
+    else if (inUse(next.s)) why = next.name + ' is in use, so it cannot be merged in.';
+    else why = 'Merge folds ' + next.name + ' (' + next.s.tcIn + ' to ' + next.s.tcOut + ') into this shot, which keeps its name. Split needs a timecode strictly inside the shot.';
+    const canSplit = isShot && !used, canMerge = isShot && !used && adjacent && !inUse(next.s);
+    return el('fieldset', { class: 'grp' }, el('legend', { text: 'Split and merge' }),
+      el('label', { class: 'f', for: 'span-split', text: 'Split at' }),
+      el('input', { id: 'span-split', type: 'text', class: 'mono', value: d.splitAt || '', 'data-fk': 'span-split', disabled: !canSplit, spellcheck: 'false', 'aria-describedby': 'span-sm-why',
+        oninput: (e) => { d.splitAt = e.target.value; },
+        onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); splitSpan(s); } } }),
+      el('div', { class: 'bar flush' },
+        btn('Playhead as split point', { key: 'ph-split', cls: 'ghost small', disabled: !canSplit || !videoReady(), onclick: () => { d.splitAt = playheadTc(view); $('span-split').value = d.splitAt; } }),
+        btn('Split', { key: 'lib:split:' + s.id, cls: 'ghost', disabled: !canSplit, onclick: () => splitSpan(s) }),
+        btn('Merge with next', { key: 'lib:merge:' + s.id, cls: 'ghost', disabled: !canMerge, onclick: () => mergeNext(s, next) })),
+      el('small', { id: 'span-sm-why', class: canSplit ? null : 'no', text: why }));
+  }
+
+  function splitSpan(s) {
+    const d = draftFor(s);
+    const at = (d.splitAt || '').trim();
+    if (!at) {
+      setFlash({ kind: 'bad', title: 'Set a split point first.', reason: 'Type a timecode inside the shot, or move the playhead and use "Playhead as split point".', code: 'bad_input' });
+      render();
+      return;
+    }
+    libAct('spanSplit', s.id, { at }, {
+      key: 'lib:split:' + s.id, okTitle: 'Split.',
+      ok: (r) => r.spans[0].tcIn + ' to ' + r.spans[0].tcOut + ' and ' + r.spans[1].tcIn + ' to ' + r.spans[1].tcOut + '. Both are now marked by hand.',
+      after: () => { L.draft = null; },
+    });
+  }
+
+  function mergeNext(s, next) {
+    const gone = next.name;
+    libAct('spanMerge', s.id, { with: next.s.id }, {
+      key: 'lib:merge:' + s.id, okTitle: 'Merged.',
+      ok: (r) => gone + ' was folded in. The shot now runs ' + r.span.tcIn + ' to ' + r.span.tcOut + '.',
+      after: (r) => {
+        L.sel = L.sel.filter((e) => e.id !== r.removed);
+        store('volt.lib.sel', L.sel);
+        if (L.cur === r.removed) L.cur = s.id;
+        L.draft = null;
+      },
+    });
+  }
+
   // ---- keys ------------------------------------------------------------------------------------------------
   // Only on this screen, and only where a control would not already use the key. Space is not TAKE here: on a row's
   // name it toggles the selection (see the row's own handler) and elsewhere it keeps its browser behaviour.
@@ -1368,6 +1553,7 @@
     if (card) return;
     paintHead(view);
     paintFilter(view);
+    paintDetect(view);
     paintList(view);
     paintTray(view);
     paintSpan(view);
@@ -1411,16 +1597,9 @@
 
   function paintFilter(view) {
     const d = view.d;
-    paint('lib-filter', [L.filter, view.list.map((x) => x.s.kind + (x.s.origin || '')), d.lastRun], () => [
+    paint('lib-filter', [L.filter, view.list.map((x) => x.s.kind + (x.s.origin || ''))], () => [
       FILTERS.map(([key, label, test]) => el('button', { type: 'button', class: 'pill', 'aria-pressed': String(L.filter === key), 'data-fk': 'f:' + key,
         onclick: () => { L.filter = key; render(); } }, label + ' ' + view.list.filter((x) => test(x.s)).length)),
-      el('span', { class: 'spacer' }),
-      el('small', { text: d.lastRun
-        ? 'Last detection ' + d.lastRun.createdAt.slice(0, 16).replace('T', ' ') + ' · threshold ' + d.lastRun.threshold + ' · ' + d.lastRun.shotCount + ' shots'
-        : 'Shots have not been detected for this asset.' }),
-      // The hook for slice 3. It stays disabled, with the reason beside it, until the detection job exists.
-      el('button', { type: 'button', class: 'btn ghost', id: 'lib-detect', disabled: true, 'aria-describedby': 'lib-detect-why' }, 'Detect shots'),
-      el('small', { id: 'lib-detect-why', text: 'Detection is not on this screen yet.' }),
     ]);
   }
 
@@ -1428,8 +1607,13 @@
     const d = view.d;
     const test = FILTERS.find((f) => f[0] === L.filter)[2];
     const rows = view.list.filter((x) => test(x.s));
-    paint('lib-list', [rows.map((x) => [x.s, x.name, x.snippet, isSelected(x.s.id)]), L.cur, L.filter, d.truncated, d.pendingFrames, d.hasProxy, d.open], () => {
+    const idx = indexInfo(d);
+    paint('lib-list', [rows.map((x) => [x.s, x.name, x.snippet, isSelected(x.s.id)]), L.cur, L.filter, d.truncated, d.pendingFrames, d.hasProxy, d.open, idx && idx.state], () => {
       const out = [];
+      if (!view.list.length && idx && idx.state === 'working') {
+        out.push(stateCard('Indexing', 'film', idx.text));
+        return out;
+      }
       if (!view.list.length) {
         out.push(stateCard('No shots yet', 'film', (d.lastRun ? 'Detection ran and no shots remain.' : 'This asset has never been scanned.') +
           (videoReady() ? ' Mark by hand: play the proxy and press I, then O.' : ' Mark by hand: type an in and an out above.'),
@@ -1444,7 +1628,6 @@
           ...['Frame', 'Name', 'In', 'Out', 'Length', 'Transcript', 'State'].map((h) => el('th', { scope: 'col', text: h }))])),
         el('tbody', {}, rows.map((x) => libRow(x, view))))));
       if (d.truncated) out.push(el('p', { class: 'note', text: 'The list stops at ' + (LIB.MAX_PAGES * LIB.PAGE) + ' spans. Narrow it with a filter.' }));
-      if (d.pendingFrames) out.push(el('p', { class: 'note', text: d.pendingFrames + ' transcript word(s) are not placed on frames yet, so some snippets may be missing.' }));
       return out;
     });
   }
@@ -1497,7 +1680,8 @@
     const s = curSpan();
     if (s) draftFor(s);
     const items = showInfo().items.filter((i) => i.status === 'ready');
-    paint('lib-span', [s, s ? L.draft.id : null, [...S.pending], S.armed, items.map((i) => i.id), L.pos != null], () => {
+    const next = s ? nextShot(s, view) : null;
+    paint('lib-span', [s, s ? L.draft.id : null, [...S.pending], S.armed, items.map((i) => i.id), L.pos != null, next && [next.s.id, next.s.frameIn, inUse(next.s)]], () => {
       if (!s) return el('p', { class: 'empty', text: 'Pick a row to rename it, trim it, attach it to a rundown item or delete it.' });
       const d = draftFor(s);
       const used = inUse(s) > 0;
@@ -1521,9 +1705,7 @@
             btn('Playhead as in', { key: 'ph-in', cls: 'ghost small', disabled: used || !videoReady(), onclick: () => { d.tcIn = playheadTc(view); $('span-in').value = d.tcIn; } }),
             btn('Playhead as out', { key: 'ph-out', cls: 'ghost small', disabled: used || !videoReady(), onclick: () => { d.tcOut = playheadTc(view); $('span-out').value = d.tcOut; } }),
             btn('Apply trim', { key: 'lib:trim:' + s.id, cls: 'ghost', disabled: used, onclick: () => applyTrim(s) }))),
-        el('div', { class: 'bar flush' },
-          btn('Split here', { key: 'split', cls: 'ghost', disabled: true }), btn('Merge with next', { key: 'merge', cls: 'ghost', disabled: true }),
-          el('small', { text: 'Split and merge come with detection.' })),
+        splitMergeBlock(s, view, d, used, next),
         items.length ? el('div', {},
           el('label', { class: 'f', for: 'span-attach', text: 'Attach to a rundown item' }),
           el('select', { id: 'span-attach', 'data-fk': 'span-attach', onchange: (e) => { d.item = e.target.value; } },

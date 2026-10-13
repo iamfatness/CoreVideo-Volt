@@ -359,7 +359,7 @@ def act_publish(store, span_id, body):
 # map its refusals to HTTP. Marking is allowed on any asset: spans carry no rights (the asset does), and an
 # operator has to be able to log footage to decide what to clear. Publish and air keep their gate.
 
-SHOT_STATUS = {"not_found": 404, "bad_input": 422, "bad_timecode": 422, "outside_source": 422}
+SHOT_STATUS = {"not_found": 404, "bad_input": 422, "bad_timecode": 422, "outside_source": 422, "engine_missing": 503}
 
 
 def _shot_errors(fn):
@@ -413,6 +413,39 @@ def act_span_delete(store, span_id, body):
     return {"ok": True, "deleted": span_id}
 
 
+def act_span_split(store, span_id, body):
+    _unknown_keys(body, {"at"})
+    at = _str(body, "at", required=True, limit=32)
+    left, right = _shot_errors(lambda: shots.split(store, span_id, at))
+    return {"ok": True, "spans": [_span_payload(store, left), _span_payload(store, right)]}
+
+
+def act_span_merge(store, span_id, body):
+    _unknown_keys(body, {"with"})
+    other = _str(body, "with", required=True, limit=128)
+    span = _shot_errors(lambda: shots.merge(store, span_id, other))
+    return {"ok": True, "span": _span_payload(store, span), "removed": other}
+
+
+def act_detect(store, asset_id, body):
+    """Queue a detection run (a runner does the work). Rights are not consulted. A repeat of a finished run is a
+    no-op with `alreadyDone: true`; a repeat of a queued or running one is that same job."""
+    _unknown_keys(body, {"threshold", "min_frames"})
+    _asset_exists(store, asset_id)
+    job, already_done = _shot_errors(lambda: shots.request_detect_checked(
+        store, asset_id, body.get("threshold"), body.get("min_frames")))
+    return {"ok": True, "alreadyDone": already_done, "job": job}
+
+
+def act_span_frames(store, asset_id, body):
+    """Queue the span-frames backfill if the asset has spans still missing their frame columns. Safe to repeat."""
+    _unknown_keys(body, set())
+    _asset_exists(store, asset_id)
+    job = shots.request_span_frames(store, asset_id)
+    return {"ok": True, "queued": job is not None, "pendingFrames": shots.pending_frames(store, asset_id),
+            "job": shots.indexing_job(store, asset_id)}
+
+
 def act_export_nle(store, _unused, body):
     """Stateless: builds the file from the span IDs sent and returns it. Writes nothing."""
     try:
@@ -443,6 +476,10 @@ ROUTES = [
     (re.compile(rf"^/api/spans/{_ID}/trim$"), act_span_trim),
     (re.compile(rf"^/api/spans/{_ID}/label$"), act_span_label),
     (re.compile(rf"^/api/spans/{_ID}/delete$"), act_span_delete),
+    (re.compile(rf"^/api/spans/{_ID}/split$"), act_span_split),
+    (re.compile(rf"^/api/spans/{_ID}/merge$"), act_span_merge),
+    (re.compile(rf"^/api/assets/{_ID}/shots/detect$"), act_detect),
+    (re.compile(rf"^/api/assets/{_ID}/span-frames$"), act_span_frames),
     (re.compile(r"^/api/exports/nle$()"), act_export_nle),
 ]
 

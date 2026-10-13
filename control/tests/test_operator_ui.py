@@ -130,6 +130,16 @@ class Library(Api):
         # the dispatcher hands the Library its own keys before the Show keys can see them
         self.assertLess(js.index("if (S.screen === 'library') { libKey(e); return; }"), js.index("if (k === 't')"))
 
+    def test_the_detect_split_and_merge_hooks_are_wired_not_disabled(self):
+        js, html = FILES["operator.js"], FILES["index.html"]
+        for token in ("spanSplit:", "spanMerge:", "detect:", "spanFrames:", "function paintDetect", "function splitMergeBlock",
+                      "function libBackground", "armedAction('detect:'"):
+            self.assertIn(token, js)
+        self.assertIn('id="lib-detectbar"', html)
+        self.assertNotIn("Detection is not on this screen yet", js)
+        self.assertNotIn("come with detection", js)
+        self.assertNotIn("The hook for slice 3", js)
+
     def test_the_old_keys_are_unchanged(self):
         js = FILES["operator.js"]
         for line in ("if (k === 't') { if (!e.repeat) takeNow(true); return; }", "if (k === 'h') { if (!e.repeat) toggleHold(); return; }",
@@ -244,6 +254,50 @@ class LibraryScenario(Api):
             self.assertEqual((r.status, r.getheader("Content-Type"), body[:2]), (200, "image/jpeg", b"\xff\xd8"))
         finally:
             conn.close()
+
+
+    def drain(self):
+        from volt.runner import Config, Runner, default_handlers
+        return Runner(self.store, default_handlers(Config(out_dir=Path(self.tmp.name) / "out")), name="t1").drain()
+
+    def test_detect_on_the_cuts_asset_finds_its_shots_and_the_page_reads_the_job(self):
+        a = self.ids["iso-5"]
+        _, h, _ = self.get(f"/api/assets/{a}/spans")
+        self.assertEqual((h["spans"], h["detect"], h["indexing"], h["pendingFrames"]), ([], None, None, 0))
+        status, p = self.post(f"/api/assets/{a}/shots/detect", {})
+        self.assertEqual((status, p["job"]["status"]), (200, "queued"))
+        _, h, _ = self.get(f"/api/assets/{a}/spans")
+        self.assertEqual(h["detect"]["status"], "queued")
+        self.assertEqual(self.drain(), {"done": 1})
+        _, h, _ = self.get(f"/api/assets/{a}/spans?kind=shot")
+        self.assertEqual([(x["frameIn"] - 90000, x["frameOut"] - 90000) for x in h["spans"]], [(0, 60), (60, 110), (110, 180), (180, 250)])
+        self.assertEqual((h["detect"]["status"], h["lastRun"]["shotCount"]), ("done", 4))
+        self.assertEqual(self.post(f"/api/assets/{a}/shots/detect", {})[1]["alreadyDone"], True)
+        # a thumbnail the job wrote is the file the route serves (one path rule), so the route makes no new one
+        thumbs = list((Path(self.tmp.name) / "out" / "thumbs" / a).glob("*.jpg"))
+        self.assertEqual(len(thumbs), 4)
+
+    def test_the_old_spans_asset_is_indexed_by_the_backfill_and_then_listed(self):
+        a = self.ids["iso-8"]
+        _, h, _ = self.get(f"/api/assets/{a}/spans")
+        self.assertEqual((h["pendingFrames"], h["spans"]), (2, []))
+        status, p = self.post(f"/api/assets/{a}/span-frames", {})
+        self.assertEqual((status, p["queued"], p["job"]["status"]), (200, True, "queued"))
+        self.assertEqual(self.drain(), {"done": 1})
+        _, h, _ = self.get(f"/api/assets/{a}/spans")
+        self.assertEqual((h["pendingFrames"], len(h["spans"]), h["indexing"]["status"]), (0, 2, "done"))
+
+    def test_split_and_merge_work_on_the_drop_frame_asset_that_is_not_cleared(self):
+        _, p, _ = self.get(f"/api/assets/{self.ids['iso-6']}/spans?kind=shot")
+        first = p["spans"][0]
+        status, out = self.post(f"/api/spans/{first['id']}/split", {"at": "01:00:06;00"})
+        self.assertEqual((status, out["spans"][1]["tcIn"], out["spans"][0]["blockedBy"]), (200, "01:00:06;00", "not cleared"))
+        status, out2 = self.post(f"/api/spans/{first['id']}/merge", {"with": out["spans"][1]["id"]})
+        self.assertEqual((status, out2["span"]["tcOut"]), (200, first["tcOut"]))
+
+    def test_detect_waits_for_the_asset_that_is_still_recording(self):
+        status, p = self.post(f"/api/assets/{self.ids['iso-7']}/shots/detect", {})
+        self.assertEqual((status, p["error"]["code"]), (409, "essence_open"))
 
 
 class State(Api):

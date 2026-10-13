@@ -365,6 +365,10 @@ def _shot_for_edit(store: Store, span_id: str):
     row = _row(store, span_id)
     if row["kind"] != SHOT:
         raise ShotError("not_editable", f"a {row['kind']} span cannot be split or merged; only shots can")
+    if row["frame_in"] is None or row["frame_out"] is None:
+        # Written by a version that predates the frame columns. The guarded writes below compare them, so they
+        # could never match; say so plainly instead of reporting a race that is not one.
+        raise ShotError("indexing", "this shot's frames are still being indexed; try again in a moment")
     return row
 
 
@@ -463,19 +467,21 @@ def thumb_path(out_dir, asset_id: str, span_id: str, frame: int) -> Path:
     return Path(out_dir) / "thumbs" / asset_id / f"{span_id}-{frame}.jpg"
 
 
-def write_thumb(source, seconds: float, dest: Path, run=subprocess.run) -> None:
-    """One ffmpeg seek on `source` into `dest`. ffmpeg writes a private part file that is renamed into place
-    only when it is a whole, non-empty image, so a failure or a timeout leaves nothing behind that a later
-    reader could take for a thumbnail. Raises ShotError('thumb_failed')."""
+def write_thumb(source, seconds: float, dest: Path, run=subprocess.run, timeout: Optional[float] = None) -> None:
+    """One ffmpeg seek on `source` into `dest` (`timeout` seconds, default THUMB_TIMEOUT). ffmpeg writes a private
+    part file that is renamed into place only when it is a whole, non-empty image, so a failure or a timeout
+    leaves nothing behind that a later reader could take for a thumbnail. Raises ShotError('thumb_failed') or,
+    for a run that took too long, ShotError('thumb_timeout')."""
+    timeout = THUMB_TIMEOUT if timeout is None else timeout
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(f"{dest.stem}.{uuid.uuid4().hex[:12]}.part.jpg")
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{seconds:.4f}", "-i", str(source), "-frames:v", "1",
            "-an", "-vf", f"scale={THUMB_WIDTH}:-2", "-q:v", "4", str(part)]
     try:
         try:
-            out = run(cmd, capture_output=True, text=True, timeout=THUMB_TIMEOUT)
+            out = run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise ShotError("thumb_failed", f"ffmpeg took longer than {THUMB_TIMEOUT} s") from None
+            raise ShotError("thumb_timeout", f"ffmpeg took longer than {timeout} s") from None
         except OSError as exc:
             raise ShotError("thumb_failed", f"ffmpeg could not be run: {exc}") from None
         if out.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
@@ -553,6 +559,76 @@ def request_detect(store: Store, asset_id: str, threshold=None, min_frames=None)
         raise ShotError("essence_open", "the essence is still being recorded; detect after wrap")
     job = store.enqueue(asset_id, DETECT_TYPE, detect_key(threshold, min_frames))
     return job, job.status == "done"
+
+
+ACTIVE_JOB = ("queued", "running")
+
+
+def _age_seconds(value) -> Optional[int]:
+    """Seconds since a job row's timestamp (a string on SQLite, a datetime on Postgres). None if unreadable."""
+    try:
+        moment = value if isinstance(value, datetime) else datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ")
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - moment).total_seconds()))
+    except (TypeError, ValueError):
+        return None
+
+
+def job_json(row, settings: Optional[dict] = None) -> dict:
+    """A job row as the page shows it. `ageSeconds` is time since the row last changed (for a running job, since it
+    was claimed), computed here so the page never compares its clock with the server's. There is no percentage:
+    detection scores the whole file in one ffmpeg pass and reports nothing until it is done."""
+    return {"id": row["id"], "status": row["status"], "attempt": row["attempt"], "error": row["error"],
+            "updatedAt": str(row["updated_at"]), "ageSeconds": _age_seconds(row["updated_at"]), **(settings or {})}
+
+
+def detect_job(store: Store, asset_id: str) -> Optional[dict]:
+    """The newest detection job of the asset (any status), or None. Settings come from the key's readable tail."""
+    row = store.conn.execute(
+        "SELECT id, status, attempt, error, updated_at, idempotency_key FROM job WHERE asset_id = ? AND type = ? "
+        "ORDER BY updated_at DESC, id DESC LIMIT 1", (asset_id, DETECT_TYPE)).fetchone()
+    if row is None:
+        return None
+    try:
+        threshold, min_frames = parse_detect_key(row["idempotency_key"])
+        settings = {"threshold": threshold, "minFrames": min_frames}
+    except ShotError:
+        settings = {}
+    return job_json(row, settings)
+
+
+def indexing_job(store: Store, asset_id: str) -> Optional[dict]:
+    """The asset's `span-frames` job, or None when none was ever queued."""
+    row = store.conn.execute(
+        "SELECT id, status, attempt, error, updated_at FROM job WHERE asset_id = ? AND type = ? AND idempotency_key = ?",
+        (asset_id, SPAN_FRAMES_TYPE, SPAN_FRAMES_KEY)).fetchone()
+    return None if row is None else job_json(row)
+
+
+def request_detect_checked(store: Store, asset_id: str, threshold=None, min_frames=None):
+    """request_detect for the API: one detection at a time per asset. A repeat of the run that is already queued
+    or running is that same job (nothing new); different settings while one is active are refused
+    (`detect_busy`), since two runs would only fight over the same shots. The check and the queueing are one step
+    under the asset's lock, so two clicks cannot both get in. Returns `(job_row_dict, already_done)`."""
+    threshold, min_frames = check_settings(threshold, min_frames)
+    key = detect_key(threshold, min_frames)          # may raise engine_missing; before the lock is taken
+    with store.transaction(f"shots-detect:{asset_id}"):
+        active = store.conn.execute(
+            "SELECT id, status, attempt, error, updated_at, idempotency_key FROM job WHERE asset_id = ? AND type = ? "
+            "AND status IN ('queued', 'running') AND idempotency_key != ?", (asset_id, DETECT_TYPE, key)).fetchone()
+        if active is not None:
+            raise ShotError("detect_busy", "another detection is already queued or running for this asset; "
+                                           "wait for it to finish before starting one with different settings")
+        job, already_done = request_detect(store, asset_id, threshold, min_frames)
+    return detect_job_by_id(store, job.id), already_done
+
+
+def detect_job_by_id(store: Store, job_id: str) -> dict:
+    row = store.conn.execute(
+        "SELECT id, status, attempt, error, updated_at, idempotency_key FROM job WHERE id = ?", (job_id,)).fetchone()
+    threshold, min_frames = parse_detect_key(row["idempotency_key"])
+    return job_json(row, {"threshold": threshold, "minFrames": min_frames})
 
 
 def merge_short(cuts, total: int, min_frames: int) -> list[int]:
