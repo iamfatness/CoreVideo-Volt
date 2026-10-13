@@ -94,6 +94,7 @@
     spanMerge:   ['POST', '/api/spans/{id}/merge'],
     detect:      ['POST', '/api/assets/{id}/shots/detect'],
     spanFrames:  ['POST', '/api/assets/{id}/span-frames'],
+    exportNle:   ['POST', '/api/exports/nle'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -1488,6 +1489,7 @@
   // name it toggles the selection (see the row's own handler) and elsewhere it keeps its browser behaviour.
   function libKey(e) {
     if (!L.data || W.tab === 'words') return;   // the transcript tab has its own keys (trKey)
+    if (W.tab === 'export') return;             // the export tab has no keys: the player is hidden, so I, O and K have nothing to do
     const t = e.target;
     const k = e.key;
     const onControl = t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],input,textarea');
@@ -1670,9 +1672,9 @@
           el('button', { type: 'button', class: 'mini', 'data-fk': 'rm:' + e.id, 'aria-label': 'Remove ' + e.name, onclick: () => { L.sel = L.sel.filter((x) => x.id !== e.id); store('volt.lib.sel', L.sel); render(); } }, '×')))),
         el('dl', { class: 'kv' }, el('dt', { text: 'Total' }), el('dd', { text: total }), el('dt', { text: 'Assets' }), el('dd', { text: String(new Set(tray.map((e) => e.assetId)).size) })),
         el('div', { class: 'bar' },
-          el('button', { type: 'button', class: 'btn', disabled: true, 'aria-describedby': 'lib-export-why' }, 'EXPORT TO NLE'),
+          el('button', { type: 'button', class: 'btn', 'data-fk': 'tray-export', 'aria-describedby': 'lib-export-why', onclick: xOpen }, 'EXPORT TO NLE'),
           el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'tray-clear', onclick: () => { L.sel = []; store('volt.lib.sel', L.sel); render(); } }, 'Clear')),
-        el('p', { class: 'note', id: 'lib-export-why', text: 'Export to an NLE is not built yet. The selection is kept for this tab.' }),
+        el('p', { class: 'note', id: 'lib-export-why', text: 'Opens the Export tab with this selection in this order. Nothing is written until you press Export there. The selection is kept for this tab.' }),
       ];
     });
   }
@@ -1824,12 +1826,13 @@
     W.wired = true;
     $('lib-body').setAttribute('role', 'tabpanel');
     $('lib-body').setAttribute('aria-labelledby', 'lib-tab-shots');
-    const tabs = ['shots', 'words'];
+    const tabs = ['shots', 'words', 'export'];
     for (const name of tabs) {
       const b = $('lib-tab-' + name);
       b.addEventListener('click', () => setTab(name, false));
       b.addEventListener('keydown', (e) => {
-        const to = e.key === 'ArrowRight' || e.key === 'ArrowLeft' ? tabs[1 - tabs.indexOf(name)] : e.key === 'Home' ? 'shots' : e.key === 'End' ? 'words' : null;
+        const at = tabs.indexOf(name);
+        const to = e.key === 'ArrowRight' ? tabs[(at + 1) % tabs.length] : e.key === 'ArrowLeft' ? tabs[(at + tabs.length - 1) % tabs.length] : e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs[tabs.length - 1] : null;
         if (!to) return;
         e.preventDefault();
         setTab(to, true);
@@ -1863,12 +1866,13 @@
   function setTab(name, focus) {
     if (W.tab === name) return;
     W.tab = name;
+    if (name === 'export') X.key = null;                    // the export tab asks the server again each time it opens
     const v = $('lib-video');
     if (v && !v.paused) v.pause();
     S.sigs = {};
     render();
     if (focus) $('lib-tab-' + name).focus();
-    announce(name === 'words' ? 'Mark from transcript.' : 'Shots and clips.');
+    announce(name === 'words' ? 'Mark from transcript.' : name === 'export' ? 'Export to an NLE.' : 'Shots and clips.');
   }
 
   function nearestWord(frame) {
@@ -1966,15 +1970,18 @@
     const live = !body.hidden;                   // shown means an asset is loaded and markable
     if (W.for !== L.assetId) wordsReset();
     tabs.hidden = !live;
-    if (!live) { panel.hidden = true; return; }
-    const words = W.tab === 'words';
-    body.hidden = words;
+    const xpanel = $('lib-export');
+    if (!live) { panel.hidden = true; xpanel.hidden = true; return; }
+    const words = W.tab === 'words', exporting = W.tab === 'export';
+    body.hidden = words || exporting;
     panel.hidden = !words;
-    for (const name of ['shots', 'words']) {
+    xpanel.hidden = !exporting;
+    for (const name of ['shots', 'words', 'export']) {
       const b = $('lib-tab-' + name), on = W.tab === name;
       b.setAttribute('aria-selected', String(on));
       b.tabIndex = on ? 0 : -1;
     }
+    if (exporting) { renderExport(); return; }
     if (!words) return;
     if (W.load === 'idle') { W.load = 'loading'; wordsLoad(false); }
     const view = libView();
@@ -2122,6 +2129,320 @@
         }
       },
     });
+  }
+
+  // ---- Library: export to an NLE (slice 6; docs/specs/shot-spans.md "The NLE panel", mockup tab "Selection to export") ----
+  // The tray's selection goes to POST /api/exports/nle. Own state (X) and own functions; nothing here is called by
+  // the shot list or the transcript tab, and there are no keys: Space and the rest keep their native behaviour.
+  //
+  // Every change of selection or option asks the server for a dry run (a stale answer is thrown away by token), and
+  // the page shows only what the server said: the verdict of each span, every refusal with its stable code, and the
+  // first lines of the file. Nothing is written until Export is pressed. The real run is the same request with
+  // dry_run false; the page then saves `content` with a Blob (fetch first, so a bearer token goes with it).
+  //
+  // Which paths the file carries is the SERVER's setting (VOLT_EXPORT_PATH_MAP). The mockup's "path as the NLE sees
+  // it" drop-down cannot be a per-request choice (the API has no such field), so the page reports what the server
+  // did to each path instead of offering a choice that would not be honoured.
+  const XPORT = { MAX: 500, DEBOUNCE: 250, PREVIEW: 20, DEFAULT_TC: '01:00:00:00' };
+  // Flip to true only when the manual import check in docs/specs/shot-spans.md has a recorded result.
+  const FORMAT_VERIFIED = false;
+  const X = { format: 'xmeml', media: 'hi-res', name: '', nameSet: false, start: XPORT.DEFAULT_TC, skip: false,
+    dry: null, dryKey: null, err: null, load: 'idle', tok: 0, timer: 0, key: null, run: false, done: null };
+  Object.assign(ERR_LABEL, { blocked: 'Blocked by rights', mixed_rates: 'Mixed frame rates', not_local: 'Media not reachable',
+    proxy_mismatch: 'Proxy does not match', unsupported_rate: 'Frame rate not supported', bad_path_map: 'Server path map is broken' });
+  const TC_SHAPE = /^\d\d:\d\d:\d\d[:;]\d\d$/;
+
+  // Plain words for each refusal: [headline, what to do]. The server's own reason is always shown under it, with the code.
+  const XWHY = {
+    blocked: ['Some spans are blocked by rights.', 'Clear the asset on the Rights screen, or leave the blocked spans out of the file.'],
+    essence_open: ['A file is still being written.', 'The hi-res (or proxy) of one asset has not been wrapped. Wait for wrap, or export the proxy.'],
+    not_local: ['The media is not a file an editor can open.', 'It is stored as an object-store key or a relative path. Export the proxy, or restore the file to disk.'],
+    no_proxy: ['One asset has no proxy.', 'Pick Hi-res, or wait for the proxy job.'],
+    proxy_mismatch: ['A proxy does not line up with its hi-res.', 'It records a different frame rate or start timecode, so frames would land in the wrong place. Export the hi-res.'],
+    outside_source: ['A span lies outside its file.', 'Trim it on the shot list so it sits inside the recording, or take it out of the selection.'],
+    mixed_rates: ['The selection mixes frame rates.', 'One sequence has one rate. Export them in separate files.'],
+    unsupported_rate: ['A frame rate cannot be written.', 'Only whole-number and /1001 broadcast rates can go into xmeml or an EDL.'],
+    bad_input: ['The request was not accepted.', 'Check the options on the right.'],
+    not_found: ['A selected span no longer exists.', 'It was deleted or merged since you selected it. Remove it from the selection.'],
+    bad_path_map: ['The server\'s path map is broken.', 'This is a server setting (VOLT_EXPORT_PATH_MAP), not something to fix here. Tell whoever runs the server.'],
+    unauthorized: ['A token is needed.', 'Use the Token button at the top, then try again.'],
+    offline: ['The server did not answer.', 'Nothing was written. Check the connection and try again.'],
+    internal: ['The server could not build the file.', 'Nothing was written. Try again; if it repeats, the server log has the reason.'],
+  };
+
+  function xBody(dry) {
+    const b = { format: X.format, spans: L.sel.map((e) => e.id), media: X.media, name: X.name.trim() || xDefaultName(), dry_run: !!dry, skip_blocked: X.skip };
+    if (X.start.trim()) b.start_tc = X.start.trim();
+    return b;
+  }
+  function xDefaultName() {
+    const a = ((S.data && S.data.assets) || []).find((x) => L.sel.length && x.id === L.sel[0].assetId);
+    return ((a && a.show) || 'Volt') + ' selects';
+  }
+  const xKey = () => JSON.stringify(xBody(true));
+  const xStart = () => X.start.trim() === '' || TC_SHAPE.test(X.start.trim());
+  const xCurrent = () => X.dryKey === xKey() && L.sel.length > 0;
+
+  function xOpen() {
+    if (!L.sel.length) return;
+    setTab('export', false);
+    const p = $('lib-export');
+    if (p) p.focus();
+  }
+
+  // A dry run is asked for when the request differs from the last one asked, after a short wait so typing a name
+  // is one request, not one per letter. The token makes an answer to an older request harmless.
+  function xSchedule() {
+    const key = xKey();
+    if (key === X.key) return;
+    X.key = key; X.done = null; X.err = null;
+    clearTimeout(X.timer);
+    const tok = ++X.tok;
+    if (!L.sel.length || L.sel.length > XPORT.MAX || !xStart()) { X.load = 'idle'; X.dry = null; X.dryKey = null; return; }
+    X.load = 'loading';
+    X.timer = setTimeout(() => xDry(key, tok), XPORT.DEBOUNCE);
+  }
+
+  async function xDry(key, tok) {
+    let out;
+    try { out = await call('exportNle', null, JSON.parse(key)); } catch (e) { out = { status: 0, data: null }; }
+    if (tok !== X.tok) return;
+    xTake(out, key, true);
+    render();
+  }
+
+  function xTake(out, key, dry) {
+    const { status, data } = out;
+    if (status === 200 && data && data.ok) { X.dry = data; X.dryKey = key; X.err = null; X.load = 'ready'; return true; }
+    if (status === 401) { setConn('token'); openToken(); }
+    const e = status === 0 ? { code: 'offline', reason: 'The request did not reach the server.' } : codeOf(data, status);
+    if (status === 401) e.code = 'unauthorized';
+    X.err = { code: e.code, reason: e.reason, status, spans: (data && data.spans) || null, rates: (data && data.rates) || null, run: !dry };
+    if (dry) { X.dry = null; X.dryKey = null; }
+    X.load = 'ready';
+    return false;
+  }
+
+  function xFixes() {
+    const e = X.err, fixes = [];
+    if (!e) return fixes;
+    if ((e.code === 'not_local' || e.code === 'essence_open') && X.media === 'hi-res') fixes.push(['Use the proxy', () => xSet({ media: 'proxy' })]);
+    if ((e.code === 'no_proxy' || e.code === 'proxy_mismatch') && X.media === 'proxy') fixes.push(['Use the hi-res', () => xSet({ media: 'hi-res' })]);
+    if (e.code === 'mixed_rates') {
+      for (const r of [...new Set(L.sel.map((s) => s.rate))]) {
+        const p = parseRate(r);
+        fixes.push(['Keep only the ' + (p ? fmtRate(p) : String(r)) + ' spans', () => { L.sel = L.sel.filter((s) => s.rate === r); store('volt.lib.sel', L.sel); render(); }]);
+      }
+    }
+    if (e.code === 'not_found') {
+      const gone = L.sel.find((s) => (e.reason || '').includes(s.id));
+      if (gone) fixes.push(['Remove ' + gone.name + ' from the selection', () => { L.sel = L.sel.filter((s) => s.id !== gone.id); store('volt.lib.sel', L.sel); render(); }]);
+    }
+    return fixes;
+  }
+
+  function xSet(patch) {
+    Object.assign(X, patch);
+    render();
+  }
+
+  async function xRun() {
+    if (X.run || !xCurrent() || !X.dry) return;
+    const key = xKey();
+    X.run = true; X.err = null; render();
+    let out;
+    try { out = await call('exportNle', null, Object.assign(JSON.parse(key), { dry_run: false })); } catch (e) { out = { status: 0, data: null }; }
+    X.run = false;
+    if (xKey() !== key) { render(); return; }               // the options moved on while the file was being built
+    const d = out.data;
+    if (out.status === 200 && d && d.ok && typeof d.content === 'string') {
+      X.done = { filename: d.filename || 'volt-selects.' + (d.format === 'edl' ? 'edl' : 'xml'), mime: d.mime || 'text/plain', content: d.content, sha: d.sha256,
+        clips: (d.spans || []).filter((s) => s.status === 'ready').length, frames: d.durationFrames, rate: d.rate, format: d.format, saved: false };
+      X.done.saved = xSave(X.done);
+      announce(X.done.saved ? 'Saved ' + X.done.filename + '.' : 'Built ' + X.done.filename + ' but the browser did not save it.');
+    } else xTake(out, key, false);
+    render();
+  }
+
+  // fetch() has already carried the token; the file is saved from a Blob, so no token is ever put in a URL.
+  function xSave(done) {
+    try {
+      const url = URL.createObjectURL(new Blob([done.content], { type: done.mime }));
+      const a = el('a', { href: url, download: done.filename, class: 'vh', tabindex: '-1' });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // ---- painting -----------------------------------------------------------------------------------------
+  function renderExport() {
+    if (!X.nameSet && !X.name) X.name = xDefaultName();
+    xSchedule();
+    const cur = xCurrent() && X.dry;
+    paint('lib-x-msg', [FORMAT_VERIFIED, X.err && [X.err.code, X.err.reason, X.err.run, X.media, L.sel.map((e) => e.id)], cur && [cur.warnings, cur.spans], L.sel.length > XPORT.MAX, L.sel.map((e) => e.name)], xMessages);
+    paint('lib-x-table', [L.sel, cur ? cur.spans : X.load, X.err && X.err.code], xTable);
+    paint('lib-x-prev', [X.format, cur && cur.preview, X.load, !!X.err, L.sel.length], xPreview);
+    paint('lib-x-opts', [X.format, X.media, X.skip, cur && [cur.pathMapSet, cur.paths]], xOptions);
+    paint('lib-x-act', [X.format, X.media, X.skip, X.load, X.run, !!X.err, cur && [cur.filename, cur.spans, cur.durationFrames, cur.startTc, cur.dropFrame], xStart(), L.sel.length, X.name, X.start], xAct);
+    paint('lib-x-done', [X.done && [X.done.filename, X.done.saved]], xDone);
+  }
+
+  function xMessages() {
+    const out = [];
+    if (!FORMAT_VERIFIED) {
+      out.push(el('div', { class: 'info', id: 'lib-x-unverified' }, el('strong', { text: 'Not checked in an NLE yet. ' }),
+        'The xmeml and EDL files have been read back by a second program, but nobody has imported them into Premiere or Resolve and recorded the result. Import one and check the clips before you rely on it. The steps are under "Manual import check" in docs/specs/shot-spans.md.'));
+    }
+    if (L.sel.length > XPORT.MAX) {
+      out.push(el('div', { class: 'banner bad', role: 'alert' }, el('div', { class: 'msg' }, el('strong', { text: 'Too many spans.' }),
+        el('span', { class: 'why', text: 'An export holds up to ' + XPORT.MAX + ' spans; ' + L.sel.length + ' are selected. Remove some from the selection.' }), el('span', { class: 'sub', text: 'code: bad_input' }))));
+    }
+    const e = X.err;
+    if (e) {
+      const w = XWHY[e.code] || ['The export was refused.', ''];
+      out.push(el('div', { class: 'banner bad', role: 'alert', id: 'lib-x-err' }, el('div', { class: 'msg' },
+        el('strong', { text: (e.run ? 'Nothing was saved. ' : '') + w[0] }),
+        el('span', { class: 'why', text: w[1] }),
+        el('span', { class: 'sub', text: e.reason }),
+        el('span', { class: 'sub', text: 'code: ' + e.code })),
+        xFixes().map((f, i) => el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'x-fix' + i, onclick: f[1] }, f[0]))));
+    }
+    const d = X.dry && xCurrent() ? X.dry : null;
+    if (d) {
+      const blocked = d.spans.filter((s) => s.status === 'blocked');
+      if (blocked.length) {
+        const names = blocked.map((s) => { const t = L.sel[d.spans.indexOf(s)]; return (t ? t.name : short(s.id)) + ' is ' + s.blockedBy; });
+        out.push(el('div', { class: 'banner bad', role: 'alert', id: 'lib-x-blocked' }, el('div', { class: 'msg' },
+          el('strong', { text: blocked.length + ' of ' + d.spans.length + ' spans cannot be exported.' }),
+          el('span', { class: 'why', text: [...new Set(names)].join('. ') + '. Clear it on the Rights screen, or leave blocked spans out.' }),
+          el('span', { class: 'sub', text: 'code: blocked' }))));
+      }
+      if (d.warnings && d.warnings.length) {
+        out.push(el('div', { class: 'info', id: 'lib-x-warn' }, el('strong', { text: 'Warnings from the server' }), el('ul', { class: 'plain' }, d.warnings.map((t) => el('li', { text: t })))));
+      }
+    }
+    return out;
+  }
+
+  function xTable() {
+    if (!L.sel.length) {
+      return el('div', { class: 'state-card' }, el('div', { class: 'empty' }, el('p', { text: 'Nothing is selected. Tick rows on the shot list to build the list; its order is the order of the sequence.' }),
+        el('div', { class: 'acts' }, el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'x-back', onclick: () => setTab('shots', true) }, 'Back to the shot list'))));
+    }
+    const verdicts = xCurrent() && X.dry ? X.dry.spans : null;
+    const head = el('thead', {}, el('tr', {}, ['#', 'Span', 'In', 'Out', 'Length', 'Check'].map((h) => el('th', { scope: 'col', text: h }))));
+    const rows = L.sel.map((e, i) => {
+      const v = verdicts && verdicts[i];
+      const p = parseRate(e.rate);
+      let cell;
+      if (v) {
+        cell = v.status === 'ready' ? el('td', { class: 'verd ok' }, el('span', { 'aria-hidden': 'true', text: '✓ ' }), 'Ready')
+          : el('td', { class: 'verd no' }, el('span', { 'aria-hidden': 'true', text: '✕ ' }), v.blockedBy ? v.blockedBy.charAt(0).toUpperCase() + v.blockedBy.slice(1) : 'Blocked');
+      } else if (X.err && !X.err.run) cell = el('td', { class: 'verd', text: 'Not checked' });
+      else cell = el('td', { class: 'verd', text: X.load === 'loading' ? 'Checking…' : '—' });
+      return el('tr', {}, el('td', { class: 'mono', text: String(i + 1) }),
+        el('td', {}, el('div', { class: 'nm', text: e.name }), el('small', { class: 'mono', text: e.cam + ' · ' + short(e.assetId) })),
+        el('td', { class: 'mono', text: e.tcIn }), el('td', { class: 'mono', text: e.tcOut }),
+        el('td', { class: 'mono', text: p ? lengthTc(e.frames, p) : e.frames + ' fr' }), cell);
+    });
+    return [el('div', { class: 'tablewrap', role: 'region', 'aria-label': 'Selection in export order', tabindex: '0' }, el('table', {}, head, el('tbody', {}, rows))),
+      el('div', { class: 'bar' }, el('small', { text: 'Order is the order in the sequence. Reorder it in the Selection panel on the shot list tab.' }))];
+  }
+
+  function xPreview() {
+    const d = xCurrent() && X.dry ? X.dry : null;
+    let body;
+    if (!L.sel.length) body = el('p', { class: 'empty', text: 'Nothing to preview.' });
+    else if (d && d.preview && d.preview.length) {
+      const more = d.preview.length >= XPORT.PREVIEW ? '\n…' : '';
+      body = el('pre', { class: 'code', tabindex: '0', role: 'group', 'aria-label': 'Preview of the export file, first ' + d.preview.length + ' lines' }, d.preview.join('\n') + more);
+    } else if (d) body = el('p', { class: 'empty', text: 'Every span is blocked, so there is no file to preview.' });
+    else if (X.err) body = el('p', { class: 'empty', text: 'No preview: the server refused this selection (see the message above).' });
+    else body = el('p', { class: 'empty', text: X.load === 'loading' ? 'Checking with the server…' : 'No preview yet.' });
+    return el('div', { class: 'body' }, body);
+  }
+
+  function xRadio(group, value, label, note, checked) {
+    const id = 'x-' + group + '-' + value;
+    return el('div', { class: 'opt' },
+      el('input', { type: 'radio', name: 'x-' + group, id, value, checked: checked ? true : null, 'data-fk': id,
+        onchange: () => xSet(group === 'fmt' ? { format: value } : { media: value }) }),
+      el('label', { for: id }, el('span', {}, label, el('small', { text: note }))));
+  }
+
+  function xPaths(d) {
+    if (X.format === 'edl') return el('p', { class: 'note', id: 'lib-x-paths', text: 'An EDL carries no media paths. The editor relinks by reel name and timecode.' });
+    if (!d) return el('p', { class: 'note', id: 'lib-x-paths', text: 'Paths are shown once the server has checked the selection.' });
+    const shown = d.paths.slice(0, 3);
+    return el('div', { id: 'lib-x-paths' },
+      el('p', { class: 'note', text: d.pathMapSet
+        ? 'The server rewrites media paths with its path map (VOLT_EXPORT_PATH_MAP). Check that the NLE machine can open what is written below.'
+        : 'No path map is set on the server (VOLT_EXPORT_PATH_MAP), so paths are written as stored. An editing machine often sees the media somewhere else.' }),
+      el('ul', { class: 'plain paths' }, shown.map((p) => el('li', {}, el('span', { class: 'mono', text: p.mapped ? p.location + ' → ' + p.path : p.path }), el('small', { text: p.mapped ? ' (rewritten)' : ' (as stored)' }))),
+        d.paths.length > shown.length ? el('li', { text: 'and ' + (d.paths.length - shown.length) + ' more' }) : null));
+  }
+
+  function xOptions() {
+    const d = xCurrent() && X.dry ? X.dry : null;
+    return el('div', { class: 'body' },
+      el('fieldset', { class: 'plainset' }, el('legend', { class: 'f', text: 'Format' }),
+        xRadio('fmt', 'xmeml', 'Final Cut XML (xmeml)', 'Imports in Premiere. Keeps names, paths, in and out, comments.', X.format === 'xmeml'),
+        xRadio('fmt', 'edl', 'CMX3600 EDL', 'Cuts only. Reel names are cut to 8 characters. No paths.', X.format === 'edl')),
+      el('fieldset', { class: 'plainset' }, el('legend', { class: 'f', text: 'Media' }),
+        xRadio('med', 'hi-res', 'Hi-res', 'Opens without relinking if the NLE sees the same path.', X.media === 'hi-res'),
+        xRadio('med', 'proxy', 'Proxy', 'Smaller. Relink to hi-res later.', X.media === 'proxy')),
+      el('label', { class: 'f', for: 'x-name', text: 'Sequence name' }),
+      el('input', { id: 'x-name', type: 'text', maxlength: '200', value: X.name, 'data-fk': 'x-name', autocomplete: 'off',
+        oninput: (e) => { X.name = e.target.value; X.nameSet = true; render(); } }),
+      el('label', { class: 'f', for: 'x-start', text: 'Start timecode of the sequence' }),
+      el('input', { id: 'x-start', type: 'text', class: 'mono', value: X.start, 'data-fk': 'x-start', spellcheck: 'false', autocomplete: 'off', placeholder: XPORT.DEFAULT_TC, 'aria-describedby': 'x-start-hint',
+        oninput: (e) => { X.start = e.target.value; render(); } }),
+      el('small', { id: 'x-start-hint', text: 'hh:mm:ss:ff, or hh:mm:ss;ff for drop-frame. Empty means ' + XPORT.DEFAULT_TC + ' (drop-frame when the first file is).' }),
+      el('div', { class: 'opt' },
+        el('input', { type: 'checkbox', id: 'x-skip', checked: X.skip ? true : null, 'data-fk': 'x-skip', onchange: (e) => xSet({ skip: e.target.checked }) }),
+        el('label', { for: 'x-skip' }, el('span', {}, 'Leave out blocked spans', el('small', { text: 'The ones left out are named in a comment in the file and in the warnings.' })))),
+      xPaths(d));
+  }
+
+  function xAct() {
+    const d = xCurrent() && X.dry ? X.dry : null;
+    const total = L.sel.length;
+    const ready = d ? d.spans.filter((s) => s.status === 'ready').length : 0;
+    const blocked = d ? total - ready : 0;
+    let why = '';
+    if (!total) why = 'Nothing is selected.';
+    else if (total > XPORT.MAX) why = 'Too many spans: the limit is ' + XPORT.MAX + '.';
+    else if (!xStart()) why = 'The start timecode must look like 01:00:00:00.';
+    else if (X.err && !X.err.run) why = 'The server refused this selection. Fix the message above first.';
+    else if (!d) why = 'Waiting for the server to check the selection.';
+    else if (!ready) why = 'Every span is blocked.';
+    else if (blocked && !X.skip) why = 'Disabled until every span passes or blocked spans are left out.';
+    const can = !why;
+    const n = X.skip ? ready : total;
+    const rate = d ? parseRate(d.rate) : null;
+    const facts = d && d.filename ? [el('dt', { text: 'File' }), el('dd', { class: 'mono', text: d.filename }),
+      el('dt', { text: 'Clips' }), el('dd', { text: String(ready) }),
+      el('dt', { text: 'Runs' }), el('dd', { class: 'mono', text: (rate ? lengthTc(d.durationFrames, rate) + ' at ' + fmtRate(rate) : d.durationFrames + ' frames') }),
+      el('dt', { text: 'Starts at' }), el('dd', { class: 'mono', text: d.startTc + (d.dropFrame ? ' drop-frame' : '') })] : null;
+    return [facts ? el('dl', { class: 'kv x-facts' }, facts) : null,
+      el('div', { class: 'bar' },
+        el('button', { type: 'button', class: 'btn', id: 'lib-x-go', 'data-fk': 'x-go', 'aria-disabled': can ? null : 'true', 'aria-describedby': 'lib-x-why', 'aria-busy': X.run ? 'true' : null,
+          onclick: () => { if (can) xRun(); } }, X.run ? 'BUILDING…' : 'EXPORT ' + (n || '') + (n === 1 ? ' SPAN' : ' SPANS'))),
+      el('p', { class: 'note', id: 'lib-x-why', text: can ? 'Builds the file and saves it with your browser. Volt keeps no copy.' : why })];
+  }
+
+  function xDone() {
+    const d = X.done;
+    if (!d) return [];
+    const p = parseRate(d.rate);
+    return el('div', { class: 'good', role: 'status', id: 'lib-x-saved' },
+      el('strong', { text: d.saved ? 'Saved. ' : 'Built, but the browser did not save it. ' }),
+      el('span', { class: 'mono', text: d.filename }), ' · ' + d.clips + ' clip' + (d.clips === 1 ? '' : 's') + ' · ' + (p ? lengthTc(d.frames, p) : d.frames + ' frames') +
+      ' · sha256 ' + (d.sha || '').slice(0, 8) + '…' + (d.sha || '').slice(-4) + '. Volt keeps no copy.',
+      el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'x-again', onclick: () => { d.saved = xSave(d); render(); } }, 'Save again')));
   }
 
   // ---- dialogs, keys, screens ----------------------------------------------
