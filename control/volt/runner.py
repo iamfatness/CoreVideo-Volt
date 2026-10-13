@@ -63,6 +63,7 @@ class Claimed:
     type: str
     key: str
     attempt: int
+    claimed_by: Optional[str] = None  # the runner holding the lease; a handler's data writes can check it
 
 
 Handler = Callable[[Store, Claimed], None]
@@ -108,6 +109,7 @@ class Config:
     storage_scratch: Optional[Path] = None    # where cuts wait for upload (non-local storage)
     refresh_urls_every: float = 0.0           # seconds between URL refresh passes; 0 = off (opt in)
     refresh_urls_within: float = 86400.0      # re-sign URLs that expire within this many seconds
+    out_dir: Optional[Path] = None            # VOLT_OUT: where thumbnails are cached (same default as the server)
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -134,6 +136,7 @@ class Config:
             storage_scratch=path("VOLT_STORAGE_SCRATCH"),
             refresh_urls_every=float(env.get("VOLT_REFRESH_URLS_EVERY") or 0),
             refresh_urls_within=float(env.get("VOLT_REFRESH_URLS_WITHIN") or cls.refresh_urls_within),
+            out_dir=path("VOLT_OUT"),
         )
 
 
@@ -230,7 +233,19 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
         except shots.ShotError as exc:  # no asset, no hi-res or no usable timebase: retrying cannot help
             raise Permanent(f"cannot fill span frames: {exc.reason}") from exc
 
-    return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames}
+    def detect_shots(store: Store, job: Claimed) -> None:
+        # No rights check: a held or uncleared asset is logged like any other. An open essence waits for wrap.
+        try:
+            threshold, min_frames = shots.parse_detect_key(job.key)
+            shots.detect(store, job.asset_id, threshold=threshold, min_frames=min_frames, job_id=job.id,
+                         claimed_by=job.claimed_by, out_dir=config.out_dir)
+        except shots.ShotError as exc:
+            if exc.code == "essence_open":
+                raise Defer(exc.reason) from exc
+            raise Permanent(f"cannot detect shots: {exc.reason}") from exc
+
+    return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames,
+            shots.DETECT_TYPE: detect_shots}
 
 
 def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshReport]:
@@ -360,7 +375,7 @@ class Runner:
         self.store.conn.commit()
         if row is None:
             return None
-        return Claimed(row["id"], row["asset_id"], row["type"], row["idempotency_key"], row["attempt"])
+        return Claimed(row["id"], row["asset_id"], row["type"], row["idempotency_key"], row["attempt"], self.name)
 
     # -- outcome (every write is guarded by the lease, so a runner that lost its lease changes nothing)
     def _settle(self, job: Claimed, sql: str, params: tuple) -> bool:
@@ -481,6 +496,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("db", nargs="?", default=os.environ.get("VOLT_DB"), help="SQLite path or postgres:// DSN (or VOLT_DB)")
     ap.add_argument("--once", action="store_true", help="run every due job, then exit (cron, tests)")
     ap.add_argument("--proxy-dir", type=Path, default=env.proxy_dir)
+    ap.add_argument("--out-dir", type=Path, default=env.out_dir, help="thumbnail cache root (or VOLT_OUT)")
     ap.add_argument("--publish-dir", type=Path, default=env.publish_dir)
     ap.add_argument("--asr-engine", default=env.asr_engine, help="faster-whisper (or VOLT_ASR_ENGINE)")
     ap.add_argument("--asr-model", default=env.asr_model)
@@ -518,6 +534,7 @@ def main(argv: list[str]) -> int:
                     max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll,
                     release=speech.release_engines, idle_release=config.asr_idle_release)
     config.refresh_urls_every, config.refresh_urls_within = args.refresh_urls_every, args.refresh_urls_within
+    config.out_dir = args.out_dir
     if args.refresh_urls_every > 0:
         runner.periodic.append(Periodic("refresh-urls", args.refresh_urls_every, refresh_urls_task(config)))
     for sig in (signal.SIGINT, signal.SIGTERM):

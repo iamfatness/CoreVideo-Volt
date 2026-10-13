@@ -1,6 +1,6 @@
 # Shot spans and the NLE panel
 
-Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slice 2 (read API and media: `volt/media.py`, the span, transcript, proxy, `/media` and thumbnail routes, documented in [operator-api.md](operator-api.md)) is built. Slice 6's backend (`volt/nle.py`: xmeml and CMX3600 builders, and `POST /api/exports/nle`, documented in [operator-api.md](operator-api.md)) is built and its format is UNVERIFIED until the manual import check below is recorded; the export screen is not built. Slices 3 to 5 (detection, the Library screen, transcript marking) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
+Status: slices 1 (schema and spans core), 2 (read API and media: `volt/media.py`, the span, transcript, proxy, `/media` and thumbnail routes, documented in [operator-api.md](operator-api.md)) and 3 (the detection job, `shot_run`, thumbnails at the end of the job, split and merge, and the measured default threshold) are built, along with the speech re-run fix below. Slice 6's backend (`volt/nle.py`: xmeml and CMX3600 builders, and `POST /api/exports/nle`, documented in [operator-api.md](operator-api.md)) is built and its format is UNVERIFIED until the manual import check below is recorded; the export screen is not built. Slices 4 and 5 (the Library screen, transcript marking) are design only. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
 
 Roadmap and areas both list "shot spans" and "one NLE panel" as next for MAM. A second NLE is later and out of scope here.
 
@@ -41,7 +41,7 @@ Additions to `essence`: `duration_frames` INTEGER (null = unknown). Needed to re
 
 New table `shot_run` (provenance, parallel to `asr_run`): `job_id` (PK, references job), `asset_id`, `essence_id`, `engine`, `engine_version`, `threshold`, `min_frames`, `shot_count`, `created_at`, `settings` (JSON text). Same idea as `asr_run`: a re-run with a different setting is a new recorded run.
 
-New job type `shots`, key `shots-v1:<hash of engine, version, threshold, min_frames>`. Same configuration on the same asset is a no-op; a change is a new run.
+New job type `shots`, key `shots-v1:<hash of engine, version, threshold, min_frames>:<threshold>:<min_frames>`. Same configuration on the same asset is a no-op; a change is a new run. The job row has no payload column, so the settings ride in the key's readable tail and the handler reads them back from there (`shots.parse_detect_key`); the hash is what makes an ffmpeg upgrade a new key.
 
 Indexes (raw statements, both backends): `span(asset_id, kind, frame_in)`.
 
@@ -69,13 +69,46 @@ Marking works on an open (still recording) asset against the growing proxy. It i
 `POST /api/assets/{asset}/shots/detect` enqueues a `shots` job. The runner handler, `shots`, beside `proxy`, `asr`, `publish`:
 
 - Runs only on a closed essence. An open one is deferred (not failed), like transcription.
-- Reads the proxy when its frame rate and timecode start equal the hi-res's, otherwise the hi-res, so frame numbers map one to one. This check is cheap and fails loud; it replaces trusting that the proxy builder preserves them. (I have not checked that it does.)
-- Finds cuts with ffmpeg's scene score: `select='gt(scene,T)'` with `showinfo`, parsing `pts_time` to frames at the essence's exact rate. ffmpeg is already a hard dependency (`deliverables.py`, `chunking.py` silencedetect). Stdlib only, no new package.
-- Settings: `threshold` (default 0.30, recorded), `min_frames` (default 12; a shot shorter than this is merged into the previous one so a flash frame is not a shot).
-- Writes shots tiling the essence from its start to its end, then one thumbnail per shot (below). Commits spans per run in one transaction; a failed run changes nothing.
+- Reads the proxy when it is closed, on disk, and has the hi-res's frame rate and frame count, otherwise the hi-res, so frame numbers map one to one; the run records which it read and why (`settings.source`, `settings.sourceNote`). Slice 3 found that the proxy row cannot be compared field by field: `record.build_proxy` writes the proxy essence with no frame rate and no start timecode, so the check probes the two files (`ffprobe` rate and frame count) instead. Both are counted from their first frame; the proxy's start timecode is not checked because it has none.
+- Finds cuts with ffmpeg's scene score on the picture scaled to 320 px wide: `select='gt(scene,T)'` with `showinfo`. The frame is the selected frame's `pts` on the stream's own time base (exact), counted on the essence's exact rate. It is not parsed from `pts_time`, which ffmpeg prints with six significant digits and which would be off by up to a third of a second at one hour. ffmpeg is already a hard dependency (`deliverables.py`, `chunking.py` silencedetect). Stdlib only, no new package.
+- Settings: `threshold` (default 0.13, recorded; see "Scene threshold" below), `min_frames` (default 12). A shot shorter than `min_frames` is merged into the previous one; a short first shot has no previous one and is merged into the next (`shots.merge_short`). A flash frame therefore costs at most the one cut after it. Settings outside 0 < threshold < 1 and 1 to 10000 frames are refused, not clamped.
+- Writes shots tiling the essence from its start to its end, then one thumbnail per shot (below). The score is read first and nothing is written until it is whole. Then one transaction, under the asset's lock and holding the job row: it confirms the runner still holds the lease (a runner that lost it writes nothing), deletes the previous detected shots that nothing uses, tiles the file around the shots that remain (manual shots, and detected shots an item or version uses), and records the run. A failure anywhere changes nothing and the job is retried whole.
+- Legal hold and "not cleared" do not block detection (rule below). An open essence is deferred, not failed: the job goes back to queued with no attempt used.
+- A split or a merge is an operator edit: both halves of a split, and the result of a merge, are `origin = 'manual'` with no `run_id`, so a later detection does not take them back.
 - Result row in `shot_run`. The page shows "Last detection ... threshold ... N shots" from it.
 
-The scene threshold is a guess from common practice. It has not been measured on any footage. Slice 3 begins with a measurement on real iso recordings (a camera cut feed and a single-camera iso) and the default is set from that, the way `speech-scale.md` set VAD. Expect detection to be wrong on dissolves, graphics wipes and strobe; the Split, Merge and nudge operations exist for that, and detected shots are labelled Detected so nobody mistakes them for edited ones.
+#### Scene threshold: measured (slice 3, 2026-10-12)
+
+The first draft of this spec said 0.30 and called it a guess from common practice. Slice 3 measured it before setting the default, the way `speech-scale.md` set VAD.
+
+What was measured: ffmpeg's scene score (the filter chain the job uses: 320 px wide, bilinear) on every frame of 29 files, 23.7 minutes: the `Program.mp4` cut feed of all 11 CoreVideo Pro recordings under `Videos\CoreVideo Pro` (5.7 minutes, 1080p, 60 fps) and 18 single-participant isos (the eight isos of `corevideo-recording-20260929-162102` plus `ISO-01` of the other ten; 18.0 minutes, variable frame rate around 30 fps). Read only: nothing was copied or modified. There is no labelled ground truth. Instead every Program event scoring 0.05 to 0.5 (14 of them) was looked at, one frame either side; events scoring under 0.05 and the 1.0 hard cuts (apart from one burst) were not individually viewed.
+
+What it showed (events found at each threshold, raw and after the `min_frames` 12 rule):
+
+| Threshold | Program feeds (raw / merged) | Isos (raw / merged) |
+|---|---|---|
+| 0.05 | 62 / 57 | 10 / 0 |
+| 0.10 | 54 / 50 | 10 / 0 |
+| 0.13 (default) | 54 / 50 | 10 / 0 |
+| 0.20 | 53 / 49 | 10 / 0 |
+| 0.30 (the old draft) | 49 / 45 | 10 / 0 |
+| 0.50 | 48 / 44 | 10 / 0 |
+
+- Hard cuts between very different pictures score 1.0, so any threshold from 0.1 to 0.9 finds them.
+- The ten iso "cuts" are the first frame of each file, black to picture. `min_frames` merges them, so no threshold of 0.05 or more invents a cut in 18 minutes of fixed-camera iso. At 0.03 three survive (noise on a fixed camera).
+- Dissolves and mixes (three, in three files) score 0.035 to 0.097 on each of several frames. Over-detection starts at about 0.1.
+- Real cuts between dark, low-contrast pictures (a person in a portrait frame on a dark background) scored 0.165, 0.227, 0.237, 0.25 and 0.254; one more scored 0.475. Five real cuts sit between 0.15 and 0.30, which the old 0.30 default would have missed.
+- So the gap between the loudest dissolve frame (0.097) and the quietest real cut (0.165) holds the default: 0.13.
+
+Where it over-detects: the Program feeds of three recordings end or begin with a black and white strobe (a sync-flash pattern): 16 hard cuts at about 0.5 s intervals each, 48 of the 54 events at 0.13. Every one is a real transition and no threshold removes them. `min_frames` removes only the cut whose white frame lasts a few frames (one of the 17 cuts found in `20260929-162102`). A single flash frame is merged into the shot before it but the cut after it stays: the rule merges short shots backward and cannot know the picture on both sides is the same. So the measurement found six editorial cuts in 5.7 minutes of program; the rest is strobe.
+
+Where it under-detects: nothing seen on this footage at 0.13, but the margin is thin (0.165 against 0.097) and rests on about a dozen events.
+
+What this does not show: all the footage is one source family (CoreVideo Pro test meetings from one rig: stock-video participants, a grid and a few layouts). No broadcast, no handheld camera, no whip pans, no film. The default needs re-measuring on a real program recording before anyone relies on it for dissolves or dark-on-dark cuts.
+
+Found while measuring: the iso files are variable frame rate and carry no timecode track (ffmpeg warns of non-monotonic timestamps on them). A frame number from `pts * rate` is then a nominal position, and the whole span model assumes a constant frame rate. One iso went through the job (no cuts, as expected); nothing else about VFR essences was tested.
+
+Expect detection to be wrong on dissolves, graphics wipes and strobe; the Split, Merge and nudge operations exist for that, and detected shots are labelled Detected so nobody mistakes them for edited ones.
 
 An iso recording of one fixed camera has few real cuts. Detection helps most on program-out recordings and on ingested cards. For an iso, manual marks and transcript clips are the main path.
 
@@ -128,7 +161,7 @@ Serialisation: split, merge, trim, delete and detect's write step take the same 
 
 ### Thumbnails
 
-Not control-plane state. A thumbnail is a cache file under `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`, where `<frame>` is the frame chosen. The chosen frame is `frame_in + max(2, 10% of length)` capped inside the span, so it is past the cut and not a transition blend. The key includes the frame, so a trim naturally makes a new file and the old one is just garbage. The `shots` job writes them for the shots it creates; the `thumb` route makes a missing one on demand (one ffmpeg seek on the proxy, 15 s limit, 320 px wide). Losing the directory loses nothing. Size is bounded by span count; no retention policy in slice 1. Whether to put thumbnails through the storage backend is open question 8.
+Not control-plane state. A thumbnail is a cache file under `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`, where `<frame>` is the frame chosen. The chosen frame is `frame_in + max(2, 10% of length)` capped inside the span, so it is past the cut and not a transition blend. The key includes the frame, so a trim naturally makes a new file and the old one is just garbage. The `shots` job writes them for the shots it creates, after the commit and best-effort (a failed one is counted in the run's `settings.thumbnails` and logged, not fatal, because the route can rebuild it); the `thumb` route makes a missing one on demand (one ffmpeg seek on the proxy, 15 s limit, 320 px wide). Losing the directory loses nothing. Size is bounded by span count; no retention policy in slice 1. Whether to put thumbnails through the storage backend is open question 8. The path and the frame rule live in one place, `shots.thumb_path` and `shots.thumb_frame` (with `shots.write_thumb` and `shots.default_out_dir`), used by the job and meant to be used by the route, so the two agree.
 
 CSP already allows `img-src 'self' data:`; no change.
 
@@ -273,8 +306,8 @@ Result: not yet recorded.
 
 - Nothing was run. The only executable check is the accessibility scan of the mockup (`docs/mockups/shot-spans.html`): axe-core 4.x in Chrome, run on all four mockup tabs at 1280 and 768 px, rules `wcag2a, wcag2aa, wcag21a, wcag21aa, wcag22aa, best-practice`: 0 violations. axe also reports "needs review" items it cannot decide (glyph characters outside the BMP, buttons whose visible text is a symbol, a table scrolled sideways at 768); I computed the contrast of every text and background pair by hand and all are above 4.5:1 (lowest 5.0). A screen reader and a keyboard-only pass were not done. The mockup tabs implement arrow-key tab switching; nothing else in it is interactive.
 - The xmeml and EDL structure is from memory of the formats. Slice 6 wrote real files and read them back with OpenTimelineIO (see the manual import check), but no file has been imported into Premiere or Resolve. Elements whose exact form I could not verify offline: `comments/mastercomment1..2` and `logginginfo/description` on a clipitem, `link/groupindex` on audio links, `masterclipid`, the placement of `pixelaspectratio`, the `file://localhost//server/share` form for a UNC path, whether a sequence with no frame size is accepted, and the XML comment that names skipped spans. There is no DTD on this machine to validate against.
-- No ffmpeg scene detection was run, so the threshold, the min-frames guard and the claim that it finds cuts within a frame are untested.
-- That the proxy keeps the hi-res's frame count and start timecode is assumed and guarded, not checked.
+- Slice 3 ran ffmpeg scene detection on testsrc clips with known cuts (25 fps and 29.97 drop-frame: every cut on the exact frame, none invented on a clip with none) and on real recordings (see Scene threshold). Not run: detection on a card ingest or a broadcast program recording, on a constant-frame-rate hi-res of more than a few minutes, or on an hours-long file (the timeout is the larger of 600 s and six times the length, and was never reached). The iso files are variable frame rate; see Scene threshold.
+- That the proxy keeps the hi-res's frame count is now checked by the job, not assumed (it falls back to the hi-res with the reason recorded). That `record.build_proxy` keeps it on a real recording was not checked.
 - The `/media` gap and the `operator_state` span flooding come from reading code, not from running the server.
 - Slice 2 was run on SQLite and a live postgres:16 over HTTP with ffmpeg testsrc clips (ranges, refusals, thumbnail generation, a killed hang). Not done: a real browser `<video>` seeking through the proxy route, a proxy from the real proxy builder (tests use testsrc and byte blobs), thumbnails on real footage or on a drop-frame proxy, a proxy being written while it is served, and the `/media` route against the old shell page itself.
 - The transcript-span delete hazard was run (SQLite and a live postgres:16) and is fixed in slice 1. Slice 1 itself was not run against real footage: ingest and wrap durations were checked on ffmpeg testsrc clips only, and the `span-frames` job only on small seeded databases.
@@ -301,9 +334,9 @@ Small PRs, each shippable on its own, each with tests. The mockup is approved be
 
 1. **Schema and spans core.** Migration 9, `store.SCHEMA` and `schema.sql` parity, `volt/shots.py` with create, trim, label, delete, overlap and in-use rules, `frame_in/out` written for new spans, `duration_frames` at ingest and wrap, the kind filter on `operator_state.spans()` (decision 9 first), and the backfill job. No UI, no detection. Tests: rules, drop-frame labels, historical-shape migration, Postgres.
 2. **Read API and media.** `GET .../spans`, `.../transcript`, the proxy route with Range, the thumbnail route with on-demand generation. Tests with ffmpeg testsrc.
-3. **Detection job.** `shots` handler, `shot_run`, thumbnails at the end of the job, split and merge. Begins with a measurement of threshold on real footage; the default and the claim in this spec are set from it. Tests: known-cut clips at 25 and 29.97 DF.
+3. **Detection job** (built). `shots` handler, `shot_run`, thumbnails at the end of the job, split and merge. Began with a measurement of threshold on real footage; the default and the claim in this spec are set from it. Tests: known-cut clips at 25 and 29.97 DF, on SQLite and Postgres.
 4. **Library screen: shot list and marking.** The shot list, player, marks, selection tray, empty and error states, built on the approved mockup, with the operator-UI test harness fake data. Axe scan on the built page, not only the mockup.
 5. **Transcript marking.** Word cursor, `from_words`, handles, snap. Tests on the server rule and the keyboard path.
 6. **NLE export.** `volt/nle.py` (xmeml and EDL builders), `POST /api/exports/nle`, the export screen, path map setting. Arithmetic tests. Backend built (`control/tests/test_nle.py`); the export screen is not. Closed only after the manual Premiere import check is recorded.
 
-Slice 1 is done (see the status line; decisions taken in it are listed in its PR: the kind filter defaults to every kind, so the Publish screen is unchanged; marking is allowed on any asset; `frame_in`/`frame_out` columns with the lazy backfill). Slices 1 to 3 need no UI decision beyond question 9. Slice 6 can start in parallel with 4 and 5 once slice 1 lands, since export takes span IDs. Not in this list: AAF, a second NLE, saved bins, point markers, an NLE-side panel.
+Slices 1 and 3 are done (see the status line; decisions taken in it are listed in its PR: the kind filter defaults to every kind, so the Publish screen is unchanged; marking is allowed on any asset; `frame_in`/`frame_out` columns with the lazy backfill). Slices 1 to 3 need no UI decision beyond question 9. Slice 6 can start in parallel with 4 and 5 once slice 1 lands, since export takes span IDs. Not in this list: AAF, a second NLE, saved bins, point markers, an NLE-side panel.
