@@ -155,7 +155,7 @@ class Create(Behaviour):
         self.refused(422, "bad_input", path, {**ok, "tc_out": ok["tc_in"]})                             # empty range
         self.refused(422, "bad_input", path, {**ok, "label": "x" * 201})
         self.refused(422, "bad_input", path, {**ok, "label": 7})
-        self.refused(422, "bad_input", path, {**ok, "from_words": ["a", "b"]})                          # slice 5, not yet
+        self.refused(422, "bad_input", path, {**ok, "from_words": ["a", "b"]})                          # from_words needs no tc_in/tc_out
         self.refused(422, "bad_input", path, {**ok, "origin": "detect"})                                # the server decides
         self.refused(422, "bad_timecode", path, {**ok, "tc_in": "01:00:00:25"})
         self.refused(422, "bad_timecode", path, {**ok, "tc_in": "nonsense"})

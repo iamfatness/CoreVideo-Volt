@@ -461,6 +461,7 @@
     if (S.screen === 'rights') renderRights();
     if (S.screen === 'publish') renderPublish();
     if (S.screen === 'library') renderLibrary();
+    if (S.screen === 'library') renderWordsTab();
   }
 
   function renderChrome() {
@@ -1486,7 +1487,7 @@
   // Only on this screen, and only where a control would not already use the key. Space is not TAKE here: on a row's
   // name it toggles the selection (see the row's own handler) and elsewhere it keeps its browser behaviour.
   function libKey(e) {
-    if (!L.data) return;
+    if (!L.data || W.tab === 'words') return;   // the transcript tab has its own keys (trKey)
     const t = e.target;
     const k = e.key;
     const onControl = t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],input,textarea');
@@ -1762,6 +1763,365 @@
     box.setAttribute('aria-label', 'Timeline of ' + shots + ' shot' + (shots === 1 ? '' : 's') + ' and ' + clips + ' clip' + (clips === 1 ? '' : 's') + '. ' + L.sel.filter((e) => e.assetId === L.assetId).length + ' selected.');
     box.replaceChildren(...nodes, head);
     $('lib-scale').replaceChildren(...[0, 0.5, 1].map((f) => el('span', { text: framesToTc(view.startF + Math.round(total * f), view.rate, view.drop) })));
+  }
+
+  // ---- Library: mark from transcript (slice 5) -----------------------------------------------------------
+  // docs/specs/shot-spans.md "From transcript words" and the "Mark from transcript" tab of the mockup.
+  // The page picks two WORDS and sends their span IDs (`from_words`) with the handles and the snap choice. It never
+  // sends a time: the server reads the word times from the store and applies the rules (one asset, transcript
+  // words only, in order, inside the source). The range shown here is a preview computed from the same arithmetic;
+  // what the server returns is what the page reports.
+  //
+  // Words come from GET /api/assets/{id}/transcript, which lists only kind 'transcript' spans, so a word a speech
+  // re-run re-kinded to a clip is not on this screen at all. Selection is a cursor index plus an anchor index into
+  // that list. Own state, own functions: nothing here touches the shot list's code, and the shot list's keys
+  // (libKey) stand down while this tab is showing.
+  const W = {
+    tab: 'shots', for: null, tok: 0, load: 'idle', err: null, words: [], next: null, pendingFrames: 0,
+    nodes: [], shown: null, a: null, c: null, hin: 0, hout: 0, snap: true, name: '', drag: false, wired: false,
+  };
+  const WORD_PAGE = 1000, WORD_PAGES = 3, HANDLE_MAX = 10000, SENTENCE_END = /[.!?]["')\]]*$/;
+  Object.assign(ERR_LABEL, { not_transcript: 'Not transcript words', frames_pending: 'Words not placed yet' });
+
+  function wordsReset() {
+    W.for = L.assetId; W.tok++; W.load = 'idle'; W.err = null; W.words = []; W.next = null; W.pendingFrames = 0;
+    W.nodes = []; W.shown = null; W.a = W.c = null; W.hin = W.hout = 0; W.name = '';
+  }
+
+  async function wordsLoad(more) {
+    const id = L.assetId;
+    if (!id) return;
+    const tok = ++W.tok;
+    if (!more) { W.load = 'loading'; W.err = null; W.words = []; W.next = null; W.a = W.c = null; W.shown = null; W.nodes = []; render(); }
+    try {
+      let after = more ? W.next : null;
+      const got = [];
+      for (let i = 0; i < (more ? 1 : WORD_PAGES); i++) {
+        const q = { limit: String(WORD_PAGE) };
+        if (after) q.after = after;
+        const { status, data } = await call('transcript', id, null, q);
+        if (tok !== W.tok || id !== L.assetId) return;
+        if (status === 401) { setConn('token'); openToken(); throw failure('unauthorized', 'A token is needed to read this transcript.'); }
+        if (status !== 200 || !data || !data.ok) { const e = codeOf(data, status); throw failure(e.code, e.reason); }
+        got.push(...data.words);
+        W.pendingFrames = data.pendingFrames || 0;
+        after = data.next;
+        if (!after) break;
+      }
+      W.words = W.words.concat(got); W.next = after; W.load = 'ready'; W.err = null;
+    } catch (e) {
+      if (tok !== W.tok) return;
+      if (!more) { W.load = 'error'; W.err = { code: e.code || 'internal', reason: e.message || 'The transcript could not be read.' }; }
+      else setFlash({ kind: 'bad', title: 'More words could not be read.', code: e.code || 'internal', reason: e.message || '' });
+    }
+    render();
+  }
+
+  const wordNode = (e) => (e.target && e.target.closest ? e.target.closest('.w') : null);
+
+  function wordsWire() {
+    if (W.wired) return;
+    W.wired = true;
+    $('lib-body').setAttribute('role', 'tabpanel');
+    $('lib-body').setAttribute('aria-labelledby', 'lib-tab-shots');
+    const tabs = ['shots', 'words'];
+    for (const name of tabs) {
+      const b = $('lib-tab-' + name);
+      b.addEventListener('click', () => setTab(name, false));
+      b.addEventListener('keydown', (e) => {
+        const to = e.key === 'ArrowRight' || e.key === 'ArrowLeft' ? tabs[1 - tabs.indexOf(name)] : e.key === 'Home' ? 'shots' : e.key === 'End' ? 'words' : null;
+        if (!to) return;
+        e.preventDefault();
+        setTab(to, true);
+      });
+    }
+    const tr = $('lib-tr');
+    tr.addEventListener('keydown', trKey);
+    tr.addEventListener('focus', () => {
+      if (W.c == null && W.words.length) { W.c = nearestWord(L.pos); paintSel(); render(); }
+    });
+    tr.addEventListener('mousedown', (e) => {
+      const w = wordNode(e);
+      if (!w || e.button) return;
+      e.preventDefault();                                   // no native text selection: the selection is ours
+      tr.focus({ preventScroll: true });
+      const i = +w.dataset.i;
+      if (e.shiftKey && (W.a != null || W.c != null)) { if (W.a == null) W.a = W.c; W.c = i; } else { W.a = i; W.c = i; }
+      W.drag = true;
+      paintSel();
+    });
+    tr.addEventListener('mouseover', (e) => {
+      if (!W.drag) return;
+      const w = wordNode(e);
+      if (w) { W.c = +w.dataset.i; paintSel(); }
+    });
+    document.addEventListener('mouseup', () => { if (W.drag) { W.drag = false; announceWord(); render(); } });
+    $('lib-w-reload').addEventListener('click', () => wordsLoad(false));
+    $('lib-w-more').addEventListener('click', () => wordsLoad(true));
+  }
+
+  function setTab(name, focus) {
+    if (W.tab === name) return;
+    W.tab = name;
+    const v = $('lib-video');
+    if (v && !v.paused) v.pause();
+    S.sigs = {};
+    render();
+    if (focus) $('lib-tab-' + name).focus();
+    announce(name === 'words' ? 'Mark from transcript.' : 'Shots and clips.');
+  }
+
+  function nearestWord(frame) {
+    const words = W.words;
+    if (!words.length) return null;
+    if (frame == null) return 0;
+    let lo = 0, hi = words.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (words[mid].frameIn < frame) lo = mid + 1; else hi = mid; }
+    return Math.min(lo, words.length - 1);
+  }
+
+  const selRange = () => (W.a == null || W.c == null ? null : { i: Math.min(W.a, W.c), j: Math.max(W.a, W.c) });
+  const isSentenceStart = (i) => i === 0 || SENTENCE_END.test(W.words[i - 1].text || '');
+
+  function moveCursor(to, extend) {
+    if (extend) { if (W.a == null) W.a = W.c == null ? to : W.c; } else W.a = null;
+    W.c = to;
+    paintSel();
+    if (W.nodes[to]) W.nodes[to].scrollIntoView({ block: 'nearest' });
+    announceWord();
+    render();
+  }
+
+  function announceWord() {
+    const view = libView(), w = W.words[W.c];
+    if (!w || !view.ok) return;
+    const r = selRange();
+    announce(w.text + ', ' + w.tcIn + '. ' + (r ? (r.j - r.i + 1) + ' word' + (r.j > r.i ? 's' : '') + ' selected.' : 'Nothing selected.'));
+  }
+
+  // Arrows move the cursor, Shift extends the range, Up and Down jump by sentence, Space picks the one word under
+  // the cursor, Enter makes the clip, Escape clears (and, with nothing selected, falls through so focus can leave).
+  function trKey(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = W.words.length, k = e.key;
+    if (!n) return;
+    const c = W.c == null ? (nearestWord(L.pos) || 0) : W.c;
+    let to = null;
+    if (k === 'ArrowRight') to = Math.min(n - 1, c + 1);
+    else if (k === 'ArrowLeft') to = Math.max(0, c - 1);
+    else if (k === 'ArrowDown') { to = c; while (to < n - 1) { to++; if (isSentenceStart(to)) break; } }
+    else if (k === 'ArrowUp') { to = c; if (to > 0) { to--; while (to > 0 && !isSentenceStart(to)) to--; } }
+    else if (k === 'Home') to = 0;
+    else if (k === 'End') to = n - 1;
+    else if (k === ' ') {
+      e.preventDefault(); e.stopPropagation();
+      W.c = c; W.a = W.a === c ? null : c;
+      paintSel(); announceWord(); render();
+      return;
+    } else if (k === 'Enter') { e.preventDefault(); e.stopPropagation(); if (!e.repeat) addFromWords(); return; }
+    else if (k === 'Escape') { if (W.a != null) { e.stopPropagation(); W.a = null; paintSel(); announce('Selection cleared.'); render(); } return; }
+    else return;
+    e.preventDefault(); e.stopPropagation();
+    W.c = c;                                 // the cursor a first key press starts from
+    moveCursor(to, e.shiftKey);
+  }
+
+  function clearWordSel() { W.a = null; paintSel(); render(); }
+
+  // ---- the range the server will build, computed the same way (the server's answer is the one that counts) ------
+  function previewRange(view, r) {
+    const first = W.words[r.i], last = W.words[r.j];
+    let fi = first.frameIn - W.hin, fo = Math.max(last.frameOut, first.frameOut) + W.hout;
+    const raw = { fi, fo };
+    if (W.snap) {
+      const shots = view.list.filter((x) => x.s.kind === 'shot').map((x) => x.s);
+      const a = shots.filter((s) => s.frameIn <= fi && s.frameOut > fi).map((s) => s.frameIn);
+      const b = shots.filter((s) => s.frameIn < fo && s.frameOut >= fo).map((s) => s.frameOut);
+      if (a.length) fi = Math.min(fi, ...a);
+      if (b.length) fo = Math.max(fo, ...b);
+    }
+    const d = view.d;
+    const warn = [];
+    if (fi < view.startF) warn.push('The in is before the start of the source. The server will refuse it: lower the handle before.');
+    if (d.durationFrames && fo > view.startF + d.durationFrames) warn.push('The out is past the end of the source. The server will refuse it: lower the handle after or turn snap off.');
+    return { fi, fo, raw, warn, first, last };
+  }
+
+  const handleText = (n) => (n ? '+' + n : '0') + ' fr';
+
+  function snapText(view, p) {
+    const tc = (f) => framesToTc(f, view.rate, view.drop);
+    const parts = [];
+    if (p.fi !== p.raw.fi) parts.push('In moves back to the cut at ' + tc(p.fi) + '.');
+    if (p.fo !== p.raw.fo) parts.push('Out moves forward to the cut at ' + tc(p.fo) + '.');
+    if (!parts.length) parts.push(view.list.some((x) => x.s.kind === 'shot') ? 'Both ends are already on a cut or in no shot.' : 'There are no shots to snap to.');
+    return parts.join(' ');
+  }
+
+  // ---- painting ----------------------------------------------------------------------------------------------
+  // Called by render() right after renderLibrary(), which has just shown or hidden the shot list's body.
+  function renderWordsTab() {
+    wordsWire();
+    const body = $('lib-body'), panel = $('lib-words'), tabs = $('lib-tabs');
+    const live = !body.hidden;                   // shown means an asset is loaded and markable
+    if (W.for !== L.assetId) wordsReset();
+    tabs.hidden = !live;
+    if (!live) { panel.hidden = true; return; }
+    const words = W.tab === 'words';
+    body.hidden = words;
+    panel.hidden = !words;
+    for (const name of ['shots', 'words']) {
+      const b = $('lib-tab-' + name), on = W.tab === name;
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+    if (!words) return;
+    if (W.load === 'idle') { W.load = 'loading'; wordsLoad(false); }
+    const view = libView();
+    paintWordsHead(view);
+    paintTranscript(view);
+    paintNewClip(view);
+  }
+
+  function paintWordsHead(view) {
+    const d = view.d;
+    const a = ((S.data && S.data.assets) || []).find((x) => x.id === d.assetId) || {};
+    paint('lib-w-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
+      kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
+      kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
+      el('span', { class: d.cleared ? 'ok' : 'no' }, el('span', { 'aria-hidden': 'true', text: d.cleared ? '✓ ' : '✕ ' }), d.cleared ? 'Cleared' : 'Not cleared'),
+      d.legalHold ? el('span', { class: 'no' }, el('span', { 'aria-hidden': 'true', text: '⚑ ' }), 'Legal hold') : null,
+      kv('Proxy', d.hasProxy ? 'ready' : 'none')));
+  }
+
+  function paintTranscript(view) {
+    const tr = $('lib-tr');
+    const n = W.words.length;
+    let card = null;
+    if (W.load === 'idle' || W.load === 'loading') card = el('div', { class: 'empty' }, el('p', { role: 'status', text: 'Reading the transcript of ' + short(L.assetId) + '…' }));
+    else if (W.load === 'error') {
+      card = el('div', { class: 'empty' }, el('p', { text: (W.err.code ? W.err.code + ': ' : '') + W.err.reason }),
+        el('div', { class: 'acts' }, el('button', { type: 'button', class: 'btn', 'data-fk': 'w-retry', onclick: () => wordsLoad(false) }, 'Try again')));
+    } else if (!n) {
+      card = el('div', { class: 'empty' }, el('p', { text: W.pendingFrames
+        ? W.pendingFrames + ' transcript word(s) exist but are not placed on frames yet, so none can be selected. Placing them runs in the background; check again shortly.'
+        : 'This asset has no transcript yet. Words appear here once speech recognition has run on it. You can still mark by hand on the Shots and clips tab.' }),
+        el('div', { class: 'acts' }, el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'w-recheck', onclick: () => wordsLoad(false) }, 'Check again'),
+          el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'w-toshots', onclick: () => setTab('shots', true) }, 'Back to shots and clips')));
+    }
+    paint('lib-tr-state', [W.load, W.err, n, W.pendingFrames], () => card || []);
+    tr.hidden = !!card;
+    $('lib-w-more').hidden = !W.next || !!card;
+    $('lib-w-reload').hidden = !!card;
+    const note = (W.pendingFrames && n ? W.pendingFrames + ' word(s) are not placed on frames yet and cannot be selected. ' : '') + (W.next ? 'Showing the first ' + n + ' words.' : '');
+    $('lib-tr-note').hidden = !note || !!card;
+    if ($('lib-tr-note').textContent !== note) $('lib-tr-note').textContent = note;
+    if (card) return;
+    const shots = view.list.filter((x) => x.s.kind === 'shot');
+    const before = S.sigs['lib-tr'];
+    paint('lib-tr', [n, W.words[0].id, W.words[n - 1].id, shots.map((x) => x.s.id + x.s.frameIn)], () => buildTranscript(view, shots));
+    if (S.sigs['lib-tr'] !== before) paintSel();
+  }
+
+  // Words in order, with the shot starts between them: a line of its own when the shot starts a sentence, an inline
+  // marker when it cuts through one (the mockup's two forms).
+  function buildTranscript(view, shots) {
+    const out = [];
+    W.nodes = [];
+    W.shown = null;
+    let k = 0;
+    const tc = (f) => framesToTc(f, view.rate, view.drop);
+    W.words.forEach((w, i) => {
+      while (k < shots.length && shots[k].s.frameIn <= w.frameIn) {
+        const x = shots[k++];
+        if (isSentenceStart(i)) out.push(el('span', { class: 'ts', text: tc(x.s.frameIn) + ' · ' + x.tag }));
+        else out.push(el('span', { class: 'cut' }, el('span', { 'aria-hidden': 'true', text: '▌ ' }), x.tag + ' · ' + tc(x.s.frameIn)), ' ');
+      }
+      const node = el('span', { class: 'w', 'data-i': String(i), text: w.text });
+      W.nodes.push(node);
+      out.push(node, ' ');
+    });
+    return out;
+  }
+
+  function paintSel() {
+    const r = selRange(), nodes = W.nodes, prev = W.shown || { lo: -1, hi: -2, c: null };
+    for (let i = prev.lo; i <= prev.hi; i++) if (nodes[i] && (!r || i < r.i || i > r.j)) nodes[i].classList.remove('sel');
+    if (r) for (let i = r.i; i <= r.j; i++) if (nodes[i]) nodes[i].classList.add('sel');
+    if (prev.c != null && prev.c !== W.c && nodes[prev.c]) nodes[prev.c].classList.remove('cur');
+    if (W.c != null && nodes[W.c]) nodes[W.c].classList.add('cur');
+    W.shown = { lo: r ? r.i : -1, hi: r ? r.j : -2, c: W.c };
+  }
+
+  function stepper(label, id, key) {
+    const get = () => (key === 'hin' ? W.hin : W.hout);
+    const set = (v) => { W[key] = Math.max(0, Math.min(HANDLE_MAX, v)); render(); announce(label + ' ' + handleText(W[key])); };
+    const side = key === 'hin' ? 'before' : 'after';
+    const mini = (text, aria, delta) => el('button', { type: 'button', class: 'mini', 'data-fk': id + delta, 'aria-label': aria,
+      'aria-disabled': delta < 0 && get() === 0 ? 'true' : null, onclick: () => set(get() + delta) }, text);
+    return el('div', {}, el('label', { class: 'f', for: id, text: label }),
+      el('div', { class: 'stepper' }, mini('−', '− 1 frame ' + side, -1), el('output', { id, text: handleText(get()) }),
+        mini('+', '+ 1 frame ' + side, 1), mini('+5', '+5 frames ' + side, 5)));
+  }
+
+  function paintNewClip(view) {
+    const r = selRange();
+    const p = r ? previewRange(view, r) : null;
+    paint('lib-newclip', [r, p && [p.fi, p.fo], W.hin, W.hout, W.snap, S.pending.has('lib:words'), W.words.length], () => {
+      if (!r) return el('p', { class: 'empty', text: 'No words selected. Click a word, or move with the arrow keys and press Space; extend the range with Shift and the arrows or by dragging.' });
+      const tc = (f) => framesToTc(f, view.rate, view.drop);
+      const q = (w) => '"' + w.text.replace(/[.,;:!?]+$/, '') + '" ' + w.tcIn;
+      return [
+        el('div', { class: 'body' },
+          el('dl', { class: 'kv' },
+            el('dt', { text: 'First word' }), el('dd', { text: q(p.first) }),
+            el('dt', { text: 'Last word' }), el('dd', { text: q(p.last) }),
+            el('dt', { text: 'Words' }), el('dd', { text: String(r.j - r.i + 1) })),
+          stepper('Handle before', 'w-hin', 'hin'), stepper('Handle after', 'w-hout', 'hout'),
+          el('div', { class: 'opt' },
+            el('input', { type: 'checkbox', id: 'w-snap', 'data-fk': 'w-snap', checked: W.snap, onchange: (e) => { W.snap = e.target.checked; render(); } }),
+            el('label', { for: 'w-snap' }, el('span', {}, 'Snap to shot boundaries', el('small', { text: W.snap ? snapText(view, p) : 'Off: the range is the words plus the handles.' })))),
+          el('label', { class: 'f', for: 'w-name', text: 'Name (optional)' }),
+          el('input', { id: 'w-name', type: 'text', maxlength: '200', value: W.name, 'data-fk': 'w-name', oninput: (e) => { W.name = e.target.value; },
+            onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addFromWords(); } } }),
+          el('dl', { class: 'kv' },
+            el('dt', { text: 'In' }), el('dd', { text: tc(p.fi) }),
+            el('dt', { text: 'Out' }), el('dd', { text: tc(p.fo) }),
+            el('dt', { text: 'Length' }), el('dd', { text: lengthTc(Math.max(0, p.fo - p.fi), view.rate) })),
+          p.warn.map((t) => el('p', { class: 'no', role: 'alert', text: '✕ ' + t }))),
+        el('div', { class: 'bar' },
+          btn('Add clip', { key: 'lib:words', onclick: addFromWords }),
+          btn('Clear selection', { key: 'w-clear', cls: 'ghost', onclick: clearWordSel })),
+      ];
+    });
+  }
+
+  // ---- writing: the one request. The page sends word IDs, handles and snap, never a time ----------------------
+  function addFromWords() {
+    const r = selRange();
+    if (!r || !L.assetId) {
+      announce('Select words first.');
+      setFlash({ kind: 'bad', title: 'Select words first.', reason: 'Click a word, or press Space on it, then extend with Shift and the arrow keys.', code: 'bad_input' });
+      render();
+      return;
+    }
+    const body = { kind: 'clip', from_words: [W.words[r.i].id, W.words[r.j].id] };
+    if (W.hin) body.handle_in = W.hin;
+    if (W.hout) body.handle_out = W.hout;
+    if (W.snap) body.snap = 'shot';
+    const name = W.name.trim();
+    if (name) body.label = name;
+    libAct('spanCreate', L.assetId, body, {
+      key: 'lib:words', okTitle: 'Clip added.',
+      ok: (d) => d.span.tcIn + ' to ' + d.span.tcOut + (d.span.text ? ' · "' + (d.span.text.length > 60 ? d.span.text.slice(0, 59).trimEnd() + '…' : d.span.text) + '"' : '') + '.',
+      after: (d) => { W.a = null; W.name = ''; L.cur = d.span.id; L.draft = null; paintSel(); },
+      decorate: (f, e) => {
+        if (['not_transcript', 'not_found', 'frames_pending'].includes(e.code)) {
+          f.sub = 'The transcript on this screen may be out of date.';
+          f.action = { label: 'Reload transcript', fn: () => wordsLoad(false) };
+        }
+      },
+    });
   }
 
   // ---- dialogs, keys, screens ----------------------------------------------
