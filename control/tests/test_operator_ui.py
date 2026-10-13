@@ -130,6 +130,20 @@ class Library(Api):
         # the dispatcher hands the Library its own keys before the Show keys can see them
         self.assertLess(js.index("if (S.screen === 'library') { libKey(e); return; }"), js.index("if (k === 't')"))
 
+    def test_the_transcript_tab_sends_word_ids_and_never_a_time_and_owns_its_keys(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        for needle in ('id="lib-tab-words"', 'id="lib-words"', 'id="lib-tr"', "Library, Mark from transcript tab"):
+            self.assertIn(needle, html)
+        body = js[js.index("function addFromWords"):js.index("// ---- dialogs, keys, screens")]
+        self.assertIn("from_words: [W.words[r.i].id, W.words[r.j].id]", body)
+        self.assertNotIn("tc_in", body)
+        self.assertNotIn("tc_out", body)
+        keys = js[js.index("function trKey"):js.index("function clearWordSel")]
+        for show_only in ("takeNow", "toggleHold", "skipItem", "killItem", "location.hash"):
+            self.assertNotIn(show_only, keys)
+        # the shot list's keys stand down on this tab, so Enter and Space cannot do two things
+        self.assertIn("W.tab === 'words') return;", js[js.index("function libKey"):js.index("function libKey") + 200])
+
     def test_the_old_keys_are_unchanged(self):
         js = FILES["operator.js"]
         for line in ("if (k === 't') { if (!e.repeat) takeNow(true); return; }", "if (k === 'h') { if (!e.repeat) toggleHold(); return; }",

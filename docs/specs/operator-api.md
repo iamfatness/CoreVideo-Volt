@@ -111,7 +111,28 @@ All are `POST`, under the contract and auth above. Every rule lives in `volt/sho
 | `/api/spans/{span}/label` | `label` (required key; string, 200 max, or null to clear) | Rename any span. Allowed while the span is in use. Returns `span`. | 404; 422 `bad_input` |
 | `/api/spans/{span}/delete` | none | Delete a shot or clip. Returns `{ok, deleted}`. | 404; 409 `span_in_use`, `not_deletable` (a transcript span) |
 
-`from_words`, `handle_in`, `handle_out`, `snap` (transcript marking), split, merge and detect are later slices; until then the first four are unknown fields (`422 bad_input`) and the other routes do not exist. A shot's overlap check and its insert, and a trim's checks and its update, are one step (per-asset lock plus the guards in the statement itself), so two operators marking one asset cannot both pass the overlap rule; a test races six overlapping creates and exactly one wins, on SQLite and Postgres.
+Split, merge and detect are later slices and their routes do not exist yet. A shot's overlap check and its insert, and a trim's checks and its update, are one step (per-asset lock plus the guards in the statement itself), so two operators marking one asset cannot both pass the overlap rule; a test races six overlapping creates and exactly one wins, on SQLite and Postgres.
+
+### Clips from transcript words (slice 5)
+
+`POST /api/assets/{asset}/spans` also takes a second form, in place of `tc_in` and `tc_out`:
+
+```
+{"kind":"clip","from_words":["<first word span id>","<last word span id>"],
+ "handle_in":0,"handle_out":18,"snap":"shot","label":"..."}
+```
+
+The client sends word IDs and never a time; the server loads both words and builds the range (`shots.create_from_words`). `tc_in` is the first word's in minus `handle_in` frames; `tc_out` is the last word's out plus `handle_out` frames. `snap: "shot"` (the only value, or null/absent for none) then widens each end to the shot that holds it: the in back to that shot's start, the out forward to that shot's end; it never narrows, and an end that lies in no shot (a gap) stays put. The snap is applied after the handles, so a handle that carries the out into the next shot makes the clip end at the end of that shot. `text` is the words from the first to the last in transcript order (by `frame_in`, then id), joined by single spaces; `origin` is `transcript`; `kind` must be `clip`. A clip may overlap anything, so there is no `overlaps_shot` here. Handles are whole frames from 0 to 10000 (bool, float, string, negative are `422 bad_input`).
+
+| Refusal | When |
+|---|---|
+| 404 `not_found` | the asset, or either word ID, does not exist |
+| 409 `not_transcript` | a word belongs to another asset, or is not a `transcript` span (a clip, a shot, or a word a speech re-run re-kinded to `clip` because an item or version uses it) |
+| 409 `frames_pending` | a word's `frame_in`/`frame_out` are still NULL (the `span-frames` backfill has not placed it); the transcript read leaves such words out, so the page cannot offer them. A word in the middle of the range that is unplaced is left out of `text`, not refused |
+| 422 `bad_input` | `from_words` is not exactly two non-empty strings; the last word is before the first; `kind` is not `clip`; `tc_in` or `tc_out` sent with `from_words`; `handle_in`, `handle_out` or `snap` sent without it; a bad handle or snap |
+| 422 `outside_source` | after handles and snap the range starts before the source or ends past it. Refused, not clamped |
+
+Same rights as slice 4: marking is allowed on any asset and the response says `blockedBy`. Tests: `control/tests/test_shot_words.py` (SQLite and live Postgres).
 
 `GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it).
 

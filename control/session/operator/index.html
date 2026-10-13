@@ -70,6 +70,10 @@
       </div>
     </div>
     <div id="lib-empty"></div>
+    <div id="lib-tabs" class="lib-tabs" role="tablist" aria-label="Library views" hidden>
+      <button type="button" role="tab" id="lib-tab-shots" aria-controls="lib-body" aria-selected="true">Shots and clips</button>
+      <button type="button" role="tab" id="lib-tab-words" aria-controls="lib-words" aria-selected="false" tabindex="-1">Mark from transcript</button>
+    </div>
     <div id="lib-body" class="cols lib" hidden>
       <div class="stack">
         <div class="panel" id="lib-head"></div>
@@ -115,6 +119,27 @@
         <section class="panel" aria-labelledby="h-span"><h2 id="h-span">Span</h2><div id="lib-span"></div></section>
       </aside>
     </div>
+    <div id="lib-words" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-words" hidden>
+      <div class="stack">
+        <div class="panel" id="lib-w-head"></div>
+        <section class="panel" aria-labelledby="h-tr">
+          <h2 id="h-tr">Transcript</h2>
+          <div id="lib-tr-state"></div>
+          <div id="lib-tr" class="tr" tabindex="0" role="group" aria-label="Transcript. Arrow keys move the word cursor, Shift plus arrows extend the range, Space picks one word, Enter makes a clip." hidden></div>
+          <p id="lib-tr-note" class="note" hidden></p>
+          <div class="tools">
+            <small>Words are the transcript's, not the picture's. <kbd>&larr;</kbd> <kbd>&rarr;</kbd> move &middot; <kbd>&uarr;</kbd> <kbd>&darr;</kbd> sentence &middot; <kbd>Shift</kbd>+arrows extend &middot; <kbd>Space</kbd> one word &middot; <kbd>Enter</kbd> make clip &middot; <kbd>Esc</kbd> clears</small>
+            <span class="spacer"></span>
+            <button type="button" class="btn ghost small" id="lib-w-more" hidden>Load more words</button>
+            <button type="button" class="btn ghost small" id="lib-w-reload" hidden>Reload transcript</button>
+          </div>
+        </section>
+      </div>
+      <aside class="stack" aria-label="New clip">
+        <section class="panel" aria-labelledby="h-newclip"><h2 id="h-newclip">New clip from words</h2><div id="lib-newclip"></div></section>
+        <div class="info"><strong>Words are not frame accurate.</strong> Measured on one TTS clip: worst start error 0.24 s. The in and out come from the words plus the handles; the server builds them. Check the out frame on the player after adding the clip.</div>
+      </aside>
+    </div>
   </section>
 </main>
 
@@ -154,6 +179,12 @@
       <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Mark in or out at the playhead.</td></tr>
       <tr><td><kbd>Enter</kbd></td><td>Add a clip from the marks, when no button or field has focus.</td></tr>
       <tr><td><kbd>Space</kbd></td><td>On a row's name: add or remove the row from the selection. Enter on the name seeks the player. Space does not take on this screen.</td></tr>
+      <tr><th scope="rowgroup" colspan="2" class="group">Library, Mark from transcript tab</th></tr>
+      <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Move the word cursor. Shift extends the range. Focus the transcript first (Tab).</td></tr>
+      <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Jump to the previous or next sentence. Shift extends.</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>Pick the word under the cursor as a one-word range, or drop it. Space does not take on this screen.</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>Add a clip from the selected words, with the handles and snap choice beside them.</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Clear the selection; with nothing selected, leave the transcript.</td></tr>
     </tbody>
   </table>
   <div class="bar"><button type="button" class="btn" id="keys-close">Close</button></div>

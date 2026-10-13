@@ -241,3 +241,24 @@ fieldset.grp legend{color:var(--muted);font-size:.8rem;letter-spacing:1px;text-t
 .state-card .empty p{margin:0;color:var(--muted);max-width:52ch}
 table.keys th.group{padding-top:14px;color:var(--text)}
 @media(max-width:1000px){.cols.lib{grid-template-columns:1fr}}
+
+/* library: mark from transcript (slice 5; docs/mockups/shot-spans.html, "Mark from transcript") */
+.lib-tabs{display:flex;gap:4px;border-bottom:1px solid var(--hair);margin-bottom:16px;flex-wrap:wrap}
+.lib-tabs button{background:none;border:1px solid transparent;border-bottom:0;color:var(--muted);padding:8px 16px;border-radius:4px 4px 0 0;cursor:pointer}
+.lib-tabs button:hover{color:var(--text)}
+.lib-tabs button[aria-selected=true]{color:var(--text);border-color:var(--hair);background:var(--panel);box-shadow:inset 0 3px 0 var(--signal)}
+.tr{padding:14px 18px;line-height:1.9;font-size:1.07rem;max-height:60vh;overflow:auto;cursor:text}
+.tr .w{border-radius:2px;cursor:pointer}
+.tr .w.sel{background:var(--signal);color:#1a1200}
+.tr .w.cur{outline:2px solid var(--blue-hi);outline-offset:1px}
+.tr .ts{display:block;color:var(--muted);font:.85rem/1.4 Consolas,"Cascadia Mono",monospace;margin-top:10px}
+.tr .cut{display:inline-block;margin:0 6px;padding:0 6px;border:1px solid #5a5a5a;border-radius:3px;color:var(--text);font:.8rem/1.5 Consolas,"Cascadia Mono",monospace;vertical-align:middle}
+.stepper{display:flex;gap:6px;align-items:center}
+.stepper output{min-width:56px;text-align:center;font-family:Consolas,"Cascadia Mono",monospace;border:1px solid var(--hair);padding:5px 6px;border-radius:4px;background:var(--ground)}
+.mini[aria-disabled=true]{color:#9a9a9a;border-color:var(--hair);cursor:not-allowed}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:10px 0 0}
+.opt label{margin:0;color:var(--text)}
+.opt small{display:block;color:var(--muted)}
+.info{border:1px solid var(--hair);border-left:4px solid var(--signal);background:var(--signal-bg);padding:10px 14px;border-radius:4px}
+.info strong{color:var(--signal)}
+.state-card .empty .acts,.empty .acts{justify-content:center}

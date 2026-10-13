@@ -317,6 +317,83 @@ def delete(store: Store, span_id: str) -> None:
     raise ShotError("span_in_use", f"used by {used['items']} rundown item(s) and {used['versions']} version(s)")
 
 
+# ---- clips from transcript words (slice 5) -------------------------------------------------------------
+# The page sends the first and last word span IDs and never a time. The server loads both, checks them, and
+# builds the range from the stored word times, so a stale page cannot send a time that does not match the words
+# and a non-browser client gets the same rule.
+
+HANDLE_MAX = 10000          # frames of handle either side; a sanity bound, not a design number
+SNAPS = ("shot",)
+
+
+def _word(store: Store, word_id, asset_id: str):
+    """One transcript span of this asset, with its frames placed, or a refusal that says which rule it broke."""
+    row = store.conn.execute(
+        "SELECT id, asset_id, kind, text, frame_in, frame_out FROM span WHERE id = ?", (word_id,)).fetchone()
+    if row is None:
+        raise ShotError("not_found", f"no such word span: {word_id}")
+    if row["asset_id"] != asset_id:
+        raise ShotError("not_transcript", f"word {word_id} belongs to another asset")
+    if row["kind"] != TRANSCRIPT:
+        raise ShotError("not_transcript", f"{word_id} is a {row['kind']} span, not a transcript word")
+    if row["frame_in"] is None or row["frame_out"] is None:
+        raise ShotError("frames_pending", f"word {word_id} is not placed on frames yet (the span-frames backfill has not run)")
+    return row
+
+
+def _handle(value, name: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= HANDLE_MAX:
+        raise ShotError("bad_input", f"{name} must be a whole number of frames from 0 to {HANDLE_MAX}")
+    return value
+
+
+def snap_to_shots(store: Store, asset_id: str, frame_in: int, frame_out: int) -> tuple[int, int]:
+    """Widen [frame_in, frame_out) to the shot that holds each end: the in moves back to the start of the shot
+    containing it, the out forward to the end of the shot containing its last frame. Never narrows, and an end
+    that lies in no shot (a gap in a manual shot list) stays where it is."""
+    a = store.conn.execute(
+        "SELECT MIN(frame_in) FROM span WHERE asset_id = ? AND kind = 'shot' AND frame_in <= ? AND frame_out > ?",
+        (asset_id, frame_in, frame_in)).fetchone()[0]
+    b = store.conn.execute(
+        "SELECT MAX(frame_out) FROM span WHERE asset_id = ? AND kind = 'shot' AND frame_in < ? AND frame_out >= ?",
+        (asset_id, frame_out, frame_out)).fetchone()[0]
+    return (min(frame_in, a) if a is not None else frame_in, max(frame_out, b) if b is not None else frame_out)
+
+
+def create_from_words(store: Store, asset_id: str, first_id, last_id, *, handle_in=0, handle_out=0, snap=None,
+                      label: Optional[str] = None) -> dict:
+    """A clip (`origin = 'transcript'`) from the first word's in to the last word's out, plus handles, optionally
+    snapped to the shots around it. `text` is the words in between, in order, joined by single spaces.
+
+    Refused (nothing written): a word that does not exist (not_found); a word of another asset or one that is not a
+    transcript span (not_transcript: a word a speech re-run re-kinded to `clip` is not selectable); words whose
+    frames are not placed yet (frames_pending); a last word before the first (bad_input); a bad handle or snap;
+    and the range rules of create(), so a handle past either end of the source is outside_source."""
+    handle_in, handle_out = _handle(handle_in, "handle_in"), _handle(handle_out, "handle_out")
+    if snap is not None and snap not in SNAPS:
+        raise ShotError("bad_input", f"snap must be null or one of {', '.join(SNAPS)}")
+    label = _clean_label(label)
+    f = facts(store, asset_id)
+    first, last = _word(store, first_id, asset_id), _word(store, last_id, asset_id)
+    if (first["frame_in"], first["id"]) > (last["frame_in"], last["id"]):
+        raise ShotError("bad_input", "from_words are out of order: the last word comes before the first")
+    frame_in, frame_out = first["frame_in"] - handle_in, max(last["frame_out"], first["frame_out"]) + handle_out
+    if snap:
+        frame_in, frame_out = snap_to_shots(store, asset_id, frame_in, frame_out)
+    words = store.conn.execute(
+        """SELECT text FROM span WHERE asset_id = ? AND kind = 'transcript' AND frame_in IS NOT NULL
+             AND (frame_in > ? OR (frame_in = ? AND id >= ?))
+             AND (frame_in < ? OR (frame_in = ? AND id <= ?))
+           ORDER BY frame_in, id""",
+        (asset_id, first["frame_in"], first["frame_in"], first["id"],
+         last["frame_in"], last["frame_in"], last["id"])).fetchall()
+    text = " ".join(" ".join(str(w["text"] or "").split()) for w in words if (w["text"] or "").strip()) or None
+    return create(store, asset_id, CLIP, f.label(frame_in), f.label(frame_out), label=label,
+                  origin="transcript", text=text)
+
+
 # ---- frame columns for spans that predate them -----------------------------------------------------
 
 def pending_frames(store: Store, asset_id: str) -> int:
