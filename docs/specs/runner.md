@@ -33,7 +33,17 @@ The engine comes from `VOLT_ASR_ENGINE=faster-whisper` (plus `VOLT_ASR_MODEL`, `
 
 ## Config
 
-`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, or the matching flags.
+`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, or the matching flags.
+
+## Periodic tasks and the URL refresh
+
+`Runner.periodic` is a list of `Periodic(name, every, fn)`; `run_periodic()` runs each one that is due (first at start, then every `every` seconds on a monotonic clock) between drain cycles, in the runner's own thread. A task that raises is logged and counted in `periodic_failures`; it never stops the runner or the next task. There are none by default.
+
+The one task shipped is the S3 presigned-URL refresh (`publish.refresh_expiring`, see `docs/specs/storage.md`). It is opt-in: `VOLT_REFRESH_URLS_EVERY=<seconds>` or `--refresh-urls-every` (0 or unset = off), window `VOLT_REFRESH_URLS_WITHIN` / `--refresh-urls-within` (default 86400 s, so with a one-hour period URLs are re-signed a day before they die). Storage comes from the same `VOLT_STORAGE` / `VOLT_S3_*` variables as publishing. With local storage the pass does nothing; a storage that cannot be built (boto3 missing, bad bucket config) logs a warning each pass and the runner keeps working. A failed version is logged and the pass goes on. `--once` also runs the pass once after draining and returns 1 if it had failures.
+
+Two runners: there is no per-pass claim and no new table, because the work is idempotent and the write is guarded. Each version is re-signed with a compare-and-set on the URL that was read, so exactly one runner changes it and the other counts it as skipped (also when one finishes before the other reads). Both runners scan the version table every period, which is cheap. The `job` table was not used: a job row needs an asset, and a lease would only save the scan.
+
+Proven by tests (fake S3 client, SQLite): off by default; due at start then on schedule; two runners over one database refresh 3 versions once in total; a refresher losing the race leaves the winner's URL; a raising task is logged and does not stop the loop; env parsing; `--once --refresh-urls-every 60` was run by hand against local storage (a no-op pass, exit 0). Not proven: a run against real AWS, a runner left up across a real URL expiry, Postgres for the new compare-and-set (plain SQL, but no Postgres run was made), two runner processes racing in real time (the race is tested by injecting the competing write mid-pass).
 
 ## Stop
 
