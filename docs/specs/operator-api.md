@@ -43,6 +43,7 @@ IDs are path segments. All are `POST`.
 | `/api/assets/{asset}/cleared` | `cleared`: boolean | Set the cleared flag. | 404; 422 (must be a real boolean) |
 | `/api/assets/{asset}/legal-hold` | `held`: boolean | Set the legal hold. A held asset cannot air or publish. | 404; 422 |
 | `/api/spans/{span}/publish` | none | Render house, OTT and social files (`publish_files`) into `VOLT_OUT`. Returns `versions`. | 404; 409 `not_cleared`; 409 `publish_busy` (another writer holds a version; nothing was rendered by this call); 502 `publish_failed` (versions list shows which kind failed; it did record the failure) |
+| `/api/exports/nle` | `format`, `spans`, `media?`, `name?`, `start_tc?`, `dry_run?`, `skip_blocked?` | Build an xmeml or EDL file from span IDs (`volt/nle.py`). Returns `content`, `sha256`, `spans`, `warnings`. See [Export](#export-shot-spans-slice-6). | 404; 409 `blocked`, `essence_open`, `no_proxy`, `proxy_mismatch`, `not_local`, `outside_source`; 422 `mixed_rates`, `unsupported_rate`, `bad_input`; 500 `bad_path_map` |
 
 ### Take with a failing cue
 
@@ -58,6 +59,28 @@ IDs are path segments. All are `POST`.
 ```
 
 `cue_unsupported` is the same shape for a command that has no verified adapter.
+
+## Export (shot spans, slice 6)
+
+`POST /api/exports/nle`. Stateless: nothing is stored and no media is read or moved; the response carries the file. Same auth, JSON and body-size rules as every POST above (64 KB covers 500 span IDs). Design and decisions: [shot-spans.md](shot-spans.md). **The file formats are UNVERIFIED against a real NLE** until the manual import check there is recorded.
+
+Body (unknown fields are `422 bad_input`):
+
+| Field | Meaning |
+| --- | --- |
+| `format` | `xmeml` (Final Cut Pro 7 XML, version 4) or `edl` (CMX3600). Required. |
+| `spans` | Span IDs, 1 to 500, in the order they should be cut. The same span may appear twice. Required. |
+| `media` | `hi-res` (default) or `proxy`. |
+| `name` | Sequence or title name, 1 to 200 characters. Default `Volt selects`. |
+| `start_tc` | Sequence start. Default `01:00:00:00` (`;` when the essence is drop-frame). A `;` makes the sequence drop-frame. |
+| `dry_run` | `true` returns verdicts and a preview and no file. Default false. |
+| `skip_blocked` | `true` leaves blocked spans out and names them in the file and in `warnings`. Default false. |
+
+Success: `{ok, format, filename, mime, content, sha256, spans, warnings, durationFrames, rate, startTc, dropFrame}`. `spans` has one entry per requested span: `{id, status: "ready"|"blocked", blockedBy?, reason?}`, `blockedBy` being `"not cleared"` or `"legal hold"`. `sha256` is over the UTF-8 bytes of `content`. `rate` is the exact rate (`"25"`, `"30000/1001"`). A dry run returns `dryRun: true`, `spans`, `warnings`, `preview` (the first 20 lines) and the same totals, and no `content`. Real runs log the span IDs and `sha256` to the server's stderr.
+
+Refusals (nothing is written): 404 `not_found` (a span); 409 `blocked` (not cleared or legal hold; body has `spans` with the verdict of each); 409 `essence_open` (the chosen essence is still being written); 409 `no_proxy`; 409 `proxy_mismatch` (the proxy records a different rate or start timecode than the hi-res); 409 `not_local` (the location is a URL or not an absolute path); 409 `outside_source` (the span lies outside its essence); 422 `mixed_rates` (body has `rates`); 422 `unsupported_rate`; 422 `bad_input`; 500 `bad_path_map`. Rights are checked first, then the rest on the spans that would be exported.
+
+`VOLT_EXPORT_PATH_MAP` (server environment, read on each request): `D:\iso=\\nas\iso;E:\cam=/Volumes/cam`. A leading prefix of the stored media location is rewritten (segment boundary, longest prefix first, Windows prefixes case-insensitive) when building the file's media path. Unset means paths are written as stored.
 
 ## Read endpoints (shot spans, slice 2)
 
