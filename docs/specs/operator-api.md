@@ -111,7 +111,7 @@ All are `POST`, under the contract and auth above. Every rule lives in `volt/sho
 | `/api/spans/{span}/label` | `label` (required key; string, 200 max, or null to clear) | Rename any span. Allowed while the span is in use. Returns `span`. | 404; 422 `bad_input` |
 | `/api/spans/{span}/delete` | none | Delete a shot or clip. Returns `{ok, deleted}`. | 404; 409 `span_in_use`, `not_deletable` (a transcript span) |
 
-Split, merge and detect are later slices and their routes do not exist yet. A shot's overlap check and its insert, and a trim's checks and its update, are one step (per-asset lock plus the guards in the statement itself), so two operators marking one asset cannot both pass the overlap rule; a test races six overlapping creates and exactly one wins, on SQLite and Postgres.
+A shot's overlap check and its insert, and a trim's checks and its update, are one step (per-asset lock plus the guards in the statement itself), so two operators marking one asset cannot both pass the overlap rule; a test races six overlapping creates and exactly one wins, on SQLite and Postgres.
 
 ### Clips from transcript words (slice 5)
 
@@ -136,9 +136,22 @@ Same rights as slice 4: marking is allowed on any asset and the response says `b
 
 `GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it).
 
+### Detect, split, merge, indexing (slice 4b)
+
+Same contract and auth as above; rights are never consulted (a legal hold or an uncleared asset is detected, split and merged like any other).
+
+| Path | Body | Does | Refusals |
+|---|---|---|---|
+| `/api/assets/{asset}/shots/detect` | `threshold?` (above 0, below 1; default 0.13), `min_frames?` (1 to 10000; default 12) | Queue a `shots` job; a runner does the work. Returns `{ok, alreadyDone, job}`; `job` is `{id, status, attempt, error, updatedAt, ageSeconds, threshold, minFrames}`. The same settings are the same job (a finished run: `alreadyDone: true`, nothing queued; a queued or running one: that job). A failed run is queued again. | 404 `not_found`; 409 `essence_open` (wrap first), `detect_busy` (a run with other settings is queued or running; nothing queued); 422 `bad_input`; 503 `engine_missing` (no ffmpeg on the server) |
+| `/api/spans/{span}/split` | `at` (timecode, strictly inside the shot) | Two shots tile the old one; the first keeps the id and label, the second is new and unnamed; both `origin: manual`. Returns `{ok, spans: [first, second]}`. | 404; 422 `bad_input`, `bad_timecode`; 409 `span_in_use`, `not_editable` (not a shot), `indexing` (the shot's frames are not backfilled yet), `conflict` (it changed meanwhile) |
+| `/api/spans/{span}/merge` | `with` (the shot that starts where this one ends) | The first takes the other's out and the other is deleted, in one transaction. Returns `{ok, span, removed}`. | 404; 422 `bad_input`; 409 `not_adjacent` (a gap, itself, another asset, wrong order), `span_in_use` (either), `not_editable`, `indexing`, `conflict` |
+| `/api/assets/{asset}/span-frames` | none | Queue the backfill when spans lack frame columns (`pendingFrames > 0`). Returns `{ok, queued, pendingFrames, job}`; `queued: false` and `job: null` when nothing is pending. One job per asset, ever: if it finished and some labels cannot be placed, `pendingFrames` stays above 0 and nothing is queued again; a failed job is queued again. | 404 |
+
+`GET /api/assets/{asset}/spans` also returns `detect` (the newest detection job as above, with `threshold` and `minFrames`, or `null`) and `indexing` (the `span-frames` job, or `null`). `ageSeconds` is seconds since the job row last changed (for a running job, since it was claimed), computed on the server. A queued job with `error` set is waiting for a retry or for the recording to be wrapped.
+
 ## Other codes
 
-`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict` (shot spans), `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 

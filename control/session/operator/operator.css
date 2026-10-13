@@ -242,6 +242,18 @@ fieldset.grp legend{color:var(--muted);font-size:.8rem;letter-spacing:1px;text-t
 table.keys th.group{padding-top:14px;color:var(--text)}
 @media(max-width:1000px){.cols.lib{grid-template-columns:1fr}}
 
+/* Library: detection and indexing status (slice 4b). Same tokens as the rest; colour is never the only signal (the words say it). */
+.btn.armed{background:var(--signal);color:#1a1200;border-color:var(--signal)}
+.detect{padding:0 14px 8px;border-top:1px solid var(--hair)}
+.detect .bar.flush{padding:10px 0 0;align-items:flex-start}
+.detect-set{flex:1;min-width:14em}
+.detect-set summary{cursor:pointer;color:var(--muted);padding:6px 0}
+.detect-set label{display:block;font-size:.8rem;margin-bottom:2px}
+.detect-set input{width:11em}
+.detect-state{margin:8px 0 0;color:var(--muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.detect-state.bad{color:var(--air)}
+.detect-state.busy{color:var(--text)}
+.detect-bar{width:96px;height:8px;accent-color:var(--signal)}
 /* library: mark from transcript (slice 5; docs/mockups/shot-spans.html, "Mark from transcript") */
 .lib-tabs{display:flex;gap:4px;border-bottom:1px solid var(--hair);margin-bottom:16px;flex-wrap:wrap}
 .lib-tabs button{background:none;border:1px solid transparent;border-bottom:0;color:var(--muted);padding:8px 16px;border-radius:4px 4px 0 0;cursor:pointer}

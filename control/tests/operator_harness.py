@@ -3,6 +3,7 @@
     cd control
     python -m tests.operator_harness held --port 8791
 
+`--no-runner` leaves queued detection and indexing jobs queued, so those states can be looked at.
 Scenarios: normal, held, take_fail, record_requested, record_producing, record_finalizing,
 record_completed, publish_progress, publish_partial, library. The page is then at /operator.
 `library` adds assets for the Library screen (see seed_library). `--token T` makes the server require a bearer token.
@@ -21,6 +22,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from volt import serve, shots
+from volt.runner import Config, Runner, default_handlers
 from volt.cues import add_cue
 from volt.library import index_words
 from volt.playout import hold
@@ -78,21 +80,30 @@ def seed_library(store: Store, media_dir: Path) -> dict:
     """Assets for the Library screen. Returns {name: asset id}.
 
     iso-4  closed, cleared, proxy, six shots (five detected, one by hand), one clip from words, a transcript, a detection run
-    iso-5  closed, cleared, proxy, nothing marked yet
+    iso-5  closed, cleared, proxy, nothing marked yet; its video has 3 real cuts (frames 60, 110, 180), so Detect finds 4 shots
+    iso-8  closed, cleared, proxy, two shots from before the frame columns existed: opening it queues the indexing backfill
     iso-6  29.97 drop-frame, NOT cleared, proxy, three shots
     iso-7  still recording: no proxy, length unknown
     """
     out = {}
 
-    def asset(camera, rate, start, frames, proxy_seconds=None, cleared=True, open_file=False):
+    def asset(camera, rate, start, frames, proxy_seconds=None, cleared=True, open_file=False, cuts=None):
         a = store.mint_asset(owner="desk", show_name="Final Four Watch", camera=camera)
         if cleared:
             store.set_cleared(a.id, True)
-        store.add_essence(a.id, "hi-res", str(media_dir / f"{camera}.mxf"), open_file=open_file, frame_rate=rate,
+        hires = media_dir / f"{camera}.mxf"
+        if cuts and shutil.which("ffmpeg"):           # a real file with known cuts, for the detection job to read
+            from tests.test_shot_detect import make_clip
+            hires = media_dir / f"{camera}.mp4"
+            make_clip(hires, rate, cuts)
+        store.add_essence(a.id, "hi-res", str(hires), open_file=open_file, frame_rate=rate,
                           timecode_start=start, duration_frames=frames)
         if proxy_seconds:
             path = media_dir / f"{camera}-proxy.mp4"
-            _proxy_file(path, proxy_seconds, rate)
+            if hires.suffix == ".mp4":                # the proxy must show the same cuts, or detection would read a different picture
+                shutil.copy(hires, path)
+            else:
+                _proxy_file(path, proxy_seconds, rate)
             store.add_essence(a.id, "proxy", str(path))
         out[camera] = a.id
         return a
@@ -113,14 +124,19 @@ def seed_library(store: Store, media_dir: Path) -> dict:
         "SELECT ?, ?, id, 'ffmpeg-scene', 'harness', 0.3, 12, 5, ? FROM essence WHERE asset_id = ? AND role = 'hi-res'",
         (job.id, a.id, "2026-10-12T09:14:00Z", a.id))
     store.conn.commit()
+    store.complete_job(job.id)                      # the seeded run is over, so a runner has nothing to do with it
 
-    asset("iso-5", "25", "01:00:00:00", 250, 10)
+    asset("iso-5", "25", "01:00:00:00", 250, 10, cuts=(60, 50, 70, 70))
 
     b = asset("iso-6", "30000/1001", "01:00:00;00", 1800, 20, cleared=False)
     for label, tin, tout in (("Tip", "01:00:00;00", "01:00:12;04"), ("Drive", "01:00:12;04", "01:00:30;02"), ("Dunk", "01:00:30;02", "01:00:59;28")):
         shots.create(store, b.id, "shot", tin, tout, label=label)
 
     asset("iso-7", "25", "01:00:00:00", None, None, open_file=True)
+
+    c = asset("iso-8", "25", "01:00:00:00", 500, 20)
+    store.add_span(c.id, "shot", "01:00:00:00", "01:00:08:00", label="Opening", origin="manual")    # no frame columns
+    store.add_span(c.id, "shot", "01:00:08:00", "01:00:20:00", origin="manual")
     return out
 
 
@@ -190,7 +206,19 @@ def _slow_publish(seconds: float):
     return run
 
 
-def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None):
+def _run_jobs(path: str, out_dir: Path, stop: threading.Event) -> None:
+    """A runner for the library scenario, so Detect and the indexing backfill finish the way they would for real."""
+    store = Store(path)
+    try:
+        runner = Runner(store, default_handlers(Config(out_dir=out_dir)), target=path, name="harness-runner", poll=0.3)
+        while not stop.is_set():
+            runner.drain()
+            stop.wait(0.3)
+    finally:
+        store.close()
+
+
+def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None, runner: bool = True):
     tmp = tempfile.TemporaryDirectory()
     path = str(Path(tmp.name) / "volt.db")
     store = Store(path)
@@ -210,6 +238,10 @@ def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None):
         serve.PUBLISH = lambda st, span, out: publish(st, span)
     srv = ThreadingHTTPServer(("127.0.0.1", port), serve.Handler)
     srv.daemon_threads = True
+    if scenario == "library" and runner:
+        stop = threading.Event()
+        threading.Thread(target=_run_jobs, args=(path, serve.OUT_DIR, stop), daemon=True).start()
+        srv.stop_runner = stop.set
     return srv, tmp, show, spans
 
 
@@ -217,9 +249,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", choices=SCENARIOS)
     ap.add_argument("--port", type=int, default=8791, help="0 lets the OS pick a free one")
+    ap.add_argument("--no-runner", action="store_true", help="library: do not run jobs, so detection stays queued")
     ap.add_argument("--token", default=None, help="require this bearer token (16+ chars is the rule off loopback)")
     args = ap.parse_args()
-    server, _tmp, _show, _spans = serve_scenario(args.scenario, args.port, token=args.token)
+    server, _tmp, _show, _spans = serve_scenario(args.scenario, args.port, token=args.token, runner=not args.no_runner)
     args.port = server.server_port
     print(f"{args.scenario}: http://127.0.0.1:{args.port}/operator", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
