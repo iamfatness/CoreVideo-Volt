@@ -19,6 +19,7 @@
     <a href="#record" data-screen="record">Record</a>
     <a href="#rights" data-screen="rights">Rights</a>
     <a href="#publish" data-screen="publish">Publish</a>
+    <a href="#library" data-screen="library">Library</a>
   </nav>
   <div class="status">
     <span id="conn" class="conn" role="status"></span>
@@ -58,6 +59,63 @@
     <h1 id="h-publish" class="vh">Publish</h1>
     <div id="publish"></div>
   </section>
+
+  <section id="screen-library" class="screen" aria-labelledby="h-library" hidden>
+    <h1 id="h-library" class="vh">Library: shots and clips</h1>
+    <div id="lib-msg"></div>
+    <div class="panel lib-pick">
+      <div class="form-row">
+        <div><label for="lib-asset">Asset</label><select id="lib-asset"></select></div>
+        <span id="lib-asset-hint" class="hint"></span>
+      </div>
+    </div>
+    <div id="lib-empty"></div>
+    <div id="lib-body" class="cols lib" hidden>
+      <div class="stack">
+        <div class="panel" id="lib-head"></div>
+        <section class="panel" aria-labelledby="h-player">
+          <h2 id="h-player">Player</h2>
+          <div class="player">
+            <div class="screenbox">
+              <video id="lib-video" preload="metadata" playsinline aria-label="Proxy of the chosen asset" hidden></video>
+              <span id="lib-overlay" class="overlay" aria-hidden="true" hidden></span>
+              <div id="lib-vmsg" class="vmsg"></div>
+            </div>
+            <div id="lib-tline" class="tline" role="img" aria-label="Timeline"><span id="lib-head-mark" class="head"></span></div>
+            <div id="lib-scale" class="tlscale" aria-hidden="true"></div>
+          </div>
+          <div class="tools" role="group" aria-label="Transport">
+            <button type="button" class="btn ghost" id="lib-play" aria-keyshortcuts="K">Play <kbd>K</kbd></button>
+            <button type="button" class="btn ghost" id="lib-back" aria-keyshortcuts=",">&#9664; Frame <kbd>,</kbd></button>
+            <button type="button" class="btn ghost" id="lib-fwd" aria-keyshortcuts=".">Frame &#9654; <kbd>.</kbd></button>
+            <button type="button" class="btn ghost" id="lib-prev" aria-keyshortcuts="[">&#9664;&#9664; Prev shot <kbd>[</kbd></button>
+            <button type="button" class="btn ghost" id="lib-next" aria-keyshortcuts="]">Next shot <kbd>]</kbd> &#9654;&#9654;</button>
+            <button type="button" class="btn ghost small" id="lib-reload">Reload proxy</button>
+            <span id="lib-pos" class="hint mono" role="status"></span>
+          </div>
+          <form id="lib-mark" class="tools lib-mark" aria-label="Mark a range" autocomplete="off">
+            <div><label for="lib-in">In (timecode)</label><input id="lib-in" type="text" class="mono" inputmode="text" spellcheck="false" placeholder="01:00:00:00"></div>
+            <button type="button" class="btn signal" id="lib-mark-in" aria-keyshortcuts="I">Mark in <kbd>I</kbd></button>
+            <div><label for="lib-out">Out (timecode)</label><input id="lib-out" type="text" class="mono" inputmode="text" spellcheck="false" placeholder="01:00:05:00"></div>
+            <button type="button" class="btn signal" id="lib-mark-out" aria-keyshortcuts="O">Mark out <kbd>O</kbd></button>
+            <div class="grow"><label for="lib-name">Name (optional)</label><input id="lib-name" type="text" maxlength="200"></div>
+            <button type="submit" class="btn" id="lib-add-clip">Add clip <kbd>Enter</kbd></button>
+            <button type="button" class="btn ghost" id="lib-add-shot">Add as shot</button>
+          </form>
+          <p id="lib-mark-hint" class="note"></p>
+        </section>
+        <section class="panel" aria-labelledby="h-shots">
+          <h2 id="h-shots">Shots and clips</h2>
+          <div id="lib-filter" class="bar" role="group" aria-label="Filter and detection"></div>
+          <div id="lib-list"></div>
+        </section>
+      </div>
+      <aside class="stack" aria-label="Selection and span">
+        <section class="panel" aria-labelledby="h-tray"><h2 id="h-tray">Selection</h2><div id="lib-tray"></div></section>
+        <section class="panel" aria-labelledby="h-span"><h2 id="h-span">Span</h2><div id="lib-span"></div></section>
+      </aside>
+    </div>
+  </section>
 </main>
 
 <dialog id="token-dlg" aria-labelledby="token-h">
@@ -77,16 +135,25 @@
 <dialog id="keys-dlg" aria-labelledby="keys-h">
   <h2 id="keys-h">Keys</h2>
   <table class="keys">
-    <caption class="vh">Keyboard shortcuts on the Show screen</caption>
+    <caption class="vh">Keyboard shortcuts</caption>
     <thead><tr><th scope="col">Key</th><th scope="col">Does</th></tr></thead>
     <tbody>
+      <tr><th scope="rowgroup" colspan="2" class="group">Every screen</th></tr>
+      <tr><td><kbd>1</kbd>..<kbd>5</kbd></td><td>Show, Record, Rights, Publish, Library.</td></tr>
+      <tr><td><kbd>?</kbd></td><td>This list.</td></tr>
+      <tr><th scope="rowgroup" colspan="2" class="group">Show screen</th></tr>
       <tr><td><kbd>Space</kbd> or <kbd>T</kbd></td><td>TAKE the next item with its cues. Space presses the focused control instead while a button or link has focus; press <kbd>Esc</kbd> to drop focus. Ignored when held down, when typing in a field, within 1.5 s of the last take, or while a request is running.</td></tr>
       <tr><td><kbd>H</kbd></td><td>Hold the rundown, or release it when held.</td></tr>
       <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Move between rundown rows.</td></tr>
       <tr><td><kbd>S</kbd></td><td>Skip the selected row.</td></tr>
       <tr><td><kbd>X</kbd></td><td>Kill the selected row. Press <kbd>X</kbd> again within 4 s to confirm.</td></tr>
-      <tr><td><kbd>1</kbd>..<kbd>4</kbd></td><td>Show, Record, Rights, Publish.</td></tr>
-      <tr><td><kbd>?</kbd></td><td>This list.</td></tr>
+      <tr><th scope="rowgroup" colspan="2" class="group">Library screen only</th></tr>
+      <tr><td><kbd>K</kbd></td><td>Play or pause the proxy.</td></tr>
+      <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>Step one frame back or forward.</td></tr>
+      <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Jump to the previous or next shot.</td></tr>
+      <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Mark in or out at the playhead.</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>Add a clip from the marks, when no button or field has focus.</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>On a row's name: add or remove the row from the selection. Enter on the name seeks the player. Space does not take on this screen.</td></tr>
     </tbody>
   </table>
   <div class="bar"><button type="button" class="btn" id="keys-close">Close</button></div>
