@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import media, operator_state
+from volt import media, operator_state, shots
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
@@ -27,6 +27,7 @@ from volt.record import RecordError
 from volt.rooms import CoreVideoProRoom, LiveError
 from volt.rundown import attach, kill, reorder
 from volt.session import list_assets, rundown, seek_hit
+from volt.shots import ShotError
 from volt.store import NotClearedError, Store
 from volt.take import take_item
 
@@ -353,6 +354,65 @@ def act_publish(store, span_id, body):
     return payload
 
 
+# ---- shot spans: marking (slice 4 of docs/specs/shot-spans.md) ------------------------------------
+# Every rule (range, overlap, in-use) lives in volt/shots.py; these handlers only read the body, call it, and
+# map its refusals to HTTP. Marking is allowed on any asset: spans carry no rights (the asset does), and an
+# operator has to be able to log footage to decide what to clear. Publish and air keep their gate.
+
+SHOT_STATUS = {"not_found": 404, "bad_input": 422, "bad_timecode": 422, "outside_source": 422}
+
+
+def _shot_errors(fn):
+    """Run a shots.* call, mapping its ShotError to an ApiError. Nothing has changed when this fires.
+    404 and 422 are the request's fault; everything else (overlap, in use, not editable) is a conflict."""
+    try:
+        return fn()
+    except ShotError as exc:
+        raise ApiError(SHOT_STATUS.get(exc.code, 409), exc.code, exc.reason) from None
+
+
+def _span_payload(store: Store, span: dict) -> dict:
+    """shots.span_json plus `blockedBy`, in the same words as /api/state (the page shows it next to the span)."""
+    row = store.conn.execute("SELECT cleared, legal_hold FROM asset WHERE id = ?", (span["assetId"],)).fetchone()
+    blocked = operator_state._blocked_by(bool(row["cleared"]), bool(row["legal_hold"])) if row else None
+    return {**span, "blockedBy": blocked}
+
+
+def act_span_create(store, asset_id, body):
+    # from_words, handle_in, handle_out and snap are slice 5 (transcript marking); until then they are unknown.
+    _unknown_keys(body, {"kind", "tc_in", "tc_out", "label"})
+    kind = _str(body, "kind", required=True, limit=20)
+    tc_in = _str(body, "tc_in", required=True, limit=32)
+    tc_out = _str(body, "tc_out", required=True, limit=32)
+    label = _str(body, "label", limit=shots.LABEL_LIMIT)
+    _asset_exists(store, asset_id)
+    span = _shot_errors(lambda: shots.create(store, asset_id, kind, tc_in, tc_out, label=label))
+    return {"ok": True, "span": _span_payload(store, span)}
+
+
+def act_span_trim(store, span_id, body):
+    _unknown_keys(body, {"tc_in", "tc_out"})
+    tc_in = _str(body, "tc_in", limit=32)
+    tc_out = _str(body, "tc_out", limit=32)
+    span = _shot_errors(lambda: shots.trim(store, span_id, tc_in, tc_out))
+    return {"ok": True, "span": _span_payload(store, span)}
+
+
+def act_span_label(store, span_id, body):
+    _unknown_keys(body, {"label"})
+    if "label" not in body:
+        raise ApiError(422, "bad_input", "label is required (null clears it)")
+    label = _str(body, "label", limit=shots.LABEL_LIMIT)
+    span = _shot_errors(lambda: shots.label(store, span_id, label))
+    return {"ok": True, "span": _span_payload(store, span)}
+
+
+def act_span_delete(store, span_id, body):
+    _unknown_keys(body, set())
+    _shot_errors(lambda: shots.delete(store, span_id))
+    return {"ok": True, "deleted": span_id}
+
+
 # Reads on an asset and on a span, served by do_GET. IDs are path segments, never file names.
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
@@ -371,6 +431,10 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/cleared$"), act_cleared),
     (re.compile(rf"^/api/assets/{_ID}/legal-hold$"), act_legal_hold),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
+    (re.compile(rf"^/api/assets/{_ID}/spans$"), act_span_create),
+    (re.compile(rf"^/api/spans/{_ID}/trim$"), act_span_trim),
+    (re.compile(rf"^/api/spans/{_ID}/label$"), act_span_label),
+    (re.compile(rf"^/api/spans/{_ID}/delete$"), act_span_delete),
 ]
 
 
@@ -593,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
         # Same-origin only: nothing external may load, and the page may not be framed.
         self.send_header("Content-Security-Policy",
                          "default-src 'none'; script-src 'self'; style-src 'self'; "
-                         "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+                         "connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; base-uri 'none'; "
                          "form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)

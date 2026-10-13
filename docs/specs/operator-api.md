@@ -75,11 +75,26 @@ Span JSON: `id, assetId, kind, origin, label, tcIn, tcOut, frameIn, frameOut, te
 
 `pendingFrames` counts spans whose `frame_in`/`frame_out` are not yet backfilled (migration 9 leaves old rows NULL until the `span-frames` job runs). Such spans cannot be ordered or windowed, so these routes leave them out and say how many.
 
-Limits of these routes: a browser `<video src>` or `<img src>` cannot send a bearer header, so with `VOLT_TOKEN` set a page has to fetch the bytes itself (or a later slice adds a short-lived signed URL). The proxy route reads the file as registered; a proxy still being written (open) is served as far as it has been written. Thumbnails assume the proxy starts at the hi-res's timecode and rate, as the spec does; that is not checked.
+Limits of these routes: a browser `<video src>` or `<img src>` cannot send a bearer header, so with `VOLT_TOKEN` set a page has to fetch the bytes itself. The operator UI does exactly that (see operator-ui.md: thumbnails always, the proxy as a blob when a token is set); a short-lived signed URL would let `<video>` stream under a token, and is not built. The proxy route reads the file as registered; a proxy still being written (open) is served as far as it has been written. Thumbnails assume the proxy starts at the hi-res's timecode and rate, as the spec does; that is not checked.
+
+## Write endpoints (shot spans, slice 4)
+
+All are `POST`, under the contract and auth above. Every rule lives in `volt/shots.py`, not in the handler or the page; a refusal writes nothing. Spans carry no rights and marking is allowed on any asset (not cleared, legal hold, still recording): an operator has to be able to log footage to decide what to clear. Attach, publish and air keep their gate on the asset. Responses carry the span as in the read API, including `blockedBy`.
+
+| Path | Body | Does | Refusals |
+|---|---|---|---|
+| `/api/assets/{asset}/spans` | `kind` (`shot` or `clip`), `tc_in`, `tc_out` (timecode labels; `;` or `:` accepted, stored in the essence's own style), `label?` (string or null, 200 max) | Create a span with `origin: manual`. Returns `span`. | 404 `not_found`; 422 `bad_input` (bad kind, missing field, out not after in, label, an asset with no hi-res or no frame rate), `bad_timecode` (does not parse, or a drop-frame label that does not exist), `outside_source` (before the start, or past the end when the length is known); 409 `overlaps_shot` (shots only) |
+| `/api/spans/{span}/trim` | `tc_in?`, `tc_out?` (at least one) | Move the in and/or out of a shot or clip. Returns `span`. | 404; 422 `bad_input`, `bad_timecode`, `outside_source`; 409 `overlaps_shot`, `span_in_use` (an item or a version uses it), `not_editable` (a transcript span) |
+| `/api/spans/{span}/label` | `label` (required key; string, 200 max, or null to clear) | Rename any span. Allowed while the span is in use. Returns `span`. | 404; 422 `bad_input` |
+| `/api/spans/{span}/delete` | none | Delete a shot or clip. Returns `{ok, deleted}`. | 404; 409 `span_in_use`, `not_deletable` (a transcript span) |
+
+`from_words`, `handle_in`, `handle_out`, `snap` (transcript marking), split, merge and detect are later slices; until then the first four are unknown fields (`422 bad_input`) and the other routes do not exist. A shot's overlap check and its insert, and a trim's checks and its update, are one step (per-asset lock plus the guards in the statement itself), so two operators marking one asset cannot both pass the overlap rule; a test races six overlapping creates and exactly one wins, on SQLite and Postgres.
+
+`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it).
 
 ## Other codes
 
-`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `416 bad_range`, `422 bad_input`, `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict` (shot spans), `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 

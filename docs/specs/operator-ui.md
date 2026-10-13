@@ -13,7 +13,25 @@ Run it against a fake room, no core needed: `cd control && python -m tests.opera
 
 ## Screens
 
-Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps, stop and wrap), Rights (clear, legal hold), Publish (per-version status and URLs). `#show`, `#record`, `#rights`, `#publish`.
+Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps, stop and wrap), Rights (clear, legal hold), Publish (per-version status and URLs), Library (shots and clips of one asset). `#show`, `#record`, `#rights`, `#publish`, `#library`.
+
+### Library
+
+Built from `docs/mockups/shot-spans.html` (slice 4 of `shot-spans.md`). Pick an asset (those with a proxy and a closed hi-res first; the choice and the selection live in `sessionStorage`). The page then has the asset facts, a player on the proxy with a timeline of shot segments and clip bars, transport and mark controls, a filterable table (thumbnail, name, origin, in, out, length, transcript snippet, state), the selection tray, and a span editor (rename, trim, attach to a ready rundown item, delete with a second press). Every write goes to the server and the list is read back; a refusal shows its stable code and reason beside the work (`overlaps_shot` offers "Add as clip"). Empty and error states from the mockup are built: no assets, no asset chosen, loading, load error with retry, no shots yet, no proxy, still recording, and an asset with no frame rate. The state is a glyph and a word, as elsewhere.
+
+Not on this screen yet, by design: detection (a disabled "Detect shots" button with its reason beside it, the hook for slice 3), split and merge (disabled, slice 3), transcript marking (slice 5, only snippets in the table are shown), NLE export (the tray's button is disabled, slice 6). The tray is client state: a list kept in this tab, never a stored object.
+
+Marks are typed or taken from the playhead into In and Out fields (so an asset with no proxy can still be marked), then added as a clip or as a shot. The playhead is a frame count read from the video (`floor(currentTime x rate)`, seeks aim a quarter frame in) turned into a label by the page's twin of `volt/timecode.py` (`framesToTc`, drop-frame included). A test runs that code under node against the Python library on 25, 24000/1001, 30000/1001 (drop and non-drop) and 60000/1001, around the minute and ten-minute boundaries, and on labels that do not exist. The page assumes the proxy shares the hi-res's start and rate (as the spec does) and warns when the proxy's length differs from the source by more than two frames.
+
+### Media and the token
+
+`<img>` and `<video>` cannot send an `Authorization` header. What the page does:
+
+- Thumbnails: always `fetch()` (header attached when there is a token) into a `blob:` URL, three at a time, cached by span and frame range, revoked when the asset changes or a trim replaces the frame. One path with or without a token, and a trim fetches the new frame instead of a browser-cached one (the thumb route sets `max-age=3600` and takes no query).
+- Proxy, no token (loopback): native `<video src="/api/assets/{id}/proxy">`, streamed and seeked by byte range. Nothing changes for loopback use.
+- Proxy, token set: fetched with the header into memory first, on an explicit "Load proxy" press (it is a whole-file download), with a progress figure, refused above 512 MB before any body is read (the length comes from the response header), and played from a `blob:` URL. A growing proxy (asset still recording) is a snapshot until "Reload proxy".
+
+Why this and not the alternatives: it changes nothing on the server's auth surface, puts no token in a URL (URLs reach logs, history and referrers), and needs no service worker (which needs a secure context, and a LAN address over http is not one). The cost is real: with a token the operator waits for the whole proxy, and a large proxy cannot be played. If that bites, the next step is a short-lived signed URL for the proxy route; it is not built. The CSP gained `img-src blob:` and `media-src 'self' blob:` and nothing else.
 
 ## Keys (Show screen)
 
@@ -24,8 +42,22 @@ Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps
 | Up, Down | Move between rundown rows (selection follows). |
 | `S` | Skip the selected ready row. |
 | `X` | Kill the selected ready row. A second `X` within 4 s confirms. |
-| `1` to `4` | Switch screen. |
+| `1` to `5` | Switch screen (5 is Library). |
 | `?` | List the keys. |
+
+## Keys (Library screen)
+
+Handled only when the Library is the open screen, and never when a field has focus. Space is not TAKE here, and none of the Show keys (T, H, S, X, arrows) do anything here.
+
+| Key | Does |
+| --- | --- |
+| `K` | Play or pause. |
+| `,` `.` | Step one frame back or forward (repeats when held). |
+| `[` `]` | Previous or next shot start. |
+| `I` `O` | Put the playhead in the In or Out field. |
+| `Enter` | Add a clip from the fields, only when no button, link or field has focus (in a field it submits the form; on a button it presses it). |
+| `Space` | On a row's name: add or remove the row from the selection. A checkbox keeps its own Space. |
+| `Enter` on a name | Seek the player to the row and open it in the editor. |
 
 Take has no confirmation dialog: the guards above are the accident resistance, and the server refuses a second take while one runs. Kill and lifting a legal hold ask for a second press (button text changes to "Confirm ...", clears after 4 s or on Escape).
 

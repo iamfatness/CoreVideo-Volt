@@ -35,7 +35,8 @@ def shows(store: Store) -> list[dict]:
 def assets(store: Store) -> list[dict]:
     rows = store.conn.execute(
         """SELECT a.id, a.owner, a.show_name, a.camera, a.cleared, a.legal_hold, a.source_key,
-                  a.created_at, e.location, e.checksum, e.open
+                  a.created_at, e.location, e.checksum, e.open,
+                  EXISTS (SELECT 1 FROM essence p WHERE p.asset_id = a.id AND p.role = 'proxy') AS has_proxy
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
            ORDER BY a.created_at, a.id"""
@@ -49,6 +50,7 @@ def assets(store: Store) -> list[dict]:
             "blockedBy": _blocked_by(cleared, held),
             "file": r["location"], "checksum": r["checksum"],
             "open": bool(r["open"]) if r["open"] is not None else False,
+            "hasProxy": bool(r["has_proxy"]),
         })
     return out
 
