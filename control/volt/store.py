@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS essence (
   timecode_start TEXT,
   audio_layout TEXT,
   open INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  duration_frames INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS span (
@@ -56,7 +57,12 @@ CREATE TABLE IF NOT EXISTS span (
   tc_in TEXT NOT NULL,
   tc_out TEXT NOT NULL,
   text TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  label TEXT,
+  origin TEXT,
+  run_id TEXT,
+  frame_in INTEGER,
+  frame_out INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS job (
@@ -99,6 +105,19 @@ CREATE TABLE IF NOT EXISTS asr_chunk (
   words TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY (job_id, idx)
+);
+
+CREATE TABLE IF NOT EXISTS shot_run (
+  job_id TEXT PRIMARY KEY REFERENCES job(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  essence_id TEXT NOT NULL REFERENCES essence(id),
+  engine TEXT NOT NULL,
+  engine_version TEXT,
+  threshold REAL,
+  min_frames INTEGER,
+  shot_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  settings TEXT
 );
 
 CREATE TABLE IF NOT EXISTS show (
@@ -379,13 +398,15 @@ class Store:
         frame_rate: Optional[str] = None,
         timecode_start: Optional[str] = None,
         audio_layout: Optional[str] = None,
+        duration_frames: Optional[int] = None,
     ) -> str:
         self.get_asset(asset_id)
         essence_id = _id()
         self.conn.execute(
             """INSERT INTO essence
-               (id, asset_id, role, location, checksum, codec, frame_rate, timecode_start, audio_layout, open, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, asset_id, role, location, checksum, codec, frame_rate, timecode_start, audio_layout, open,
+                created_at, duration_frames)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 essence_id,
                 asset_id,
@@ -398,17 +419,22 @@ class Store:
                 audio_layout,
                 bool(open_file),
                 _now(),
+                duration_frames,
             ),
         )
         self.conn.commit()
         return essence_id
 
-    def wrap_essence(self, essence_id: str, checksum: str) -> None:
-        self.conn.execute(
-            "UPDATE essence SET open = FALSE, checksum = ? WHERE id = ?",
-            (checksum, essence_id),
-        )
-        self.conn.commit()
+    def wrap_essence(self, essence_id: str, checksum: str, duration_frames: Optional[int] = None) -> None:
+        """Close a growing essence. `duration_frames` (when known) is recorded with the close; None leaves it."""
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE essence SET open = FALSE, checksum = ? WHERE id = ?",
+                (checksum, essence_id),
+            )
+            if duration_frames is not None:
+                self.conn.execute(
+                    "UPDATE essence SET duration_frames = ? WHERE id = ?", (int(duration_frames), essence_id))
 
     def add_span(
         self,
@@ -417,13 +443,19 @@ class Store:
         tc_in: str,
         tc_out: str,
         text: Optional[str] = None,
+        label: Optional[str] = None,
+        origin: Optional[str] = None,
+        run_id: Optional[str] = None,
+        frame_in: Optional[int] = None,
+        frame_out: Optional[int] = None,
     ) -> str:
         self.get_asset(asset_id)
         span_id = _id()
         self.conn.execute(
-            """INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (span_id, asset_id, kind, tc_in, tc_out, text, _now()),
+            """INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at,
+                                  label, origin, run_id, frame_in, frame_out)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (span_id, asset_id, kind, tc_in, tc_out, text, _now(), label, origin, run_id, frame_in, frame_out),
         )
         self.conn.commit()
         return span_id

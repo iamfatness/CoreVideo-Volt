@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from volt import shots
 from volt.ingest import sha256
 from volt.store import Store
 
@@ -184,7 +185,8 @@ def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     if path.stat().st_size != size:
         raise RecordError(f"{path.name} is still growing")
     digest = sha256(Path(source["location"]))
-    store.wrap_essence(source["id"], digest)
+    rate = store.conn.execute("SELECT frame_rate FROM essence WHERE id = ?", (source["id"],)).fetchone()["frame_rate"]
+    store.wrap_essence(source["id"], digest, duration_frames=shots.probe_duration_frames(path, rate or None))
     store.conn.execute(
         "UPDATE essence SET open = FALSE WHERE asset_id = ? AND role = 'proxy'",
         (asset_id,),

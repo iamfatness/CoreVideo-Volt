@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS essence (
   timecode_start TEXT,
   audio_layout TEXT,
   open BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  duration_frames INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS span (
@@ -34,7 +35,12 @@ CREATE TABLE IF NOT EXISTS span (
   tc_in TEXT NOT NULL,
   tc_out TEXT NOT NULL,
   text TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  label TEXT,
+  origin TEXT,
+  run_id TEXT,
+  frame_in INTEGER,
+  frame_out INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS job (
@@ -77,6 +83,19 @@ CREATE TABLE IF NOT EXISTS asr_chunk (
   words TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (job_id, idx)
+);
+
+CREATE TABLE IF NOT EXISTS shot_run (
+  job_id TEXT PRIMARY KEY REFERENCES job(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  essence_id TEXT NOT NULL REFERENCES essence(id),
+  engine TEXT NOT NULL,
+  engine_version TEXT,
+  threshold DOUBLE PRECISION,
+  min_frames INTEGER,
+  shot_count INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  settings TEXT
 );
 
 CREATE TABLE IF NOT EXISTS show (

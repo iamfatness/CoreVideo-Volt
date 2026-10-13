@@ -238,5 +238,92 @@ class PostgresForward(PgCase):
             self.store()  # again: no duplicate-version error
 
 
+V8 = next(shape for shape in SHAPES if shape[0] == "v8_cue_fail")
+NEW_SPAN_COLUMNS = {"label", "origin", "run_id", "frame_in", "frame_out"}
+
+
+def _seed_v8(execute):
+    """Rows as a version-8 database would hold them: a transcript word with no frame columns, an essence."""
+    execute("INSERT INTO asset (id, owner, retention_class, created_at) VALUES ('a1', 'desk', 'show', '2026-01-01T00:00:00Z')")
+    execute("INSERT INTO essence (id, asset_id, role, location, frame_rate, timecode_start, created_at) "
+            "VALUES ('e1', 'a1', 'hi-res', 'x.mxf', '25', '01:00:00:00', '2026-01-01T00:00:00Z')")
+    execute("INSERT INTO span (id, asset_id, kind, tc_in, tc_out, text, created_at) "
+            "VALUES ('w1', 'a1', 'transcript', '01:00:00:00', '01:00:00:10', 'hello', '2026-01-01T00:00:00Z')")
+
+
+class Version8ToNine(unittest.TestCase):
+    """The shape every deployed database has today (store.SCHEMA at version 8, versions 1-8 recorded) takes
+    exactly migration 9 and keeps its rows."""
+
+    def test_sqlite_version_8_runs_only_migration_9(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "v8.db")
+            conn = sqlite3.connect(path)
+            conn.executescript(V8[2])
+            backend = migrations.SqliteBackend(conn)
+            backend.ensure_version_table()
+            for m in migrations.MIGRATIONS[:8]:
+                backend.record(m)
+            _seed_v8(conn.execute)
+            conn.commit()
+            before = conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version").fetchall()
+            self.assertEqual(NEW_SPAN_COLUMNS & sqlite_columns(conn)["span"], set())
+            conn.close()
+            store = Store(path)
+            try:
+                cols = sqlite_columns(store.conn)
+                self.assertTrue(NEW_SPAN_COLUMNS <= cols["span"])
+                self.assertIn("duration_frames", cols["essence"])
+                self.assertIn("shot_run", cols)
+                self.assertEqual(
+                    [tuple(r) for r in store.conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version")][:8],
+                    [tuple(r) for r in before])
+                self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
+                                 list(range(1, 10)))
+                index = store.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'span_asset_kind_frame'").fetchone()
+                self.assertIn("asset_id, kind, frame_in", index[0])
+                row = store.conn.execute("SELECT text, label, origin, run_id, frame_in, frame_out FROM span").fetchone()
+                self.assertEqual(tuple(row), ("hello", None, None, None, None, None))
+                self.assertIsNone(store.conn.execute("SELECT duration_frames FROM essence").fetchone()[0])
+                from volt import shots
+                self.assertEqual(shots.pending_frames(store, "a1"), 1)
+                shots.backfill_frames(store, "a1")
+                self.assertEqual(tuple(store.conn.execute("SELECT frame_in, frame_out FROM span").fetchone()), (90000, 90010))
+            finally:
+                store.close()
+
+
+class Version8ToNinePostgres(PgCase):
+    def test_postgres_version_8_runs_only_migration_9(self):
+        admin = self.admin()
+        admin.execute(V8[3])
+        backend = migrations.PostgresBackend(admin)
+        backend.ensure_version_table()
+        for m in migrations.MIGRATIONS[:8]:
+            backend.record(m)
+        _seed_v8(admin.execute)
+        store = Store(self.dsn)
+        self.stores.append(store)
+        cols = PostgresForward.pg_columns(None, store.conn)
+        self.assertTrue(NEW_SPAN_COLUMNS <= cols["span"])
+        self.assertIn("duration_frames", cols["essence"])
+        self.assertIn("shot_run", cols)
+        self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
+                         list(range(1, 10)))
+        index = store.conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'span_asset_kind_frame'").fetchone()
+        self.assertIn("(asset_id, kind, frame_in)", index[0])
+        row = store.conn.execute("SELECT text, label, origin, run_id, frame_in, frame_out FROM span").fetchone()
+        self.assertEqual(tuple(row), ("hello", None, None, None, None, None))
+        from volt import shots
+        self.assertEqual(shots.pending_frames(store, "a1"), 1)
+        shots.backfill_frames(store, "a1")
+        self.assertEqual(tuple(store.conn.execute("SELECT frame_in, frame_out FROM span").fetchone()), (90000, 90010))
+        self.stores.pop().close()
+        again = self.store()  # opening again applies nothing and does not fail
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], 9)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, pg, publish as publish_mod, record, speech, storage
+from volt import chunking, pg, publish as publish_mod, record, shots, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -224,7 +224,13 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
                 reasons.append(f"{v.kind}: {(row['error'] if row else None) or 'failed'}")
             raise RuntimeError("; ".join(reasons))
 
-    return {"proxy": proxy, "asr": asr, "publish": publish}
+    def span_frames(store: Store, job: Claimed) -> None:
+        try:
+            shots.backfill_frames(store, job.asset_id)
+        except shots.ShotError as exc:  # no asset, no hi-res or no usable timebase: retrying cannot help
+            raise Permanent(f"cannot fill span frames: {exc.reason}") from exc
+
+    return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames}
 
 
 def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshReport]:

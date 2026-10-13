@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from volt import shots
 from volt.store import Store
 
 
@@ -80,6 +81,7 @@ def ingest_file(
             location=str(dest),
             open_file=False,
             checksum=digest,
+            duration_frames=shots.probe_duration_frames(dest),
         )
     else:
         essence_id = existing_essence["id"]

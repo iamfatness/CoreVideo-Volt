@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from volt import shots
 from volt.store import Store
 
 
@@ -26,8 +27,16 @@ def index_words(store: Store, asset_id: str, words: list[tuple[str, str, str]]) 
     if existing:
         store.complete_job(job.id)
         return existing
+    f = shots.try_facts(store, asset_id)  # frame columns when the essence has a timebase, else left NULL
     for text, tc_in, tc_out in words:
-        store.add_span(asset_id, "transcript", tc_in, tc_out, text=text)
+        fi = fo = None
+        if f is not None:
+            try:
+                fi, fo = f.frames(tc_in), f.frames(tc_out)
+            except shots.ShotError:
+                pass
+        store.add_span(asset_id, "transcript", tc_in, tc_out, text=text, origin="transcript",
+                       frame_in=fi, frame_out=fo)
     store.complete_job(job.id)
     return len(words)
 

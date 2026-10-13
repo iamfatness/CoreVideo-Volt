@@ -21,7 +21,7 @@ Wave A and Wave B are on `main`. The suite is 485 tests, run on SQLite and on li
 | Cross-process races | #28 | Merged. Publish claim, kill vs go, transcribe replace, proxy builds. |
 | Job limits | #30 | Merged. Publish heartbeat, one proxy encode, late open-file proxy, one transcribe (`docs/job-limits.md`). |
 
-Schema changes go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number (next is 9).
+Schema changes go through `volt/migrations.py`: add the column to `store.SCHEMA` and `schema.sql` in the same order and append one `Migration` with the next number (next is 10; 9 is the span shot columns, essence duration and `shot_run` table, from shot spans slice 1).
 
 Run against a live CoreVideo Pro core (2026-10-11): `show-input.take` takes with a source that is not on Program failed closed, and a take between scenes with distinct sources confirmed only once the core showed the source and had dropped its `take-in`/`take-out` layers. Not yet run live: record, stream, lower third, fade, and a camera source (no action routes one into a scene, CoreVideoPro #861).
 

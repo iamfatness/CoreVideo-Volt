@@ -66,7 +66,15 @@ MIGRATIONS = (
     Migration(7, "asr settings and chunk table", columns=(("asr_run", "settings", "TEXT"),)),  # asr_chunk: CREATE IF NOT EXISTS
     Migration(8, "cue last failure columns",
               columns=(("cue", "fail_status", "TEXT"), ("cue", "fail_detail", "TEXT"))),
-    # Next: Migration(9, "...", columns=(...)). Do not add a gap or reuse a number.
+    # shot_run is a new table (base-table creation makes it), as in 4 and 7. The index is created here and not
+    # in store.SCHEMA: SCHEMA runs before the columns exist on an older database.
+    Migration(9, "span shot columns, essence duration, shot_run table",
+              columns=(("span", "label", "TEXT"), ("span", "origin", "TEXT"), ("span", "run_id", "TEXT"),
+                       ("span", "frame_in", "INTEGER"), ("span", "frame_out", "INTEGER"),
+                       ("essence", "duration_frames", "INTEGER")),
+              sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
+              postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
+    # Next: Migration(10, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
