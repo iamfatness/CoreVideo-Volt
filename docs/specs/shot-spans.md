@@ -1,6 +1,6 @@
 # Shot spans and the NLE panel
 
-Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slices 2 to 6 (read API, detection, the Library screen, transcript marking, NLE export) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
+Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slice 2 (read API and media: `volt/media.py`, the span, transcript, proxy, `/media` and thumbnail routes, documented in [operator-api.md](operator-api.md)) is built. Slices 3 to 6 (detection, the Library screen, transcript marking, NLE export) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
 
 Roadmap and areas both list "shot spans" and "one NLE panel" as next for MAM. A second NLE is later and out of scope here.
 
@@ -243,6 +243,7 @@ No record of exports is kept in slice 4 (the server logs the span IDs and sha256
 - No ffmpeg scene detection was run, so the threshold, the min-frames guard and the claim that it finds cuts within a frame are untested.
 - That the proxy keeps the hi-res's frame count and start timecode is assumed and guarded, not checked.
 - The `/media` gap and the `operator_state` span flooding come from reading code, not from running the server.
+- Slice 2 was run on SQLite and a live postgres:16 over HTTP with ffmpeg testsrc clips (ranges, refusals, thumbnail generation, a killed hang). Not done: a real browser `<video>` seeking through the proxy route, a proxy from the real proxy builder (tests use testsrc and byte blobs), thumbnails on real footage or on a drop-frame proxy, a proxy being written while it is served, and the `/media` route against the old shell page itself.
 - The transcript-span delete hazard was run (SQLite and a live postgres:16) and is fixed in slice 1. Slice 1 itself was not run against real footage: ingest and wrap durations were checked on ffmpeg testsrc clips only, and the `span-frames` job only on small seeded databases.
 - The mockups use made-up footage, names and numbers (Final Four Watch, iso-3, Okonkwo come from existing docs and mockups) and drawn placeholder frames.
 
