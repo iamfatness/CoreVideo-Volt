@@ -1,6 +1,6 @@
 # Shot spans and the NLE panel
 
-Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slice 2 (read API and media: `volt/media.py`, the span, transcript, proxy, `/media` and thumbnail routes, documented in [operator-api.md](operator-api.md)) is built. Slices 3 to 6 (detection, the Library screen, transcript marking, NLE export) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
+Status: slice 1 (schema and spans core) is built: migration 9, `volt/shots.py`, the `span-frames` backfill job, the kind filter on `operator_state.spans()`, duration at ingest and wrap, and the speech re-run fix below. Slice 2 (read API and media: `volt/media.py`, the span, transcript, proxy, `/media` and thumbnail routes, documented in [operator-api.md](operator-api.md)) is built. Slice 6's backend (`volt/nle.py`: xmeml and CMX3600 builders, and `POST /api/exports/nle`, documented in [operator-api.md](operator-api.md)) is built and its format is UNVERIFIED until the manual import check below is recorded; the export screen is not built. Slices 3 to 5 (detection, the Library screen, transcript marking) are design only and nothing in them is built. Owner rule applies: the mockups in [docs/mockups/shot-spans.html](../mockups/shot-spans.html) are shown and approved before any code. The mockup is the screen; this file is what sits under it.
 
 Roadmap and areas both list "shot spans" and "one NLE panel" as next for MAM. A second NLE is later and out of scope here.
 
@@ -225,6 +225,39 @@ Export rights gate, proposed: refuse a span whose asset is not cleared or is on 
 
 No record of exports is kept in slice 4 (the server logs the span IDs and sha256 to stderr). If the owner wants an audit trail it is a small `nle_export` table, a later slice.
 
+### As built (slice 6 backend)
+
+`volt/nle.py` (builders and the request logic) and `POST /api/exports/nle` (documented in [operator-api.md](operator-api.md)) are built; the export screen is not (it comes after the Library screen merges). Where the build settled something the proposal left open:
+
+- Codes beyond the list above: 409 `proxy_mismatch` (the proxy row records a frame rate or start timecode that differs from the hi-res; the proxy is otherwise assumed to match), 409 `outside_source` (a span lies outside its essence), 422 `unsupported_rate` (a rate that is not a whole number or a /1001 broadcast rate), 500 `bad_path_map` (a malformed `VOLT_EXPORT_PATH_MAP`, a server fault). A proxy that is still being written is `essence_open` like a growing hi-res.
+- Order of refusals: unknown span (404), then rights (409 `blocked`), then everything else on the spans that remain. With `skip_blocked`, a blocked span takes no part in the other checks, so a blocked span at another frame rate does not cause `mixed_rates`. If every span is blocked the answer is 409 `blocked` even with `skip_blocked`. `dry_run` returns 200 with the per-span verdicts for rights, and refuses for the other conditions as a real run would.
+- Rights follow the proposal (not cleared and legal hold both block); open question 2 is still the owner's to answer.
+- Sequence start. Default `start_tc` is 01:00:00:00, written `01:00:00;00` with a drop-frame sequence when the first essence is drop-frame (the essence's own drop flag, not a guess). An explicit `start_tc` decides drop-frame by its separator; `;` on a rate with no drop-frame form is `bad_input`.
+- Frames are half open: `in` is the span's first frame and `out` the first frame after it, both as offsets from the essence's start; a span's length is `out - in`. A span that ends exactly at the end of the essence is fine. The same span may be selected twice; it becomes two clips and one `file` definition.
+- Clip name: the label, else `<camera or first 8 of the asset id> <tc_in>` (not "Shot N", which would need the shot's ordinal in its asset).
+- Audio: `essence.audio_layout` is free text that no code in this repo writes yet. The parser reads a bare count (`2`, `8ch`, `4 channels`), `mono`, `stereo`, `quad`, `5.1`, `7.1`, up to 32 channels. Anything else means no audio tracks and a warning; it never guesses stereo. xmeml gets one mono audio track per channel, each with a clip per span, linked to the video clip. The EDL gets one audio event per video event (`A` for one channel, `AA` for two or more) and warns when there are more than two channels. The sample rate is not in the data: 48000 and 16 bit are written.
+- The sequence frame size is not written (the essence has no width or height). The editor may need to set it on the new sequence.
+- EDL reels are the asset id upper-cased, letters and digits only, cut to 8. Two different assets in one selection that cut to the same 8 characters get a counter in the last two (`12345601`) and a warning. A short id is not padded in the name.
+- `pathurl` is `file://localhost/` plus the path: a drive letter as `C%3a`, a UNC share as `file://localhost//nas/share/...`, other characters percent-encoded. A location that is a URL (`s3://`) or not absolute is 409 `not_local`.
+- Skipped (blocked) spans are named in an XML comment before the sequence (xmeml) or `* VOLT SKIPPED ...` lines under the header (EDL), and in `warnings`.
+
+### Manual import check (owner, not done)
+
+**The xmeml and EDL formats are UNVERIFIED until this is done and recorded here.** What has been checked without an NLE: the files are well formed; the frame arithmetic equals hand-computed values at 24, 25, 30 and 29.97 drop-frame (including the dropped labels at a minute boundary); the `xml.etree` structure tests pass; and an independent reader, OpenTimelineIO 0.18.1 with its `fcp_xml` and `cmx_3600` adapters, reads a three-span 29.97 drop-frame export of each format back to the same source start frames and durations (108192/75, 109692/148, 125874/10), with one video and two audio tracks. OpenTimelineIO is not Premiere and is lenient. Do these on a real machine, with the media reachable at the written paths (set `VOLT_EXPORT_PATH_MAP` if the editor sees them elsewhere), and write down the Premiere or Resolve version:
+
+1. Export a three-span selection from the API as `xmeml` at the rate of your real footage. Repeat at 29.97 drop-frame if the show uses it. Save `content` to a `.xml` file.
+2. Premiere: File > Import the `.xml`. It should create a sequence without an error dialog. Resolve: File > Import > Timeline > Premiere XML (or FCP 7 XML).
+3. Media: the clips are online, not "media offline". If they are offline, note the path the NLE shows for the missing file and compare it with the `pathurl`.
+4. Frame size and rate: open the sequence settings. Rate must match the footage. Frame size is not written by Volt, so note what the NLE chose.
+5. Clip names, in and out: each clip is named as its span label (or camera and in point). Open the source monitor on a clip: its source timecode in and out must equal the span's `tcIn` and `tcOut` labels, to the frame. Check the first span, a span that crosses a minute on a drop-frame asset, and a one-frame span.
+6. Order and butting: the clips run in the order sent with no gaps, starting at the sequence start timecode (01:00:00:00, or `;00` for drop-frame).
+7. Audio: the number of audio tracks equals the channel count of the essence; each is linked to its video clip (moving the video moves the audio). Play a span and confirm the audio is the right channels, not silent.
+8. Comments: the clip's comment holds `asset <id> span <id>`. Note whether the NLE shows it (it may not, and then the return path to the span is only in the file).
+9. Export the `edl` of the same selection and import it (Resolve: File > Import > Timeline > EDL; Premiere: File > Import with the `.edl`, on versions that offer it). Check event count, reel names (8 characters), source and record timecodes.
+10. Record the result below: the NLE and version, the OS, pass or fail for each step, and what the editor had to fix by hand.
+
+Result: not yet recorded.
+
 ## Acceptance
 
 - Manual mark: create a clip from a proxy, restart the server, it is listed in order with the right timecode. A drop-frame asset's labels use `;` and skip labels that do not exist.
@@ -239,7 +272,7 @@ No record of exports is kept in slice 4 (the server logs the span IDs and sha256
 ## Not verified (this work)
 
 - Nothing was run. The only executable check is the accessibility scan of the mockup (`docs/mockups/shot-spans.html`): axe-core 4.x in Chrome, run on all four mockup tabs at 1280 and 768 px, rules `wcag2a, wcag2aa, wcag21a, wcag21aa, wcag22aa, best-practice`: 0 violations. axe also reports "needs review" items it cannot decide (glyph characters outside the BMP, buttons whose visible text is a symbol, a table scrolled sideways at 768); I computed the contrast of every text and background pair by hand and all are above 4.5:1 (lowest 5.0). A screen reader and a keyboard-only pass were not done. The mockup tabs implement arrow-key tab switching; nothing else in it is interactive.
-- The xmeml and EDL structure is from memory of the formats. No file was written or imported.
+- The xmeml and EDL structure is from memory of the formats. Slice 6 wrote real files and read them back with OpenTimelineIO (see the manual import check), but no file has been imported into Premiere or Resolve. Elements whose exact form I could not verify offline: `comments/mastercomment1..2` and `logginginfo/description` on a clipitem, `link/groupindex` on audio links, `masterclipid`, the placement of `pixelaspectratio`, the `file://localhost//server/share` form for a UNC path, whether a sequence with no frame size is accepted, and the XML comment that names skipped spans. There is no DTD on this machine to validate against.
 - No ffmpeg scene detection was run, so the threshold, the min-frames guard and the claim that it finds cuts within a frame are untested.
 - That the proxy keeps the hi-res's frame count and start timecode is assumed and guarded, not checked.
 - The `/media` gap and the `operator_state` span flooding come from reading code, not from running the server.
@@ -271,6 +304,6 @@ Small PRs, each shippable on its own, each with tests. The mockup is approved be
 3. **Detection job.** `shots` handler, `shot_run`, thumbnails at the end of the job, split and merge. Begins with a measurement of threshold on real footage; the default and the claim in this spec are set from it. Tests: known-cut clips at 25 and 29.97 DF.
 4. **Library screen: shot list and marking.** The shot list, player, marks, selection tray, empty and error states, built on the approved mockup, with the operator-UI test harness fake data. Axe scan on the built page, not only the mockup.
 5. **Transcript marking.** Word cursor, `from_words`, handles, snap. Tests on the server rule and the keyboard path.
-6. **NLE export.** `volt/nle.py` (xmeml and EDL builders), `POST /api/exports/nle`, the export screen, path map setting. Arithmetic tests. Closed only after the manual Premiere import check is recorded.
+6. **NLE export.** `volt/nle.py` (xmeml and EDL builders), `POST /api/exports/nle`, the export screen, path map setting. Arithmetic tests. Backend built (`control/tests/test_nle.py`); the export screen is not. Closed only after the manual Premiere import check is recorded.
 
 Slice 1 is done (see the status line; decisions taken in it are listed in its PR: the kind filter defaults to every kind, so the Publish screen is unchanged; marking is allowed on any asset; `frame_in`/`frame_out` columns with the lazy backfill). Slices 1 to 3 need no UI decision beyond question 9. Slice 6 can start in parallel with 4 and 5 once slice 1 lands, since export takes span IDs. Not in this list: AAF, a second NLE, saved bins, point markers, an NLE-side panel.
