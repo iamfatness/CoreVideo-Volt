@@ -6,7 +6,9 @@ same interface. A backend never sees the database; the caller records `backend.i
 key on the version row so a URL can be re-made (`volt.publish.refresh_url`).
 
 Credentials are never accepted as arguments, never read from volt config and never logged. S3 gets them only
-from boto3's standard provider chain (environment, shared profile, instance or task role).
+from boto3's standard provider chain (environment, shared profile, web identity, container or instance role).
+No key is ever required: with none set, boto3 resolves whatever the host provides. KMS key ids are not secrets
+and may come from VOLT_S3_KMS_KEY_ID.
 
 boto3 is imported inside `S3Backend._make_client` and nowhere else, so a stdlib-only install works until S3
 is actually configured.
@@ -142,6 +144,8 @@ class S3Config:
     url_expires: int = DEFAULT_PRESIGN        # seconds, for presigned GET URLs
     public_url_base: Optional[str] = None     # if set, URLs are base/<prefix><key>: no signing, no expiry
     part_mb: int = 16                         # multipart threshold and part size
+    sse: Optional[str] = None                 # server-side encryption on every put: "aws:kms" or "AES256"
+    kms_key_id: Optional[str] = None          # KMS key id, ARN or alias (with sse="aws:kms"); None = the bucket/AWS default key
 
 
 class S3Backend:
@@ -155,6 +159,12 @@ class S3Backend:
             raise StorageConfigError(f"VOLT_S3_URL_EXPIRES must be 1..{MAX_PRESIGN} seconds")
         if config.part_mb < 5:
             raise StorageConfigError("VOLT_S3_PART_MB must be at least 5 (the S3 minimum part size)")
+        if config.sse not in (None, "aws:kms", "AES256"):
+            raise StorageConfigError("VOLT_S3_SSE must be aws:kms or AES256")
+        if config.kms_key_id and config.sse != "aws:kms":
+            raise StorageConfigError("VOLT_S3_KMS_KEY_ID needs VOLT_S3_SSE=aws:kms")
+        if config.public_url_base and not re.match(r"^https?://[^/\s]+", config.public_url_base):
+            raise StorageConfigError("VOLT_S3_PUBLIC_URL_BASE must be an http(s) URL")
         self.config = config
         prefix = config.prefix.strip("/")
         self.prefix = prefix + "/" if prefix else ""
@@ -217,6 +227,10 @@ class S3Backend:
         try:
             # S3 makes a PUT, or a completed multipart upload, visible all at once, so no temp key and copy.
             extra = {"ContentType": content_type(key), "ChecksumAlgorithm": "SHA256"}
+            if self.config.sse:  # boto3 applies these to a single PUT and to every part of a multipart upload
+                extra["ServerSideEncryption"] = self.config.sse
+                if self.config.kms_key_id:
+                    extra["SSEKMSKeyId"] = self.config.kms_key_id
             kwargs = {"ExtraArgs": extra}
             if TransferConfig is not None:
                 kwargs["Config"] = TransferConfig(multipart_threshold=part, multipart_chunksize=part)
@@ -244,6 +258,10 @@ class S3Backend:
         """Size, then the strongest hash the server returned. Refuses to call an unverifiable upload good."""
         if head.get("ContentLength") != size:
             raise StorageError(f"uploaded size {head.get('ContentLength')} != local size {size}")
+        if self.config.sse and head.get("ServerSideEncryption") != self.config.sse:
+            # asked for encryption and the server did not say it applied it: do not call that stored
+            raise StorageError(f"object is not encrypted as configured (wanted {self.config.sse}, "
+                               f"server reports {head.get('ServerSideEncryption')})")
         multipart = size >= part
         sums = _part_digests(src, part if multipart else max(size, 1))
         remote = head.get("ChecksumSHA256")
@@ -797,6 +815,17 @@ _CRC32C_TABLE = _crc32c_table()
 
 # ---- configuration -------------------------------------------------------------------------------
 
+def _sse(raw) -> Optional[str]:
+    """VOLT_S3_SSE: kms/aws:kms or aes256/s3, case-insensitive; empty or unset = no explicit header."""
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    mapping = {"aws:kms": "aws:kms", "kms": "aws:kms", "aes256": "AES256", "s3": "AES256"}
+    if value not in mapping:
+        raise StorageConfigError("VOLT_S3_SSE must be aws:kms or AES256")
+    return mapping[value]
+
+
 def from_env(env=None, local_root=None) -> Backend:
     """VOLT_STORAGE = local (default) | s3 | azure | gcs. `local_root` is the local backend's directory."""
     env = os.environ if env is None else env
@@ -820,6 +849,8 @@ def from_env(env=None, local_root=None) -> Backend:
             url_expires=number("VOLT_S3_URL_EXPIRES", DEFAULT_PRESIGN),
             public_url_base=env.get("VOLT_S3_PUBLIC_URL_BASE") or None,
             part_mb=number("VOLT_S3_PART_MB", 16),
+            sse=_sse(env.get("VOLT_S3_SSE")),
+            kms_key_id=(env.get("VOLT_S3_KMS_KEY_ID") or "").strip() or None,
         ))
     if kind == "azure":
         return _azure_from_env(env)

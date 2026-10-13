@@ -106,6 +106,8 @@ class Config:
                 "silence_guard": self.asr_silence_guard, "cpu_threads": self.asr_cpu_threads}
     storage: Optional[object] = None          # a storage.Backend; None = VOLT_STORAGE, else local under publish_dir
     storage_scratch: Optional[Path] = None    # where cuts wait for upload (non-local storage)
+    refresh_urls_every: float = 0.0           # seconds between URL refresh passes; 0 = off (opt in)
+    refresh_urls_within: float = 86400.0      # re-sign URLs that expire within this many seconds
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -130,6 +132,8 @@ class Config:
             asr_cpu_threads=int(env.get("VOLT_ASR_CPU_THREADS") or 0),
             asr_idle_release=float(env.get("VOLT_ASR_IDLE_RELEASE") or cls.asr_idle_release),
             storage_scratch=path("VOLT_STORAGE_SCRATCH"),
+            refresh_urls_every=float(env.get("VOLT_REFRESH_URLS_EVERY") or 0),
+            refresh_urls_within=float(env.get("VOLT_REFRESH_URLS_WITHIN") or cls.refresh_urls_within),
         )
 
 
@@ -223,6 +227,34 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
     return {"proxy": proxy, "asr": asr, "publish": publish}
 
 
+def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshReport]:
+    """The periodic URL refresh: one `publish.refresh_expiring` pass over the configured storage.
+
+    The backend is built on first use and kept. Local storage has nothing to refresh. A storage that cannot be
+    built (boto3 missing, bad env) raises StorageError each pass, which the runner logs and carries on from.
+    Two runners may both run this: each version is re-signed by exactly one (compare-and-set on its URL)."""
+    state: dict = {}
+
+    def run(store: Store) -> publish_mod.RefreshReport:
+        if "backend" not in state:
+            state["backend"] = config.storage or storage.from_env(local_root=config.publish_dir)
+        if isinstance(state["backend"], storage.LocalBackend):
+            return publish_mod.RefreshReport()
+        return publish_mod.refresh_expiring(store, state["backend"], int(config.refresh_urls_within))
+
+    return run
+
+
+@dataclass
+class Periodic:
+    """Something the runner does every `every` seconds between jobs (first run at start). `fn(store)` may
+    return a RefreshReport-like result; an exception is logged and the schedule goes on."""
+    name: str
+    every: float
+    fn: Callable[[Store], object]
+    next_at: float = 0.0   # monotonic seconds; 0 = due now
+
+
 # ---- the runner ------------------------------------------------------------------------------------
 
 def _fmt(moment: datetime) -> str:
@@ -243,10 +275,37 @@ class Runner:
     release: Optional[Callable[[], object]] = None  # called once after `idle_release` seconds with no job (unload models)
     idle_release: float = 0.0
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    periodic: list = field(default_factory=list)  # Periodic tasks, run between jobs; none by default
+    mono: Callable[[], float] = time.monotonic
 
     def __post_init__(self):
         self._stop = threading.Event()
         self.failed_terminally = 0
+        self.periodic_failures = 0
+
+    def run_periodic(self, force: bool = False) -> dict[str, object]:
+        """Run every Periodic task that is due (all of them when `force`). Returns {name: result}; a task that
+        raised is logged, counted in `periodic_failures`, and absent from the result. Never raises."""
+        results: dict[str, object] = {}
+        for task in self.periodic:
+            now = self.mono()
+            if not force and now < task.next_at:
+                continue
+            task.next_at = now + max(task.every, 0.001)
+            try:
+                results[task.name] = task.fn(self.store)
+            except Exception as exc:  # noqa: BLE001 - a periodic task must never take the runner down
+                self.store.conn.rollback()
+                self.periodic_failures += 1
+                log.warning("periodic %s failed: %s", task.name, str(exc) or exc.__class__.__name__)
+                continue
+            failed = getattr(results[task.name], "failed", None)
+            if failed:
+                self.periodic_failures += 1
+                log.warning("periodic %s: %d item(s) failed: %s", task.name, len(failed), failed[0])
+            else:
+                log.info("periodic %s: %s", task.name, results[task.name])
+        return results
 
     # -- time
     def _t(self, offset: float = 0.0) -> str:
@@ -365,6 +424,7 @@ class Runner:
     def run_forever(self) -> None:
         idle_since: Optional[float] = None
         while not self._stop.is_set():
+            self.run_periodic()
             if self.drain():
                 idle_since = time.monotonic()
                 continue
@@ -429,6 +489,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--asr-cpu-threads", type=int, default=env.asr_cpu_threads)
     ap.add_argument("--asr-idle-release", type=float, default=env.asr_idle_release,
                     help="seconds idle before the model is unloaded (0 = never)")
+    ap.add_argument("--refresh-urls-every", type=float, default=env.refresh_urls_every,
+                    help="re-sign expiring storage URLs every N seconds (0 = off; or VOLT_REFRESH_URLS_EVERY)")
+    ap.add_argument("--refresh-urls-within", type=float, default=env.refresh_urls_within,
+                    help="refresh URLs expiring within N seconds (default 86400; or VOLT_REFRESH_URLS_WITHIN)")
     ap.add_argument("--lease", type=float, default=DEFAULT_LEASE)
     ap.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
     ap.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF)
@@ -447,13 +511,17 @@ def main(argv: list[str]) -> int:
     runner = Runner(store, default_handlers(config), target=args.db, lease=args.lease,
                     max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll,
                     release=speech.release_engines, idle_release=config.asr_idle_release)
+    config.refresh_urls_every, config.refresh_urls_within = args.refresh_urls_every, args.refresh_urls_within
+    if args.refresh_urls_every > 0:
+        runner.periodic.append(Periodic("refresh-urls", args.refresh_urls_every, refresh_urls_task(config)))
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: runner.stop())
     try:
         if args.once:
             counts = runner.drain()
+            runner.run_periodic(force=True)
             print(" ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no due jobs")
-            return 1 if runner.failed_terminally else 0
+            return 1 if runner.failed_terminally or runner.periodic_failures else 0
         log.info("runner %s started", runner.name)
         runner.run_forever()
         log.info("runner %s stopped", runner.name)
