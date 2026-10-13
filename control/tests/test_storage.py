@@ -269,12 +269,11 @@ class Configuration(unittest.TestCase):
         with self.assertRaises(StorageConfigError):
             storage.from_env({"VOLT_STORAGE": "ftp"})
 
-    def test_azure_and_gcs_are_named_stubs(self):
-        for kind, cls in (("azure", AzureBlobBackend), ("gcs", GcsBackend)):
-            with self.assertRaisesRegex(NotImplementedError, "not implemented"):
+    def test_azure_and_gcs_need_their_own_settings(self):
+        # the backends themselves are covered in test_storage_clouds.py
+        for kind in ("azure", "gcs"):
+            with self.assertRaises(StorageConfigError):
                 storage.from_env({"VOLT_STORAGE": kind})
-            with self.assertRaises(NotImplementedError):
-                cls()
 
     def test_boto3_is_not_imported_until_s3_is_used(self):
         code = ("import sys; from volt import storage, publish, runner;"
