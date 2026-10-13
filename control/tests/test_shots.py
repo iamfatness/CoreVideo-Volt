@@ -305,12 +305,43 @@ class Kinds(Behaviour):
         c = shots.create(self.store, a.id, "clip", "01:00:01:00", "01:00:02:00")
         return s["id"], c["id"]
 
-    def test_default_lists_every_kind_as_before(self):
-        self.seed()
+    def test_default_lists_clips_and_shots_not_words(self):
+        shot_id, clip_id = self.seed()
         rows = operator_state.spans(self.store)
-        self.assertEqual(sorted(r["kind"] for r in rows), ["clip", "shot", "transcript", "transcript"])
-        self.assertEqual(set(rows[0]), {"id", "assetId", "kind", "tcIn", "tcOut", "text", "camera", "blockedBy", "versions"})
-        self.assertEqual(operator_state.spans(self.store), operator_state.spans(self.store, None))
+        self.assertEqual(sorted(r["kind"] for r in rows), ["clip", "shot"])
+        self.assertEqual({r["id"] for r in rows}, {shot_id, clip_id})
+        self.assertEqual(set(rows[0]), {"id", "assetId", "kind", "tcIn", "tcOut", "text", "label", "camera", "blockedBy", "versions"})
+        self.assertEqual(operator_state.spans(self.store), operator_state.spans(self.store, operator_state.PUBLISH_KINDS))
+
+    def test_kinds_none_still_lists_every_kind(self):
+        self.seed()
+        self.assertEqual(sorted(r["kind"] for r in operator_state.spans(self.store, None)),
+                         ["clip", "shot", "transcript", "transcript"])
+
+    def test_a_word_that_is_published_or_on_a_rundown_item_still_shows(self):
+        a = self.asset()
+        library.index_words(self.store, a.id, [("one", "01:00:00:00", "01:00:00:10"), ("two", "01:00:00:10", "01:00:00:20"),
+                                               ("three", "01:00:00:20", "01:00:00:24")])
+        w_pub, w_item, w_other = [r["id"] for r in self.store.conn.execute(
+            "SELECT id FROM span WHERE asset_id = ? ORDER BY tc_in", (a.id,))]
+        self.add_version(a, w_pub)
+        self.assertEqual([r["id"] for r in operator_state.spans(self.store)], [w_pub])
+        self.attach_to_item(w_item)
+        got = operator_state.spans(self.store, include_ids=[w_item])
+        self.assertEqual([r["id"] for r in got], [w_pub, w_item])
+        state = operator_state.build(self.store, None, "s1", {})
+        self.assertEqual({r["id"] for r in state["spans"]}, {w_pub, w_item})   # never the word nothing refers to
+        self.assertNotIn(w_other, {r["id"] for r in state["spans"]})
+
+    def test_a_clip_made_from_words_is_listed_with_its_text(self):
+        a = self.asset(cleared=True)
+        f = shots.facts(self.store, a.id)
+        ids = [self.store.add_span(a.id, "transcript", f.label(f.start + 10 * n), f.label(f.start + 10 * n + 8), text=t,
+                                   origin="transcript", frame_in=f.start + 10 * n, frame_out=f.start + 10 * n + 8)
+               for n, t in enumerate(["hello", "there"])]
+        clip = shots.create_from_words(self.store, a.id, ids[0], ids[1])
+        rows = operator_state.spans(self.store)
+        self.assertEqual([(r["id"], r["kind"], r["text"]) for r in rows], [(clip["id"], "clip", "hello there")])
 
     def test_a_kind_filter_narrows_and_an_empty_one_lists_nothing(self):
         shot_id, clip_id = self.seed()

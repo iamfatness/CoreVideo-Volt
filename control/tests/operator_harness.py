@@ -145,7 +145,7 @@ def seed_library(store: Store, media_dir: Path) -> dict:
 def seed_export(store: Store, media_dir: Path, ids: dict) -> dict:
     """Extra assets for the Library's export tab, on top of seed_library. Returns {name: asset id}.
 
-    iso-9   closed, cleared, LEGAL HOLD, proxy, one shot       -> blocked: legal hold
+    iso-9   closed, cleared, LEGAL HOLD, proxy, one shot       -> exports (ready, legalHold); publish and air stay blocked
     iso-10  closed, cleared, proxy, hi-res is an s3:// key      -> hi-res: not_local; proxy exports
     iso-11  closed, cleared, 29.97 drop-frame, proxy, one shot  -> with a 25 fps span: mixed_rates
     iso-7 (from seed_library, still recording) gets one clip    -> hi-res: essence_open; proxy: no_proxy

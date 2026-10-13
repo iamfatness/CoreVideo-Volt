@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tests.operator_harness import seed
 from tests.test_operator_api import TOKEN, Api
-from volt import serve, timecode
+from volt import serve, shots, timecode
 
 SESSION = Path(serve.ROOT) / "operator"
 FILES = {name: (SESSION / name).read_text(encoding="utf-8") for name in ("index.html", "operator.css", "operator.js")}
@@ -376,11 +376,13 @@ class ExportScenario(Api):
         self.assertEqual((s, p["filename"]), (200, "Final_Four_Watch_selects.xml"))
         self.assertIn("<xmeml", p["content"])
 
-    def test_rights_are_verdicts_in_a_dry_run_and_a_refusal_in_a_real_one(self):
+    def test_legal_hold_exports_not_cleared_does_not(self):
         ok, hold, nc = self.span("iso-4", "Bench reaction"), self.span("iso-9", "Post-game handshake"), self.span("iso-6", "Tip")
         s, p = self.dry([ok, hold, nc])
         self.assertEqual(s, 200)
-        self.assertEqual([(v["status"], v.get("blockedBy")) for v in p["spans"]], [("ready", None), ("blocked", "legal hold"), ("blocked", "not cleared")])
+        self.assertEqual([(v["status"], v.get("blockedBy"), v.get("legalHold")) for v in p["spans"]],
+                         [("ready", None, None), ("ready", None, True), ("blocked", "not cleared", None)])
+        self.assertIn("leaves the original source untouched", p["spans"][1]["note"])
         body = {"format": "xmeml", "spans": [ok, hold, nc]}
         e = self.refused(409, "blocked", "/api/exports/nle", body)
         self.assertEqual(len(e["spans"]), 3)
@@ -388,6 +390,8 @@ class ExportScenario(Api):
         self.assertEqual(s, 200)
         self.assertIn("VOLT SKIPPED", p["content"])
         self.assertTrue(any("left out" in w for w in p["warnings"]))
+        s, p = self.post("/api/exports/nle", {"format": "xmeml", "spans": [ok, hold]})      # held alone: a real export
+        self.assertEqual(s, 200, p)
 
     def test_every_other_refusal_has_a_reachable_case(self):
         wide, arch = self.span("iso-4", "Bench reaction"), self.span("iso-10", "Archive wide")
@@ -452,7 +456,15 @@ class State(Api):
     def test_spans_carry_versions_and_blocks(self):
         spans = {s["text"]: s for s in self.state()["spans"]}
         self.assertEqual(spans["open"]["versions"], [])
-        self.assertEqual(spans["buzzer"]["blockedBy"], "not cleared")
+        self.assertNotIn("buzzer", spans)          # a transcript word nothing uses is not on the Publish list
+        self.assertEqual({s["kind"] for s in self.state()["spans"]}, {"transcript"})   # only the words rundown items use
+        iso1 = next(a["id"] for a in self.state()["assets"] if a["camera"] == "iso-1")
+        self.store.add_essence(iso1, role="hi-res", location="media/iso-1.mxf", frame_rate="25",
+                               timecode_start="01:00:00:00", duration_frames=500)
+        clip = shots.create(self.store, iso1, "clip", "01:00:01:00", "01:00:03:00", label="Buzzer beater")
+        row = next(s for s in self.state()["spans"] if s["id"] == clip["id"])
+        self.assertEqual((row["kind"], row["label"], row["blockedBy"]), ("clip", "Buzzer beater", "not cleared"))
+        self.assertEqual(len([s for s in self.state()["spans"] if s["kind"] == "transcript"]), len(spans))
         self.post(f"/api/spans/{self.spans['open']}/publish")
         spans = {s["text"]: s for s in self.state()["spans"]}
         self.assertEqual([v["kind"] for v in spans["open"]["versions"]], ["house", "ott", "social"])
