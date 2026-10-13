@@ -727,7 +727,7 @@
     }
     const q = S.pubFilter.trim().toLowerCase();
     const spans = S.data.spans.filter((s) => {
-      if (q) return ((s.text || '') + ' ' + s.id + ' ' + (s.camera || '')).toLowerCase().includes(q);
+      if (q) return ((s.label || '') + ' ' + (s.text || '') + ' ' + s.id + ' ' + (s.camera || '')).toLowerCase().includes(q);
       return used.has(s.id) || s.versions.length > 0;
     });
     return { spans: spans.slice(0, 60), used, more: Math.max(0, spans.length - 60) };
@@ -737,10 +737,10 @@
     const info = publishList();
     paint('publish', [info.spans, info.more, [...S.pending], S.pubFilter, [...info.used]], () => {
       const head = el('div', { class: 'panel' }, el('div', { class: 'form-row' },
-        el('div', {}, el('label', { for: 'pub-filter', text: 'Find a clip by word' }),
+        el('div', {}, el('label', { for: 'pub-filter', text: 'Find a clip or shot by name or words' }),
           el('input', { id: 'pub-filter', type: 'text', value: S.pubFilter, 'data-fk': 'pub-filter', autocomplete: 'off',
             oninput: (e) => { S.pubFilter = e.target.value; renderPublish(); } })),
-        el('span', { class: 'hint', text: S.pubFilter ? 'Showing matches from every clip.' : 'Showing clips in this rundown and clips already published.' })));
+        el('span', { class: 'hint', text: S.pubFilter ? 'Showing matching clips and shots.' : 'Showing clips and shots in this rundown and those already published. To publish a passage of speech, mark it as a clip in the Library.' })));
       const rows = info.spans.map((s) => {
         const key = 'publish:' + s.id;
         const running = S.pending.has(key);
@@ -748,7 +748,7 @@
         const anyFail = s.versions.some((v) => v.status === 'failed');
         const label = anyFail ? 'PUBLISH AGAIN' : done === 3 ? 'Publish again' : 'PUBLISH';
         return el('tr', {},
-          el('td', {}, el('strong', { text: s.text || short(s.id) }), el('div', { class: 'muted mono', text: s.tcIn + ' to ' + s.tcOut + (s.camera ? ' · ' + s.camera : '') })),
+          el('td', {}, el('strong', { text: s.label || s.text || short(s.id) }), el('div', { class: 'muted mono', text: (s.kind === 'shot' ? 'shot · ' : '') + s.tcIn + ' to ' + s.tcOut + (s.camera ? ' · ' + s.camera : '') })),
           el('td', {}, el('div', { class: 'vers' }, KINDS.map((k) => {
             const v = s.versions.find((x) => x.kind === k);
             const url = v && v.url;
@@ -760,14 +760,14 @@
             s.blockedBy ? el('div', { class: 'no' }, '✕ Blocked: ' + s.blockedBy, ' ', el('a', { href: '#rights', text: 'Fix on Rights' })) : null,
             btn(running ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' RENDERING…'] : label,
               { key, cls: s.blockedBy ? 'ghost' : '', disabled: !!s.blockedBy,
-                aria: (running ? 'Rendering' : label) + ' ' + (s.text || short(s.id)),
+                aria: (running ? 'Rendering' : label) + ' ' + (s.label || s.text || short(s.id)),
                 onclick: () => act('publish', s.id, {}, { key, span: s.id, okTitle: 'Published.', ok: (d) => d.versions.length + ' versions done.' }) })));
       });
       return [head, el('section', { class: 'panel', 'aria-labelledby': 'h-clips' }, el('h2', { id: 'h-clips', text: 'Clips' }),
         rows.length ? el('div', { class: 'tblwrap' }, el('table', {},
           el('caption', { class: 'vh', text: 'Clips and their published versions' }),
           el('thead', {}, el('tr', {}, ['Clip', 'Versions', 'Action'].map((h) => el('th', { scope: 'col', text: h })))),
-          el('tbody', {}, rows))) : el('p', { class: 'empty', text: S.pubFilter ? 'No clip matches.' : 'No clips in this rundown yet.' }),
+          el('tbody', {}, rows))) : el('p', { class: 'empty', text: S.pubFilter ? 'No clip or shot matches.' : 'No clips or shots in this rundown yet. Mark one in the Library, or attach one to a rundown item.' }),
         info.more ? el('p', { class: 'note', text: info.more + ' more. Type to narrow the list.' }) : null)];
     });
   }
@@ -2154,7 +2154,7 @@
 
   // Plain words for each refusal: [headline, what to do]. The server's own reason is always shown under it, with the code.
   const XWHY = {
-    blocked: ['Some spans are blocked by rights.', 'Clear the asset on the Rights screen, or leave the blocked spans out of the file.'],
+    blocked: ['Some spans are not cleared.', 'Clear the asset on the Rights screen, or leave the blocked spans out of the file. A legal hold does not block an export.'],
     essence_open: ['A file is still being written.', 'The hi-res (or proxy) of one asset has not been wrapped. Wait for wrap, or export the proxy.'],
     not_local: ['The media is not a file an editor can open.', 'It is stored as an object-store key or a relative path. Export the proxy, or restore the file to disk.'],
     no_proxy: ['One asset has no proxy.', 'Pick Hi-res, or wait for the proxy job.'],
@@ -2320,8 +2320,14 @@
           el('span', { class: 'why', text: [...new Set(names)].join('. ') + '. Clear it on the Rights screen, or leave blocked spans out.' }),
           el('span', { class: 'sub', text: 'code: blocked' }))));
       }
-      if (d.warnings && d.warnings.length) {
-        out.push(el('div', { class: 'info', id: 'lib-x-warn' }, el('strong', { text: 'Warnings from the server' }), el('ul', { class: 'plain' }, d.warnings.map((t) => el('li', { text: t })))));
+      const held = d.spans.filter((s) => s.status === 'ready' && s.legalHold);
+      if (held.length) {
+        out.push(el('div', { class: 'info', id: 'lib-x-hold' }, el('strong', { text: held.length + ' of ' + d.spans.length + ' spans are on legal hold, and can still be exported.' }),
+          el('span', { class: 'why', text: ' An export leaves the original source untouched, so it is allowed. Publish and air stay blocked for these spans until the hold is lifted on the Rights screen.' })));
+      }
+      const warns = (d.warnings || []).filter((t) => !/on legal hold:/.test(t));
+      if (warns.length) {
+        out.push(el('div', { class: 'info', id: 'lib-x-warn' }, el('strong', { text: 'Warnings from the server' }), el('ul', { class: 'plain' }, warns.map((t) => el('li', { text: t })))));
       }
     }
     return out;
@@ -2339,7 +2345,8 @@
       const p = parseRate(e.rate);
       let cell;
       if (v) {
-        cell = v.status === 'ready' ? el('td', { class: 'verd ok' }, el('span', { 'aria-hidden': 'true', text: '✓ ' }), 'Ready')
+        cell = v.status === 'ready' ? el('td', { class: 'verd ok' }, el('span', { 'aria-hidden': 'true', text: '✓ ' }), v.legalHold ? 'Ready, legal hold' : 'Ready',
+          v.legalHold ? el('small', { class: 'muted', text: ' export allowed; publish and air blocked' }) : null)
           : el('td', { class: 'verd no' }, el('span', { 'aria-hidden': 'true', text: '✕ ' }), v.blockedBy ? v.blockedBy.charAt(0).toUpperCase() + v.blockedBy.slice(1) : 'Blocked');
       } else if (X.err && !X.err.run) cell = el('td', { class: 'verd', text: 'Not checked' });
       else cell = el('td', { class: 'verd', text: X.load === 'loading' ? 'Checking…' : '—' });

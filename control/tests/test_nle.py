@@ -489,25 +489,52 @@ class Export(Behaviour):
         self.assertEqual([(tx(c, "in"), tx(c, "start")) for c in video_clips(root)], [("25", "0"), ("0", "50"), ("25", "75")])
         self.assertEqual(p["durationFrames"], 125)
 
-    def test_not_cleared_and_legal_hold_block(self):
+    def test_not_cleared_blocks_but_legal_hold_does_not(self):
         ok = self.asset()
         nc = self.asset(cleared=False)
         lh = self.asset(hold=True)
         s_ok, s_nc, s_lh = (self.span(x, "01:00:00:00", "01:00:01:00") for x in (ok, nc, lh))
         p = self.refused(409, "blocked", self.body([s_ok, s_nc, s_lh]))
         self.assertEqual([(x["id"], x["status"], x.get("blockedBy")) for x in p["spans"]],
-                         [(s_ok, "ready", None), (s_nc, "blocked", "not cleared"), (s_lh, "blocked", "legal hold")])
+                         [(s_ok, "ready", None), (s_nc, "blocked", "not cleared"), (s_lh, "ready", None)])
         self.assertEqual(self.logged, [])
-        # skip_blocked leaves them out, names them in the file and in warnings
+        # skip_blocked leaves the not-cleared span out, names it in the file and in warnings; the held one stays in
         s, p = self.post(self.body([s_ok, s_nc, s_lh], skip_blocked=True))
         self.assertEqual(s, 200, p)
-        self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 1)
+        self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 2)
         self.assertIn(f"VOLT SKIPPED", p["content"])
         self.assertIn(s_nc, p["content"])
         self.assertTrue(any("left out" in w for w in p["warnings"]))
         # every span blocked: nothing to export, still 409 blocked
-        p = self.refused(409, "blocked", self.body([s_nc, s_lh], skip_blocked=True))
-        self.assertEqual([x["status"] for x in p["spans"]], ["blocked", "blocked"])
+        p = self.refused(409, "blocked", self.body([s_nc], skip_blocked=True))
+        self.assertEqual([x["status"] for x in p["spans"]], ["blocked"])
+
+    def test_a_legal_hold_asset_exports_and_says_why_it_is_allowed(self):
+        lh = self.asset(hold=True)
+        sid = self.span(lh, "01:00:00:00", "01:00:01:00")
+        s, p = self.post(self.body([sid]))
+        self.assertEqual(s, 200, p)
+        self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 1)
+        v = p["spans"][0]
+        self.assertEqual((v["status"], v["legalHold"]), ("ready", True))
+        self.assertIn("leaves the original source untouched", v["note"])
+        self.assertIn("publish and air stay blocked", v["note"])
+        self.assertTrue(any("legal hold" in w and "untouched" in w for w in p["warnings"]))
+        s, d = self.post(self.body([sid], dry_run=True))
+        self.assertEqual((s, d["spans"][0]["status"], d["spans"][0]["legalHold"]), (200, "ready", True))
+        self.assertTrue(d["preview"])
+        self.assertEqual(len(self.logged), 1)                       # the real run logged, the dry run did not
+
+    def test_a_held_asset_that_is_also_not_cleared_is_still_refused_as_not_cleared(self):
+        a = self.asset(cleared=False, hold=True)
+        p = self.refused(409, "blocked", self.body([self.span(a, "01:00:00:00", "01:00:01:00")]))
+        self.assertEqual((p["spans"][0]["status"], p["spans"][0]["blockedBy"]), ("blocked", "not cleared"))
+
+    def test_hold_still_blocks_publish_and_air(self):
+        lh = self.asset(hold=True)
+        from volt.store import NotClearedError
+        with self.assertRaises(NotClearedError):
+            self.store.assert_publishable(lh.id)
 
     def test_dry_run_gives_verdicts_and_preview_but_no_file(self):
         ok, nc = self.asset(), self.asset(cleared=False)

@@ -40,4 +40,4 @@ Same objects on SQLite (default) and Postgres. Timestamps are ISO-8601 UTC text 
 
 ## Rights
 
-Every asset has an owner, a retention class, and a legal hold flag on day one. Publish refuses a span that is not cleared. Deletion is a job, not a filesystem rm.
+Every asset has an owner, a retention class, and a legal hold flag on day one. Publish refuses a span that is not cleared or whose asset is on legal hold; so does air. A legal hold does not stop marking, detection or an NLE export, because the export leaves the original source untouched. Deletion is a job, not a filesystem rm.

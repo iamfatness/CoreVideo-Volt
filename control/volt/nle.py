@@ -35,7 +35,6 @@ from typing import Optional
 from urllib.parse import quote
 
 from volt import shots, timecode
-from volt.operator_state import _blocked_by
 from volt.store import Store
 
 MAX_SPANS = 500
@@ -507,6 +506,10 @@ def parse_request(body: dict) -> dict:
             "dry_run": _typed(body, "dry_run", bool, False), "skip_blocked": _typed(body, "skip_blocked", bool, False)}
 
 
+HOLD_NOTE = ("on legal hold: an export is allowed because it leaves the original source untouched; "
+             "publish and air stay blocked")
+
+
 def _lookup(store: Store, span_id: str):
     row = store.conn.execute(
         "SELECT s.id, s.asset_id, s.kind, s.label, s.text, s.tc_in, s.tc_out, s.frame_in, s.frame_out, "
@@ -530,13 +533,17 @@ def resolve(store: Store, spans: list) -> tuple:
     statuses, ready = [], []
     for sid in spans:
         row = rows.get(sid) or rows.setdefault(sid, _lookup(store, sid))
-        why = _blocked_by(bool(row["cleared"]), bool(row["legal_hold"]))
-        if why:
-            statuses.append({"id": sid, "status": "blocked", "blockedBy": why,
-                             "reason": f"the asset is {why}; export is refused for it"})
-        else:
-            statuses.append({"id": sid, "status": "ready"})
-            ready.append(row)
+        if not row["cleared"]:
+            # Not cleared still refuses; the owner has not ruled on it. (Owner ruling: legal hold does not.)
+            statuses.append({"id": sid, "status": "blocked", "blockedBy": "not cleared",
+                             "reason": "the asset is not cleared; export is refused for it"})
+            continue
+        status = {"id": sid, "status": "ready"}
+        if row["legal_hold"]:
+            status["legalHold"] = True
+            status["note"] = HOLD_NOTE
+        statuses.append(status)
+        ready.append(row)
     return statuses, ready
 
 
@@ -604,6 +611,9 @@ def export(store: Store, body: dict, path_map: Optional[str] = None) -> dict:
     warnings = []
     if blocked:
         warnings.append(f"{len(blocked)} blocked span(s) " + ("were left out" if req["skip_blocked"] else "would block"))
+    held = sum(1 for r in ready if r["legal_hold"])
+    if held:
+        warnings.append(f"{held} span(s) are on legal hold: " + HOLD_NOTE.split(": ", 1)[1])
     if not ready:
         if req["dry_run"]:
             return {"ok": True, "dryRun": True, "format": req["format"], "spans": statuses, "warnings": warnings,

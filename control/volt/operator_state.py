@@ -55,24 +55,46 @@ def assets(store: Store) -> list[dict]:
     return out
 
 
-def spans(store: Store, kinds: Optional[Sequence[str]] = None) -> list[dict]:
-    """Up to SPAN_LIMIT spans, ordered by tc_in. `kinds=None` (the default) lists every kind, exactly as before;
-    which kinds the Publish screen should list is the owner's call (spec open question 9), not made here.
-    A kind list narrows to those kinds; an empty list lists nothing."""
-    where, params = "", []
-    if kinds is not None:
-        kinds = list(kinds)
-        if not kinds:
-            return []
-        where = f"WHERE s.kind IN ({', '.join('?' for _ in kinds)})"
-        params = kinds
-    rows = store.conn.execute(
-        f"""SELECT s.id, s.asset_id, s.kind, s.tc_in, s.tc_out, s.text, a.cleared, a.legal_hold, a.camera
+PUBLISH_KINDS = ("clip", "shot")
+_EXTRA_LIMIT = 500
+
+
+def _span_rows(store: Store, where: str, params: Sequence, limit: int) -> list:
+    return store.conn.execute(
+        f"""SELECT s.id, s.asset_id, s.kind, s.tc_in, s.tc_out, s.text, s.label, a.cleared, a.legal_hold, a.camera
            FROM span s JOIN asset a ON a.id = s.asset_id
            {where}
            ORDER BY s.tc_in, s.id LIMIT ?""",
-        (*params, SPAN_LIMIT),
+        (*params, limit),
     ).fetchall()
+
+
+def spans(store: Store, kinds: Optional[Sequence[str]] = PUBLISH_KINDS, include_ids: Sequence[str] = ()) -> list[dict]:
+    """Up to SPAN_LIMIT spans of the given kinds, ordered by tc_in. The default is the editorial spans (clips and
+    shots): Publish lists selects, not transcript words (spec open question 9, owner ruling). `kinds=None` lists
+    every kind; an empty list lists nothing. `include_ids` and every span that already has a published version are
+    added whatever their kind, so a word-span that was attached to a rundown item or published earlier does not
+    vanish from the screen that publishes it. Words stay searchable through library.search and the Library transcript."""
+    if kinds is not None:
+        kinds = list(kinds)
+    rows = []
+    if kinds is None:
+        rows = _span_rows(store, "", (), SPAN_LIMIT)
+    elif kinds:
+        rows = _span_rows(store, f"WHERE s.kind IN ({', '.join('?' for _ in kinds)})", kinds, SPAN_LIMIT)
+    if kinds is not None:
+        have = {r["id"] for r in rows}
+        ids = [i for i in dict.fromkeys(include_ids) if i not in have][:_EXTRA_LIMIT]
+        extra = []
+        if ids:
+            extra = _span_rows(store, f"WHERE s.id IN ({', '.join('?' for _ in ids)})", ids, _EXTRA_LIMIT)
+        extra += _span_rows(store, "WHERE s.id IN (SELECT span_id FROM version)", (), _EXTRA_LIMIT)
+        for r in extra:
+            if r["id"] not in have:
+                have.add(r["id"])
+                rows.append(r)
+        if extra:
+            rows.sort(key=lambda r: (r["tc_in"], r["id"]))
     versions: dict[str, list[dict]] = {}
     for v in store.conn.execute(
         "SELECT id, span_id, kind, status, url FROM version ORDER BY span_id, kind"
@@ -81,10 +103,15 @@ def spans(store: Store, kinds: Optional[Sequence[str]] = None) -> list[dict]:
             {"id": v["id"], "kind": v["kind"], "status": v["status"], "url": v["url"]})
     return [{
         "id": r["id"], "assetId": r["asset_id"], "kind": r["kind"], "tcIn": r["tc_in"],
-        "tcOut": r["tc_out"], "text": r["text"], "camera": r["camera"],
+        "tcOut": r["tc_out"], "text": r["text"], "label": r["label"], "camera": r["camera"],
         "blockedBy": _blocked_by(bool(r["cleared"]), bool(r["legal_hold"])),
         "versions": versions.get(r["id"], []),
     } for r in rows]
+
+
+def _item_span_ids(store: Store, show_id: str) -> list[str]:
+    return [r["span_id"] for r in store.conn.execute(
+        "SELECT span_id FROM item WHERE show_id = ? AND span_id IS NOT NULL", (show_id,))]
 
 
 def item_cues(store: Store, show_id: str) -> dict[str, list[dict]]:
@@ -142,6 +169,6 @@ def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: d
         "cues": {} if show_id is None else item_cues(store, show_id),
         "media": {} if show_id is None else item_media(store, show_id),
         "assets": assets(store),
-        "spans": spans(store),
+        "spans": spans(store, include_ids=[] if show_id is None else _item_span_ids(store, show_id)),
         "room": room,
     }
