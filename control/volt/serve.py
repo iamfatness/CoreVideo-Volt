@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import media, operator_state, shots
+from volt import media, nle, operator_state, shots
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
@@ -413,6 +413,14 @@ def act_span_delete(store, span_id, body):
     return {"ok": True, "deleted": span_id}
 
 
+def act_export_nle(store, _unused, body):
+    """Stateless: builds the file from the span IDs sent and returns it. Writes nothing."""
+    try:
+        return nle.export(store, body, os.environ.get("VOLT_EXPORT_PATH_MAP"))
+    except nle.NleError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
+
+
 # Reads on an asset and on a span, served by do_GET. IDs are path segments, never file names.
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
@@ -435,6 +443,7 @@ ROUTES = [
     (re.compile(rf"^/api/spans/{_ID}/trim$"), act_span_trim),
     (re.compile(rf"^/api/spans/{_ID}/label$"), act_span_label),
     (re.compile(rf"^/api/spans/{_ID}/delete$"), act_span_delete),
+    (re.compile(r"^/api/exports/nle$()"), act_export_nle),
 ]
 
 
