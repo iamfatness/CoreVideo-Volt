@@ -33,7 +33,7 @@ Run live 2026-10-13 against CoreVideo Pro on `127.0.0.1:8011` (`bench/live_recor
 
 Lower third, live: `graphics.lowerThird.set [true]` was accepted; `GET /state` `lowerThirdOnAir` went true as the phase moved `building-in` to `on-air`, and false after `[false]` through `building-out`.
 
-Not run: `stream.start`. This core's saved stream destination was a platform RTMP endpoint, so starting it would have gone live; the stream cue stays unproven until it can be pointed at a local SRT listener (close the app, edit `production-output-preferences.json`, restore it after). Not run through the cue dispatcher either: record and lower third were driven by `live.py` and direct `/invoke` calls, not by armed cues on a rundown item. The `outputSenders` snapshot key was not exercised, and `recording` is absent from the snapshot until the first session, so `observe()` reads `unknown` before it.
+Not run: `stream.start`. This core's saved stream destination was a platform RTMP endpoint, so starting it would have gone live; the stream cue stays unproven until it can be pointed at a local SRT listener (close the app, edit `production-output-preferences.json`, restore it after). Record and lower third have since been run through the cue dispatcher (below). The `outputSenders` snapshot key was not exercised, and `recording` is absent from the snapshot until the first session, so `observe()` reads `unknown` before it.
 
 ## Cue dispatch
 
@@ -49,3 +49,8 @@ Not run: `stream.start`. This core's saved stream destination was a platform RTM
 `record.arm`, `audio.snapshot` and every other room are reported `unsupported` and stay armed. Each needs a control action and a piece of evidence that are known before it gets a handler. Same status as above: wire shapes come from source and have not run against a live core.
 
 `show-input.take` reads Program through `CoreVideoProRoom.program_observed()` (`GET /snapshot`, `programFrame`). `input.assign` alone does not put anything on Program, and no control action routes a slot into a scene yet ([CoreVideoPro #861](https://github.com/iamfatness/CoreVideoPro/issues/861)), so the steps before `transport.take` are configuration. Rules, failure details and the list of unproven live assumptions are in [cues](specs/cues.md#show-inputtake).
+
+### Live run through the dispatcher (2026-10-13)
+
+`control/bench/live_cue_check.py` takes three rundown items against a real core (engine on, throwaway database, no stream). Take 1 (`record.start` then `overlay.take on`) fired both cues; the core showed producing/healthy and `lowerThirdOnAir` true. Take 2 (`overlay.take off`) fired and the core showed it off. Take 3 (`record.arm`, no adapter) came back `unsupported`, the rundown rewound to item 2 and the cue stayed armed. The recording was then wrapped and its sha256 matched the file on disk. One run, one rig, 1080p60 H.264. Still not run: `stream.start` and the `outputSenders` key.
+
