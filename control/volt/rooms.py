@@ -152,7 +152,13 @@ class CoreVideoProRoom:
     def senders_observed(self) -> list[Observation]:
         env = self._request("GET", "/snapshot")
         stale = bool(env.get("stale")) or not env.get("available")
-        senders = ((env.get("snapshot") or {}).get("outputSenders") or {}).get("senders") or []
+        snap = env.get("snapshot") or {}
+        # A live core publishes senders under outputSenderSession (seen running, 2026-10-16). outputSenders is the
+        # key the source read like it would use; it was never seen on a running core. Prefer the real one.
+        block = snap.get("outputSenderSession")
+        if not isinstance(block, dict):
+            block = snap.get("outputSenders")
+        senders = (block or {}).get("senders") or []
         out = []
         for sender in senders:
             life = sender.get("lifecycle")

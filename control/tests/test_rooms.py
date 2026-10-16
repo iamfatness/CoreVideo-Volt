@@ -104,6 +104,7 @@ class _Core(BaseHTTPRequestHandler):
         pass
 
     state = {"lowerThirdOnAir": True, "streaming": False}
+    sender_key = "outputSenderSession"
     senders = [{"lifecycle": {"sessionId": "x1", "desiredActive": True, "state": "producing",
                               "health": "healthy", "finalized": False}}]
 
@@ -113,7 +114,7 @@ class _Core(BaseHTTPRequestHandler):
         else:
             payload = {"available": True, "stale": False, "ageMs": 5,
                        "snapshot": {"recording": self.recording,
-                                    "outputSenders": {"senders": _Core.senders}}}
+                                    _Core.sender_key: {"senders": _Core.senders}}}
         body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -166,6 +167,13 @@ class CoreVideoProWire(unittest.TestCase):
         room = CoreVideoProRoom(self.base)
         self.assertTrue(room.state()["lowerThirdOnAir"])
         self.assertEqual([o.state for o in room.senders_observed()], ["producing"])
+
+    def test_senders_also_read_from_the_older_key(self):
+        _Core.sender_key = "outputSenders"
+        try:
+            self.assertEqual([o.state for o in CoreVideoProRoom(self.base).senders_observed()], ["producing"])
+        finally:
+            _Core.sender_key = "outputSenderSession"
 
     def test_unreachable_core_raises(self):
         with self.assertRaises(LiveError):

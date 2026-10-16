@@ -17,7 +17,7 @@ Ordered. Each piece lists what done means.
 The wire shapes come from CoreVideoPro source, not from a running core.
 
 - Run record start, observe, stop, wrap against `127.0.0.1:8011`. Then stream start to a local SRT sink, and the lower third.
-- Check the `/invoke` args format (`[true]` is assumed), the `outputSenders` snapshot key, `lowerThirdOnAir` casing, and the artifact path on a finished recording.
+- Check the `/invoke` args format (`[true]` is assumed), the sender snapshot key (it is `outputSenderSession`, see rooms.md), `lowerThirdOnAir` casing, and the artifact path on a finished recording.
 - Needs the owner to approve launching a core. CoreVideoPro's notes authorize control-API tests in the designated test meeting.
 - Done when: a recorded clip is minted, finalized, wrapped and checksummed on disk, and the notes in `docs/rooms.md` say "run live" with the date.
 
