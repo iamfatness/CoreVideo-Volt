@@ -304,8 +304,7 @@ def _file(parent, src: Source, file_id: str, first_use: bool):
     return f
 
 
-def build_xmeml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None,
-                skipped: Optional[list] = None) -> Built:
+def build_xmeml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None) -> Built:
     p = plan(items, start_tc)
     warnings = []
     n_audio = max((i.source.channels or 0) for i in items)
@@ -316,8 +315,6 @@ def build_xmeml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] =
     n = len(items)
 
     root = ET.Element("xmeml", version="4")
-    for line in skipped or []:
-        root.append(ET.Comment(" " + clean(line).replace("--", "- -") + " "))
     seq = _el(root, "sequence", id="sequence-1")
     _el(seq, "name", clean(name, 200))
     _el(seq, "duration", p.duration)
@@ -425,8 +422,7 @@ def reel_names(items: list) -> dict:
     return out
 
 
-def build_edl(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None,
-              skipped: Optional[list] = None) -> Built:
+def build_edl(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None) -> Built:
     p = plan(items, start_tc)
     warnings = []
     reels = reel_names(items)
@@ -436,8 +432,6 @@ def build_edl(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = N
     if any((i.source.channels or 0) > 2 for i in items):
         warnings.append("an EDL audio event carries channels 1 and 2 only; further channels are not in the EDL")
     lines = [f"TITLE: {clean(name, 200)}", f"FCM: {'DROP FRAME' if p.drop else 'NON-DROP FRAME'}"]
-    for s in skipped or []:
-        lines.append(f"* {clean(s)}")
     lines.append("")
     event = 0
 
@@ -458,12 +452,11 @@ def build_edl(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = N
     return Built(content, "text/plain", "edl", p.duration, p.rate, p.start_tc, p.drop, warnings)
 
 
-def build(fmt: str, items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None,
-          skipped: Optional[list] = None) -> Built:
+def build(fmt: str, items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None) -> Built:
     if fmt == "xmeml":
-        return build_xmeml(items, name, start_tc, skipped)
+        return build_xmeml(items, name, start_tc)
     if fmt == "edl":
-        return build_edl(items, name, start_tc, skipped)
+        return build_edl(items, name, start_tc)
     raise bad("format must be xmeml or edl")
 
 
@@ -482,6 +475,9 @@ def _typed(body: dict, key: str, kind, default):
 
 
 def parse_request(body: dict) -> dict:
+    # skip_blocked is still ACCEPTED (and must be a bool) but ignored: nothing blocks an export any more, and
+    # rejecting it would 422 clients written against the earlier contract.
+    _typed(body, "skip_blocked", bool, False)
     extra = sorted(set(body) - {"format", "spans", "media", "name", "start_tc", "dry_run", "skip_blocked"})
     if extra:
         raise bad(f"unknown field(s): {', '.join(extra)}")
@@ -503,11 +499,15 @@ def parse_request(body: dict) -> dict:
     if start_tc is not None and (not isinstance(start_tc, str) or len(start_tc) > 20):
         raise bad("start_tc must be a timecode string")
     return {"format": fmt, "spans": spans, "media": media, "name": name, "start_tc": start_tc,
-            "dry_run": _typed(body, "dry_run", bool, False), "skip_blocked": _typed(body, "skip_blocked", bool, False)}
+            "dry_run": _typed(body, "dry_run", bool, False)}
 
 
 HOLD_NOTE = ("on legal hold: an export is allowed because it leaves the original source untouched; "
              "publish and air stay blocked")
+NOT_CLEARED_NOTE = ("not cleared: an export is allowed because it leaves the original source untouched; "
+                    "publish and air stay blocked until it is cleared")
+BOTH_NOTE = ("not cleared and on legal hold: an export is allowed because it leaves the original source "
+             "untouched; publish and air stay blocked until it is cleared and the hold is lifted")
 
 
 def _lookup(store: Store, span_id: str):
@@ -527,20 +527,23 @@ def _essence(store: Store, asset_id: str, role: str):
 
 
 def resolve(store: Store, spans: list) -> tuple:
-    """(statuses, ready rows): one status per requested span in the order sent (a span sent twice is listed
-    twice), and the rows of the spans whose asset may be exported."""
+    """(statuses, rows): one status per requested span in the order sent (a span sent twice is listed twice),
+    and the span rows. Rights never refuse an export (owner ruling): not-cleared and held spans are 'ready'
+    and carry a flag and a note; publish and air gating is elsewhere and unchanged."""
     rows = {}
     statuses, ready = [], []
     for sid in spans:
         row = rows.get(sid) or rows.setdefault(sid, _lookup(store, sid))
-        if not row["cleared"]:
-            # Not cleared still refuses; the owner has not ruled on it. (Owner ruling: legal hold does not.)
-            statuses.append({"id": sid, "status": "blocked", "blockedBy": "not cleared",
-                             "reason": "the asset is not cleared; export is refused for it"})
-            continue
         status = {"id": sid, "status": "ready"}
+        if not row["cleared"]:
+            status["notCleared"] = True
         if row["legal_hold"]:
             status["legalHold"] = True
+        if not row["cleared"] and row["legal_hold"]:
+            status["note"] = BOTH_NOTE
+        elif not row["cleared"]:
+            status["note"] = NOT_CLEARED_NOTE
+        elif row["legal_hold"]:
             status["note"] = HOLD_NOTE
         statuses.append(status)
         ready.append(row)
@@ -605,20 +608,13 @@ def export(store: Store, body: dict, path_map: Optional[str] = None) -> dict:
     req = parse_request(body)
     pairs = parse_path_map(path_map)
     statuses, ready = resolve(store, req["spans"])
-    blocked = [s for s in statuses if s["status"] == "blocked"]
-    if blocked and not req["skip_blocked"] and not req["dry_run"]:
-        raise NleError(409, "blocked", f"{len(blocked)} span(s) are blocked by rights", spans=statuses)
     warnings = []
-    if blocked:
-        warnings.append(f"{len(blocked)} blocked span(s) " + ("were left out" if req["skip_blocked"] else "would block"))
+    uncleared = sum(1 for r in ready if not r["cleared"])
+    if uncleared:
+        warnings.append(f"{uncleared} span(s) are not cleared: " + NOT_CLEARED_NOTE.split(": ", 1)[1])
     held = sum(1 for r in ready if r["legal_hold"])
     if held:
         warnings.append(f"{held} span(s) are on legal hold: " + HOLD_NOTE.split(": ", 1)[1])
-    if not ready:
-        if req["dry_run"]:
-            return {"ok": True, "dryRun": True, "format": req["format"], "spans": statuses, "warnings": warnings,
-                    "preview": [], "durationFrames": 0, "rate": None}
-        raise NleError(409, "blocked", "every span is blocked by rights; nothing to export", spans=statuses)
 
     cache, items = {}, []
     for row in ready:
@@ -633,8 +629,7 @@ def export(store: Store, body: dict, path_map: Optional[str] = None) -> dict:
     if len(rates) > 1:
         raise NleError(422, "mixed_rates", "the selection mixes frame rates: " + ", ".join(sorted(map(str, rates))),
                        rates=sorted(map(str, rates)))
-    skipped = [f"VOLT SKIPPED {s['id']} ({s['blockedBy']})" for s in blocked] if req["skip_blocked"] else []
-    built = build(req["format"], items, req["name"], req["start_tc"], skipped)
+    built = build(req["format"], items, req["name"], req["start_tc"])
     warnings += built.warnings
     resp = {"ok": True, "format": req["format"], "spans": statuses, "warnings": warnings,
             "durationFrames": built.duration_frames, "rate": str(built.rate), "startTc": built.start_tc,
