@@ -75,14 +75,19 @@ def ingest_file(
         (asset.id,),
     ).fetchone()
     if existing_essence is None:
+        rate = shots.probe_frame_rate(dest)  # first: the length is counted on the essence's own rate, not the average
         essence_id = store.add_essence(
             asset.id,
             role="hi-res",
             location=str(dest),
             open_file=False,
             checksum=digest,
-            duration_frames=shots.probe_duration_frames(dest),
+            duration_frames=shots.probe_duration_frames(dest, rate),
+            frame_rate=rate,
+            audio_layout=shots.probe_audio_layout(dest),
         )
+        from volt.record import chain_after_wrap  # record imports this module
+        chain_after_wrap(store, asset.id)  # a closed file gets its proxy and transcript like a wrapped recording
     else:
         essence_id = existing_essence["id"]
     store.complete_job(job.id)

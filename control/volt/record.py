@@ -185,7 +185,7 @@ def wrap(store: Store, asset_id: str, settle: float = 0.25) -> str:
     if path.stat().st_size != size:
         raise RecordError(f"{path.name} is still growing")
     digest = sha256(Path(source["location"]))
-    rate = store.conn.execute("SELECT frame_rate FROM essence WHERE id = ?", (source["id"],)).fetchone()["frame_rate"]
+    rate = shots.record_media_facts(store, source["id"], path)  # the closed file is finally probeable
     store.wrap_essence(source["id"], digest, duration_frames=shots.probe_duration_frames(path, rate or None))
     store.conn.execute(
         "UPDATE essence SET open = FALSE WHERE asset_id = ? AND role = 'proxy'",
