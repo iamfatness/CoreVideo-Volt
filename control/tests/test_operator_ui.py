@@ -376,21 +376,23 @@ class ExportScenario(Api):
         self.assertEqual((s, p["filename"]), (200, "Final_Four_Watch_selects.xml"))
         self.assertIn("<xmeml", p["content"])
 
-    def test_legal_hold_exports_not_cleared_does_not(self):
+    def test_legal_hold_and_not_cleared_both_export(self):
         ok, hold, nc = self.span("iso-4", "Bench reaction"), self.span("iso-9", "Post-game handshake"), self.span("iso-6", "Tip")
-        s, p = self.dry([ok, hold, nc])
+        tip = self.span("iso-11", "Tip-in, 29.97")
+        s, p = self.dry([ok, hold])
         self.assertEqual(s, 200)
-        self.assertEqual([(v["status"], v.get("blockedBy"), v.get("legalHold")) for v in p["spans"]],
-                         [("ready", None, None), ("ready", None, True), ("blocked", "not cleared", None)])
+        self.assertEqual([(v["status"], v.get("notCleared"), v.get("legalHold")) for v in p["spans"]],
+                         [("ready", None, None), ("ready", None, True)])
         self.assertIn("leaves the original source untouched", p["spans"][1]["note"])
-        body = {"format": "xmeml", "spans": [ok, hold, nc]}
-        e = self.refused(409, "blocked", "/api/exports/nle", body)
-        self.assertEqual(len(e["spans"]), 3)
-        s, p = self.post("/api/exports/nle", {**body, "skip_blocked": True})
-        self.assertEqual(s, 200)
-        self.assertIn("VOLT SKIPPED", p["content"])
-        self.assertTrue(any("left out" in w for w in p["warnings"]))
-        s, p = self.post("/api/exports/nle", {"format": "xmeml", "spans": [ok, hold]})      # held alone: a real export
+        s, p = self.dry([nc, tip])                                                          # not cleared, same rate as iso-11
+        self.assertEqual(s, 200, p)
+        self.assertEqual([(v["status"], v.get("notCleared")) for v in p["spans"]], [("ready", True), ("ready", None)])
+        self.assertIn("publish and air stay blocked", p["spans"][0]["note"])
+        self.assertTrue(any("not cleared" in w for w in p["warnings"]))
+        s, p = self.post("/api/exports/nle", {"format": "xmeml", "spans": [nc, tip], "skip_blocked": True})
+        self.assertEqual(s, 200, p)                                                         # accepted, ignored, a real export
+        self.assertNotIn("SKIPPED", p["content"])
+        s, p = self.post("/api/exports/nle", {"format": "xmeml", "spans": [ok, hold]})
         self.assertEqual(s, 200, p)
 
     def test_every_other_refusal_has_a_reachable_case(self):

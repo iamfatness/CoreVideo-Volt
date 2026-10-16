@@ -240,7 +240,7 @@ class Xmeml(unittest.TestCase):
     def test_control_characters_and_double_dash_cannot_break_the_document(self):
         nasty = "bad\x00name\x08 -- end\x1f\r\n\ttab"
         built, root = self.build([item(source(), "01:00:00:00", "01:00:01:00", name=nasty, text=nasty)],
-                                 name=nasty, skipped=["VOLT SKIPPED x -- (legal hold) \x00"])
+                                 name=nasty)
         self.assertNotIn("\x00", built.content)
         self.assertEqual(tx(root, "sequence/name"), "badname -- end tab")
 
@@ -249,11 +249,6 @@ class Xmeml(unittest.TestCase):
         tags = [e.tag for e in video_clips(root)[0]]
         self.assertEqual(tags[:9], ["masterclipid", "name", "enabled", "duration", "rate", "start", "end", "in", "out"])
         self.assertLess(tags.index("file"), tags.index("link"))
-
-    def test_skipped_spans_are_named_in_a_comment(self):
-        built, _ = self.build([item(source(), "01:00:00:00", "01:00:01:00")],
-                              skipped=["VOLT SKIPPED abc (not cleared)"])
-        self.assertIn("<!-- VOLT SKIPPED abc (not cleared) -->", built.content)
 
     def test_mixed_rates_and_empty_refused(self):
         a, b = source(R25, asset="a"), source(R30, asset="b")
@@ -329,10 +324,9 @@ class Edl(unittest.TestCase):
 
     def test_single_line_comments_and_title(self):
         built = nle.build_edl([item(source(), "01:00:00:00", "01:00:01:00", name="two\nlines\r\nhere")],
-                              name="a\nb", skipped=["VOLT SKIPPED z (legal hold)"])
+                              name="a\nb")
         self.assertIn("TITLE: a b", built.content)
         self.assertIn("* FROM CLIP NAME: two lines here", built.content)
-        self.assertIn("* VOLT SKIPPED z (legal hold)", built.content)
 
     def test_mixed_rates_refused(self):
         with self.assertRaises(nle.NleError) as e:
@@ -489,25 +483,33 @@ class Export(Behaviour):
         self.assertEqual([(tx(c, "in"), tx(c, "start")) for c in video_clips(root)], [("25", "0"), ("0", "50"), ("25", "75")])
         self.assertEqual(p["durationFrames"], 125)
 
-    def test_not_cleared_blocks_but_legal_hold_does_not(self):
+    def test_not_cleared_and_held_both_export_with_a_flag_a_note_and_a_warning(self):
         ok = self.asset()
         nc = self.asset(cleared=False)
         lh = self.asset(hold=True)
         s_ok, s_nc, s_lh = (self.span(x, "01:00:00:00", "01:00:01:00") for x in (ok, nc, lh))
-        p = self.refused(409, "blocked", self.body([s_ok, s_nc, s_lh]))
-        self.assertEqual([(x["id"], x["status"], x.get("blockedBy")) for x in p["spans"]],
-                         [(s_ok, "ready", None), (s_nc, "blocked", "not cleared"), (s_lh, "ready", None)])
-        self.assertEqual(self.logged, [])
-        # skip_blocked leaves the not-cleared span out, names it in the file and in warnings; the held one stays in
-        s, p = self.post(self.body([s_ok, s_nc, s_lh], skip_blocked=True))
+        s, p = self.post(self.body([s_ok, s_nc, s_lh]))
         self.assertEqual(s, 200, p)
-        self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 2)
-        self.assertIn(f"VOLT SKIPPED", p["content"])
-        self.assertIn(s_nc, p["content"])
-        self.assertTrue(any("left out" in w for w in p["warnings"]))
-        # every span blocked: nothing to export, still 409 blocked
-        p = self.refused(409, "blocked", self.body([s_nc], skip_blocked=True))
-        self.assertEqual([x["status"] for x in p["spans"]], ["blocked"])
+        self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 3)
+        ok_v, nc_v, lh_v = p["spans"]
+        self.assertEqual(ok_v, {"id": s_ok, "status": "ready"})
+        self.assertEqual((nc_v["status"], nc_v["notCleared"], "legalHold" in nc_v), ("ready", True, False))
+        self.assertEqual(nc_v["note"], nle.NOT_CLEARED_NOTE)
+        self.assertEqual((lh_v["status"], lh_v["legalHold"], "notCleared" in lh_v), ("ready", True, False))
+        self.assertTrue(any("not cleared" in w and "untouched" in w for w in p["warnings"]))
+        self.assertTrue(any("legal hold" in w for w in p["warnings"]))
+        self.assertNotIn("SKIPPED", p["content"])
+        self.assertEqual(len(self.logged), 1)
+
+    def test_skip_blocked_is_accepted_and_ignored(self):
+        nc = self.asset(cleared=False)
+        sid = self.span(nc, "01:00:00:00", "01:00:01:00")
+        for flag in (True, False):
+            s, p = self.post(self.body([sid], skip_blocked=flag))
+            self.assertEqual(s, 200, p)
+            self.assertEqual(len(video_clips(parse_xmeml(p["content"]))), 1)
+        s, p = self.post(self.body([sid], skip_blocked=True, dry_run=True))
+        self.assertEqual((s, p["spans"][0]["status"]), (200, "ready"))
 
     def test_a_legal_hold_asset_exports_and_says_why_it_is_allowed(self):
         lh = self.asset(hold=True)
@@ -525,10 +527,20 @@ class Export(Behaviour):
         self.assertTrue(d["preview"])
         self.assertEqual(len(self.logged), 1)                       # the real run logged, the dry run did not
 
-    def test_a_held_asset_that_is_also_not_cleared_is_still_refused_as_not_cleared(self):
+    def test_a_held_asset_that_is_also_not_cleared_carries_both_flags_and_one_note(self):
         a = self.asset(cleared=False, hold=True)
-        p = self.refused(409, "blocked", self.body([self.span(a, "01:00:00:00", "01:00:01:00")]))
-        self.assertEqual((p["spans"][0]["status"], p["spans"][0]["blockedBy"]), ("blocked", "not cleared"))
+        s, p = self.post(self.body([self.span(a, "01:00:00:00", "01:00:01:00")]))
+        self.assertEqual(s, 200, p)
+        v = p["spans"][0]
+        self.assertEqual((v["status"], v["notCleared"], v["legalHold"], v["note"]), ("ready", True, True, nle.BOTH_NOTE))
+        self.assertEqual(sum(1 for w in p["warnings"] if "not cleared" in w), 1)
+        self.assertEqual(sum(1 for w in p["warnings"] if "legal hold" in w), 1)
+
+    def test_not_cleared_still_blocks_publish_and_air(self):
+        nc = self.asset(cleared=False)
+        from volt.store import NotClearedError
+        with self.assertRaises(NotClearedError):
+            self.store.assert_publishable(nc.id)
 
     def test_hold_still_blocks_publish_and_air(self):
         lh = self.asset(hold=True)
@@ -543,12 +555,12 @@ class Export(Behaviour):
         self.assertEqual(s, 200, p)
         self.assertTrue(p["dryRun"])
         self.assertNotIn("content", p)
-        self.assertEqual([x["status"] for x in p["spans"]], ["ready", "blocked"])
+        self.assertEqual([x["status"] for x in p["spans"]], ["ready", "ready"])
+        self.assertTrue(p["spans"][1]["notCleared"])
+        self.assertTrue(any("not cleared" in w for w in p["warnings"]))
         self.assertEqual(p["preview"][0], '<?xml version="1.0" encoding="UTF-8"?>')
         self.assertLessEqual(len(p["preview"]), nle.PREVIEW_LINES)
         self.assertEqual(self.logged, [])
-        s, p = self.post(self.body([s_nc], dry_run=True))                   # nothing ready: still a verdict
-        self.assertEqual((s, p["preview"], p["spans"][0]["status"]), (200, [], "blocked"))
 
     def test_not_found(self):
         a = self.asset()
@@ -588,11 +600,10 @@ class Export(Behaviour):
                                                         self.span(b, "01:00:00;00", "01:00:01;00")]))
         self.assertEqual(p["rates"], ["25", "30000/1001"])
 
-    def test_blocked_spans_do_not_count_toward_mixed_rates_when_skipped(self):
+    def test_not_cleared_spans_count_toward_mixed_rates(self):
         a, b = self.asset(rate="25"), self.asset(rate="30000/1001", start="01:00:00;00", cleared=False)
-        s, _ = self.post(self.body([self.span(a, "01:00:00:00", "01:00:01:00"),
-                                    self.span(b, "01:00:00;00", "01:00:01;00")], skip_blocked=True))
-        self.assertEqual(s, 200)
+        self.refused(422, "mixed_rates", self.body([self.span(a, "01:00:00:00", "01:00:01:00"),
+                                                    self.span(b, "01:00:00;00", "01:00:01;00")], skip_blocked=True))
 
     def test_span_outside_its_essence_is_refused(self):
         a = self.asset(duration=100)
@@ -659,11 +670,9 @@ class Export(Behaviour):
         self.assertEqual(s, 200)
         # one verdict per span sent, in the order sent, so the page can line them up with its own rows
         self.assertEqual([v["id"] for v in p["spans"]], [s1, s2, s1])
-        self.assertEqual([v["status"] for v in p["spans"]], ["ready", "blocked", "ready"])
-        self.assertEqual(p["spans"][1]["blockedBy"], "not cleared")
+        self.assertEqual([v["status"] for v in p["spans"]], ["ready", "ready", "ready"])
+        self.assertEqual([bool(v.get("notCleared")) for v in p["spans"]], [False, True, False])
         self.assertTrue(p["preview"])
-        e = self.refused(409, "blocked", self.body([s1, s2]))
-        self.assertEqual([v["status"] for v in e["spans"]], ["ready", "blocked"])      # `spans` is top level, not inside `error`
 
     def test_bad_input(self):
         a = self.asset()

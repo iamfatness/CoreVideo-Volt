@@ -149,7 +149,7 @@ def seed_export(store: Store, media_dir: Path, ids: dict) -> dict:
     iso-10  closed, cleared, proxy, hi-res is an s3:// key      -> hi-res: not_local; proxy exports
     iso-11  closed, cleared, 29.97 drop-frame, proxy, one shot  -> with a 25 fps span: mixed_rates
     iso-7 (from seed_library, still recording) gets one clip    -> hi-res: essence_open; proxy: no_proxy
-    iso-6 (29.97, not cleared) and iso-4 (25) together          -> blocked: not cleared; with it left out, the rest is 25 only
+    iso-6 (29.97, not cleared) and iso-4 (25) together          -> exports (ready, notCleared); mixed with 25 fps it is mixed_rates, with iso-11 (29.97) it builds
     The harness also points VOLT_EXPORT_PATH_MAP at a made-up share (see serve_scenario), so paths are rewritten.
     """
     out = {}

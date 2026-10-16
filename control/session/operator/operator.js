@@ -2146,15 +2146,14 @@
   const XPORT = { MAX: 500, DEBOUNCE: 250, PREVIEW: 20, DEFAULT_TC: '01:00:00:00' };
   // Flip to true only when the manual import check in docs/specs/shot-spans.md has a recorded result.
   const FORMAT_VERIFIED = false;
-  const X = { format: 'xmeml', media: 'hi-res', name: '', nameSet: false, start: XPORT.DEFAULT_TC, skip: false,
+  const X = { format: 'xmeml', media: 'hi-res', name: '', nameSet: false, start: XPORT.DEFAULT_TC,
     dry: null, dryKey: null, err: null, load: 'idle', tok: 0, timer: 0, key: null, run: false, done: null };
-  Object.assign(ERR_LABEL, { blocked: 'Blocked by rights', mixed_rates: 'Mixed frame rates', not_local: 'Media not reachable',
+  Object.assign(ERR_LABEL, { mixed_rates: 'Mixed frame rates', not_local: 'Media not reachable',
     proxy_mismatch: 'Proxy does not match', unsupported_rate: 'Frame rate not supported', bad_path_map: 'Server path map is broken' });
   const TC_SHAPE = /^\d\d:\d\d:\d\d[:;]\d\d$/;
 
   // Plain words for each refusal: [headline, what to do]. The server's own reason is always shown under it, with the code.
   const XWHY = {
-    blocked: ['Some spans are not cleared.', 'Clear the asset on the Rights screen, or leave the blocked spans out of the file. A legal hold does not block an export.'],
     essence_open: ['A file is still being written.', 'The hi-res (or proxy) of one asset has not been wrapped. Wait for wrap, or export the proxy.'],
     not_local: ['The media is not a file an editor can open.', 'It is stored as an object-store key or a relative path. Export the proxy, or restore the file to disk.'],
     no_proxy: ['One asset has no proxy.', 'Pick Hi-res, or wait for the proxy job.'],
@@ -2171,7 +2170,7 @@
   };
 
   function xBody(dry) {
-    const b = { format: X.format, spans: L.sel.map((e) => e.id), media: X.media, name: X.name.trim() || xDefaultName(), dry_run: !!dry, skip_blocked: X.skip };
+    const b = { format: X.format, spans: L.sel.map((e) => e.id), media: X.media, name: X.name.trim() || xDefaultName(), dry_run: !!dry };
     if (X.start.trim()) b.start_tc = X.start.trim();
     return b;
   }
@@ -2285,8 +2284,8 @@
     paint('lib-x-msg', [FORMAT_VERIFIED, X.err && [X.err.code, X.err.reason, X.err.run, X.media, L.sel.map((e) => e.id)], cur && [cur.warnings, cur.spans], L.sel.length > XPORT.MAX, L.sel.map((e) => e.name)], xMessages);
     paint('lib-x-table', [L.sel, cur ? cur.spans : X.load, X.err && X.err.code], xTable);
     paint('lib-x-prev', [X.format, cur && cur.preview, X.load, !!X.err, L.sel.length], xPreview);
-    paint('lib-x-opts', [X.format, X.media, X.skip, cur && [cur.pathMapSet, cur.paths]], xOptions);
-    paint('lib-x-act', [X.format, X.media, X.skip, X.load, X.run, !!X.err, cur && [cur.filename, cur.spans, cur.durationFrames, cur.startTc, cur.dropFrame], xStart(), L.sel.length, X.name, X.start], xAct);
+    paint('lib-x-opts', [X.format, X.media, cur && [cur.pathMapSet, cur.paths]], xOptions);
+    paint('lib-x-act', [X.format, X.media, X.load, X.run, !!X.err, cur && [cur.filename, cur.spans, cur.durationFrames, cur.startTc, cur.dropFrame], xStart(), L.sel.length, X.name, X.start], xAct);
     paint('lib-x-done', [X.done && [X.done.filename, X.done.saved]], xDone);
   }
 
@@ -2312,20 +2311,17 @@
     }
     const d = X.dry && xCurrent() ? X.dry : null;
     if (d) {
-      const blocked = d.spans.filter((s) => s.status === 'blocked');
-      if (blocked.length) {
-        const names = blocked.map((s) => { const t = L.sel[d.spans.indexOf(s)]; return (t ? t.name : short(s.id)) + ' is ' + s.blockedBy; });
-        out.push(el('div', { class: 'banner bad', role: 'alert', id: 'lib-x-blocked' }, el('div', { class: 'msg' },
-          el('strong', { text: blocked.length + ' of ' + d.spans.length + ' spans cannot be exported.' }),
-          el('span', { class: 'why', text: [...new Set(names)].join('. ') + '. Clear it on the Rights screen, or leave blocked spans out.' }),
-          el('span', { class: 'sub', text: 'code: blocked' }))));
+      const unc = d.spans.filter((s) => s.status === 'ready' && s.notCleared);
+      if (unc.length) {
+        out.push(el('div', { class: 'info', id: 'lib-x-uncleared' }, el('strong', { text: unc.length + ' of ' + d.spans.length + ' spans are not cleared, and can still be exported.' }),
+          el('span', { class: 'why', text: ' An export leaves the original source untouched, so it is allowed. Publish and air stay blocked for these spans until they are cleared on the Rights screen.' })));
       }
       const held = d.spans.filter((s) => s.status === 'ready' && s.legalHold);
       if (held.length) {
         out.push(el('div', { class: 'info', id: 'lib-x-hold' }, el('strong', { text: held.length + ' of ' + d.spans.length + ' spans are on legal hold, and can still be exported.' }),
           el('span', { class: 'why', text: ' An export leaves the original source untouched, so it is allowed. Publish and air stay blocked for these spans until the hold is lifted on the Rights screen.' })));
       }
-      const warns = (d.warnings || []).filter((t) => !/on legal hold:/.test(t));
+      const warns = (d.warnings || []).filter((t) => !/on legal hold:|are not cleared:/.test(t));
       if (warns.length) {
         out.push(el('div', { class: 'info', id: 'lib-x-warn' }, el('strong', { text: 'Warnings from the server' }), el('ul', { class: 'plain' }, warns.map((t) => el('li', { text: t })))));
       }
@@ -2345,9 +2341,9 @@
       const p = parseRate(e.rate);
       let cell;
       if (v) {
-        cell = v.status === 'ready' ? el('td', { class: 'verd ok' }, el('span', { 'aria-hidden': 'true', text: '✓ ' }), v.legalHold ? 'Ready, legal hold' : 'Ready',
-          v.legalHold ? el('small', { class: 'muted', text: ' export allowed; publish and air blocked' }) : null)
-          : el('td', { class: 'verd no' }, el('span', { 'aria-hidden': 'true', text: '✕ ' }), v.blockedBy ? v.blockedBy.charAt(0).toUpperCase() + v.blockedBy.slice(1) : 'Blocked');
+        const flags = [v.notCleared ? 'not cleared' : null, v.legalHold ? 'legal hold' : null].filter(Boolean);
+        cell = el('td', { class: 'verd ok' }, el('span', { 'aria-hidden': 'true', text: '✓ ' }), flags.length ? 'Ready, ' + flags.join(' and ') : 'Ready',
+          flags.length ? el('small', { class: 'muted', text: ' export allowed; publish and air blocked' }) : null);
       } else if (X.err && !X.err.run) cell = el('td', { class: 'verd', text: 'Not checked' });
       else cell = el('td', { class: 'verd', text: X.load === 'loading' ? 'Checking…' : '—' });
       return el('tr', {}, el('td', { class: 'mono', text: String(i + 1) }),
@@ -2366,8 +2362,7 @@
     else if (d && d.preview && d.preview.length) {
       const more = d.preview.length >= XPORT.PREVIEW ? '\n…' : '';
       body = el('pre', { class: 'code', tabindex: '0', role: 'group', 'aria-label': 'Preview of the export file, first ' + d.preview.length + ' lines' }, d.preview.join('\n') + more);
-    } else if (d) body = el('p', { class: 'empty', text: 'Every span is blocked, so there is no file to preview.' });
-    else if (X.err) body = el('p', { class: 'empty', text: 'No preview: the server refused this selection (see the message above).' });
+    } else if (X.err) body = el('p', { class: 'empty', text: 'No preview: the server refused this selection (see the message above).' });
     else body = el('p', { class: 'empty', text: X.load === 'loading' ? 'Checking with the server…' : 'No preview yet.' });
     return el('div', { class: 'body' }, body);
   }
@@ -2408,9 +2403,6 @@
       el('input', { id: 'x-start', type: 'text', class: 'mono', value: X.start, 'data-fk': 'x-start', spellcheck: 'false', autocomplete: 'off', placeholder: XPORT.DEFAULT_TC, 'aria-describedby': 'x-start-hint',
         oninput: (e) => { X.start = e.target.value; render(); } }),
       el('small', { id: 'x-start-hint', text: 'hh:mm:ss:ff, or hh:mm:ss;ff for drop-frame. Empty means ' + XPORT.DEFAULT_TC + ' (drop-frame when the first file is).' }),
-      el('div', { class: 'opt' },
-        el('input', { type: 'checkbox', id: 'x-skip', checked: X.skip ? true : null, 'data-fk': 'x-skip', onchange: (e) => xSet({ skip: e.target.checked }) }),
-        el('label', { for: 'x-skip' }, el('span', {}, 'Leave out blocked spans', el('small', { text: 'The ones left out are named in a comment in the file and in the warnings.' })))),
       xPaths(d));
   }
 
@@ -2418,17 +2410,14 @@
     const d = xCurrent() && X.dry ? X.dry : null;
     const total = L.sel.length;
     const ready = d ? d.spans.filter((s) => s.status === 'ready').length : 0;
-    const blocked = d ? total - ready : 0;
     let why = '';
     if (!total) why = 'Nothing is selected.';
     else if (total > XPORT.MAX) why = 'Too many spans: the limit is ' + XPORT.MAX + '.';
     else if (!xStart()) why = 'The start timecode must look like 01:00:00:00.';
     else if (X.err && !X.err.run) why = 'The server refused this selection. Fix the message above first.';
     else if (!d) why = 'Waiting for the server to check the selection.';
-    else if (!ready) why = 'Every span is blocked.';
-    else if (blocked && !X.skip) why = 'Disabled until every span passes or blocked spans are left out.';
     const can = !why;
-    const n = X.skip ? ready : total;
+    const n = total;
     const rate = d ? parseRate(d.rate) : null;
     const facts = d && d.filename ? [el('dt', { text: 'File' }), el('dd', { class: 'mono', text: d.filename }),
       el('dt', { text: 'Clips' }), el('dd', { text: String(ready) }),
