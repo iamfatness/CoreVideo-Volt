@@ -333,6 +333,12 @@ Result: not yet recorded.
 - Slice 5 was run: the server rule and refusals (66 tests, SQLite and a live postgres:16), and the built page in headless Chrome against the harness `library` scenario: the keyboard path (Tab to the tabs, arrows between them, Tab to the transcript, Space, Shift+arrows, sentence jumps, Esc, Enter with and without a selection), a mouse drag, the handle buttons, a refusal shown for a handle before the source start, and a clip added whose range equalled the page's preview; axe-core at 1280 and 768 px on the transcript tab with a range selected and on the shot list: 0 violations (needs-review left on aria-hidden glyphs and the minus buttons, as in slice 4). The harness words are synthetic (one every 12 frames), not output from a speech engine on real speech; the re-kinded-word case was run through the real `transcribe` with the fake engine on an ffmpeg clip. Not run: a browser other than Chrome, a screen reader, a transcript over 3000 words on the page ("Load more words" was not exercised), touch, and the word-time accuracy numbers in `library.md` on real speakers. The mockup's example (only the out snapping) disagrees with the specified snap rule; the page follows the rule.
 - The mockups use made-up footage, names and numbers (Final Four Watch, iso-3, Okonkwo come from existing docs and mockups) and drawn placeholder frames.
 
+## Owner rulings (2026-10-16)
+
+1. **Snap rule.** It follows industry standard: both ends snap to the nearest shot boundary, as built. This is the spec's two-ended widening (the in goes back to the start of the shot that holds it, the out forward to the end of the shot that holds it, never narrowing). The mockup's one-ended example (only the out snapping) is wrong, not the code; no change to `shots.create_from_words`.
+2. **Slice 4b detection UI additions stay.** The Settings disclosure with the two numbers, the status line with its indeterminate bar, and the re-detect warning are accepted, though they are not in the approved mockup.
+3. **NLE import check.** It stays a manual task, owner-deferred, low priority. The xmeml and EDL formats remain UNVERIFIED until it is done and recorded under "Manual import check"; nothing else is waiting on it.
+
 ## Open questions for the owner
 
 1. **Where does it live?** A fifth operator screen, Library (mocked), or inside an existing screen? Brand direction has Library as a proof; the operator UI has none.
