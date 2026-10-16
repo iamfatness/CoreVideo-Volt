@@ -131,6 +131,52 @@ def try_facts(store: Store, asset_id: str) -> Optional[Facts]:
         return None
 
 
+def probe_frame_rate(path) -> Optional[str]:
+    """The video stream's rate as text a timebase can parse ("60", "30000/1001"), or None when it cannot be read.
+    Never raises: a file that will not probe just has no recorded rate, as before."""
+    from volt.deliverables import DeliverableError, _probe_rate
+    try:
+        return str(_probe_rate(str(path)))
+    except (DeliverableError, OSError):
+        return None
+
+
+def probe_audio_layout(path) -> Optional[str]:
+    """The first audio stream's channel count as text ("2"), or None when there is no audio or it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
+             "-of", "json", str(path)], capture_output=True, text=True, timeout=60)
+        channels = (json.loads(out.stdout).get("streams") or [{}])[0].get("channels")
+        return str(int(channels)) if channels and int(channels) > 0 else None
+    except Exception:  # noqa: BLE001 - ffprobe missing, bad json: unknown
+        return None
+
+
+def record_media_facts(store: Store, essence_id: str, path) -> Optional[str]:
+    """Write the file's frame rate and audio channel count on an essence row that lacks them. Returns the frame
+    rate the row ends up with (None if unknown). A value already on the row is never replaced.
+
+    Nothing else writes these. Without a frame rate `facts` refuses the asset, so shot detection, marking and the
+    NLE export all refuse a freshly ingested or wrapped one; without the audio layout the NLE export silently
+    carries no audio tracks."""
+    row = store.conn.execute("SELECT frame_rate, audio_layout FROM essence WHERE id = ?", (essence_id,)).fetchone()
+    if row is None:
+        return None
+    rate, layout = row["frame_rate"], row["audio_layout"]
+    if not rate:
+        rate = probe_frame_rate(path)
+        if rate is not None:
+            store.conn.execute("UPDATE essence SET frame_rate = ? WHERE id = ? AND frame_rate IS NULL", (rate, essence_id))
+    if not layout:
+        found = probe_audio_layout(path)
+        if found is not None:
+            store.conn.execute(
+                "UPDATE essence SET audio_layout = ? WHERE id = ? AND audio_layout IS NULL", (found, essence_id))
+    store.conn.commit()
+    return rate
+
+
 def probe_duration_frames(path, rate=None) -> Optional[int]:
     """Whole frames in a media file, or None when it cannot be read. Never raises: a missing length only
     means the range check is lower-bound until the file is probed again.

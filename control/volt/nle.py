@@ -94,7 +94,7 @@ def can_drop(rate) -> bool:
 
 
 def parse_layout(layout) -> Optional[int]:
-    """Channel count from `essence.audio_layout`, free text that no code in this repo writes yet. Understood:
+    """Channel count from `essence.audio_layout`, free text; ingest and wrap write the first audio stream's channel count. Understood:
     a bare count ("2", "8ch", "4 channels"), mono, stereo, quad, and x.y as in 5.1 or 7.1 (x + y channels).
     Anything else is None: no audio tracks are written and the caller warns."""
     text = str(layout or "").strip().lower()
