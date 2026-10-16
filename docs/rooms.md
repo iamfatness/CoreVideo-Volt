@@ -33,7 +33,7 @@ Run live 2026-10-13 against CoreVideo Pro on `127.0.0.1:8011` (`bench/live_recor
 
 Lower third, live: `graphics.lowerThird.set [true]` was accepted; `GET /state` `lowerThirdOnAir` went true as the phase moved `building-in` to `on-air`, and false after `[false]` through `building-out`.
 
-Not run: `stream.start`. This core's saved stream destination was a platform RTMP endpoint, so starting it would have gone live; the stream cue stays unproven until it can be pointed at a local SRT listener (close the app, edit `production-output-preferences.json`, restore it after). Record and lower third have since been run through the cue dispatcher (below). The `outputSenders` snapshot key was not exercised, and `recording` is absent from the snapshot until the first session, so `observe()` reads `unknown` before it.
+`stream.start` was not run on the first pass. This core's saved stream destination was a platform RTMP endpoint, so starting it would have gone live; the stream cue stays unproven until it can be pointed at a local SRT listener (close the app, edit `production-output-preferences.json`, restore it after). Record and lower third have since been run through the cue dispatcher (below). The stream was later run against a local sink (below). and `recording` is absent from the snapshot until the first session, so `observe()` reads `unknown` before it.
 
 ## Cue dispatch
 
@@ -42,7 +42,7 @@ Not run: `stream.start`. This core's saved stream destination was a platform RTM
 | Cue command | Control action | Evidence |
 |---|---|---|
 | `record.start` | `transport.record.set [true]` | `recording.lifecycle` producing, fresh, with an artifact path. Mints the asset. |
-| `stream.start` | `transport.stream.set [true]` | A sender in `outputSenders.senders[].lifecycle` producing and fresh |
+| `stream.start` | `transport.stream.set [true]` | A sender in `outputSenderSession.senders[].lifecycle` producing and fresh |
 | `overlay.take` | `graphics.lowerThird.set [on]` | `GET /state` `lowerThirdOnAir` matches |
 | `show-input.take` | configurable steps (default `scene.select`), then `transport.take` | `GET /snapshot` `programFrame.videoSources[]` holds the source, attribution `live`, `deliverySequence` advanced |
 
@@ -53,4 +53,12 @@ Not run: `stream.start`. This core's saved stream destination was a platform RTM
 ### Live run through the dispatcher (2026-10-13)
 
 `control/bench/live_cue_check.py` takes three rundown items against a real core (engine on, throwaway database, no stream). Take 1 (`record.start` then `overlay.take on`) fired both cues; the core showed producing/healthy and `lowerThirdOnAir` true. Take 2 (`overlay.take off`) fired and the core showed it off. Take 3 (`record.arm`, no adapter) came back `unsupported`, the rundown rewound to item 2 and the cue stayed armed. The recording was then wrapped and its sha256 matched the file on disk. One run, one rig, 1080p60 H.264. Still not run: `stream.start` and the `outputSenders` key.
+
+### Live stream run (2026-10-16), and the snapshot key it corrected
+
+The core's output preferences were pointed at SRT on loopback with RTMP off (app closed for the edit, original file backed up and restored afterwards), and `control/bench/live_stream_check.py` refuses to start unless the preferences show that. The control API has no action that sets a stream destination; the preferences file is read once at launch.
+
+The first run exposed a bug. The core streamed (1080p60 HEVC + AAC reached the local sink), but the dispatcher reported "no sender observed producing", because the senders are published under `snapshot.outputSenderSession.senders[]`, not `outputSenders.senders[]`. The key `outputSenders` was never present on a running core. `CoreVideoProRoom.senders_observed()` now reads `outputSenderSession` and falls back to `outputSenders`. After the fix: the armed `stream.start` cue fired, the sender read `lifecycle.state` producing / `health` healthy, the local sink received bytes, and `transport.stream.set [false]` stopped it. One rig, one SRT-to-loopback destination, h265 NVENC. Not run: RTMP, HLS, NDI, a remote SRT destination, and a stream that fails to connect.
+
+The first attempt to turn the engine on with `transport.engine.set [true]` was refused ("unavailable in the current state"), yet `transport.stream.set [true]` was accepted and frames flowed with `engineOn` still false in `/state`. `/state.engineOn` is therefore not a precondition for streaming on this build.
 
