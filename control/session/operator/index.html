@@ -63,6 +63,7 @@
   <section id="screen-library" class="screen" aria-labelledby="h-library" hidden>
     <h1 id="h-library" class="vh">Library: shots and clips</h1>
     <div id="lib-msg"></div>
+    <section class="panel lib-ingest" aria-labelledby="h-ingest"><h2 id="h-ingest">Ingest a file</h2><div id="lib-ingest"></div></section>
     <div class="panel lib-pick">
       <div class="form-row">
         <div><label for="lib-asset">Asset</label><select id="lib-asset"></select></div>
@@ -116,10 +117,10 @@
           <div id="lib-list"></div>
         </section>
       </div>
-      <aside class="stack" aria-label="Selection and span">
+      <div class="stack" role="group" aria-label="Selection and span">
         <section class="panel" aria-labelledby="h-tray"><h2 id="h-tray">Selection</h2><div id="lib-tray"></div></section>
         <section class="panel" aria-labelledby="h-span"><h2 id="h-span">Span</h2><div id="lib-span"></div></section>
-      </aside>
+      </div>
     </div>
     <div id="lib-words" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-words" hidden>
       <div class="stack">
@@ -137,10 +138,10 @@
           </div>
         </section>
       </div>
-      <aside class="stack" aria-label="New clip">
+      <div class="stack" role="group" aria-label="New clip">
         <section class="panel" aria-labelledby="h-newclip"><h2 id="h-newclip">New clip from words</h2><div id="lib-newclip"></div></section>
         <div class="info"><strong>Words are not frame accurate.</strong> Measured on one TTS clip: worst start error 0.24 s. The in and out come from the words plus the handles; the server builds them. Check the out frame on the player after adding the clip.</div>
-      </aside>
+      </div>
     </div>
     <div id="lib-export" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-export" tabindex="-1" hidden>
       <div class="stack">
@@ -197,6 +198,7 @@
       <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>Mark in or out at the playhead.</td></tr>
       <tr><td><kbd>Enter</kbd></td><td>Add a clip from the marks, when no button or field has focus.</td></tr>
       <tr><td><kbd>Space</kbd></td><td>On a row's name: add or remove the row from the selection. Enter on the name seeks the player. Space does not take on this screen.</td></tr>
+      <tr><td><kbd>Tab</kbd></td><td>Ingest a file: type the path in the Ingest field (Space types) and press Enter. No single-key shortcut, and Space does not take on this screen.</td></tr>
       <tr><th scope="rowgroup" colspan="2" class="group">Library, Mark from transcript tab</th></tr>
       <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Move the word cursor. Shift extends the range. Focus the transcript first (Tab).</td></tr>
       <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Jump to the previous or next sentence. Shift extends.</td></tr>

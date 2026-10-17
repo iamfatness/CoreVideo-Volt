@@ -440,6 +440,24 @@ class Ingest(Behaviour):
         self.assertEqual((p["status"], p["quarantined"], p["essence"]), ("quarantine", True, None))
         self.assertEqual([j["status"] for j in p["jobs"]], ["failed"])
 
+    def test_a_full_disk_is_disk_low_not_a_missing_file(self):
+        from volt import disk
+        card = self.inbox / "big.mp4"
+        card.write_bytes(b"x")
+        with mock.patch("volt.ingest.disk.require_space", side_effect=disk.DiskLowError("only 1 GB free, need 4 GB")):
+            p = self.refused(507, "disk_low", "/api/ingest", {"path": str(card)})
+        self.assertIn("1 GB", p["error"]["reason"])
+        self.assertEqual(self.assets(), 0)
+
+    def test_state_lists_the_unfinished_jobs_of_an_asset_and_drops_them_when_done(self):
+        a = self.store.mint_asset(owner="desk", camera="iso-9")
+        self.store.enqueue(a.id, "proxy", "k1")
+        job = self.store.enqueue(a.id, "asr", "k2")
+        self.store.complete_job(job.id)
+        s, state = self.get("/api/state")
+        mine = next(x for x in state["assets"] if x["id"] == a.id)
+        self.assertEqual([(j["type"], j["status"]) for j in mine["jobs"]], [("proxy", "queued")])
+
     def test_only_the_allowed_folders_are_read(self):
         secret = self.outside / "secret.mp4"
         secret.write_bytes(b"x")
