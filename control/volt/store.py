@@ -189,6 +189,14 @@ CREATE TABLE IF NOT EXISTS purge_audit (
   outcome TEXT NOT NULL,
   detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS runner_heartbeat (
+  name TEXT PRIMARY KEY,
+  pid INTEGER,
+  host TEXT,
+  started_at TEXT NOT NULL,
+  beat_at TEXT NOT NULL
+);
 """
 
 

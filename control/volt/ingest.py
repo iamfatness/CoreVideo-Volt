@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from volt import shots
+from volt import disk, shots
 from volt.store import Store
 
 
@@ -60,6 +60,11 @@ def ingest_file(
     key = source_key or f"file:{source.name}:{source.stat().st_size}"
     existing = store.find_by_source(key)
     minted = existing is None
+    if minted:  # a new copy needs room for the whole file and the free-space floor; replays add nothing
+        try:
+            disk.require_space(quarantine, "ingest", need=source.stat().st_size)
+        except disk.DiskLowError as exc:
+            raise IngestError(str(exc)) from exc
     asset = store.mint_source(key, owner=owner, show_name=show_name, camera=camera)
     quarantine.mkdir(parents=True, exist_ok=True)
     dest = quarantine / f"{asset.id}-{source.name}"

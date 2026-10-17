@@ -82,7 +82,10 @@ MIGRATIONS = (
                        ("essence", "audio_sample_rate", "INTEGER"))),
     # purge_audit is a new table (base-table creation makes it); asset.deleted_at is the soft-delete tombstone.
     Migration(11, "asset tombstone, purge audit table", columns=(("asset", "deleted_at", "TIMESTAMP"),)),
-    # Next: Migration(12, "...", columns=(...)). Do not add a gap or reuse a number.
+    # runner_heartbeat is a new table (base-table creation makes it), as in 4 and 7: each runner upserts a row so
+    # health can report how long ago one last checked in.
+    Migration(12, "runner_heartbeat table"),
+    # Next: Migration(13, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

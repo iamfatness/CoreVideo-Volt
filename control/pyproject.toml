@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "volt-control"
+dynamic = ["version"]
+description = "Volt control plane: library, rundown, runner and operator API for live production."
+readme = "README.md"
+requires-python = ">=3.12"
+# The core is standard library only. Everything below is opt-in.
+dependencies = []
+
+[project.optional-dependencies]
+speech = ["faster-whisper>=1.0"]
+s3 = ["boto3>=1.35"]
+azure = ["azure-storage-blob>=12.19", "azure-identity>=1.15"]
+gcs = ["google-cloud-storage>=2.16"]
+postgres = ["psycopg[binary]==3.3.6", "psycopg_pool==3.3.3"]
+all = [
+  "faster-whisper>=1.0",
+  "boto3>=1.35",
+  "azure-storage-blob>=12.19", "azure-identity>=1.15",
+  "google-cloud-storage>=2.16",
+  "psycopg[binary]==3.3.6", "psycopg_pool==3.3.3",
+]
+
+[project.scripts]
+volt = "volt.cli:main"
+
+[tool.setuptools]
+packages = ["volt"]
+
+[tool.setuptools.dynamic]
+version = { attr = "volt.__version__" }

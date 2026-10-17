@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from volt import shots, timecode
+from volt import disk, shots, timecode
 from volt.operator_state import _blocked_by
 from volt.shots import ShotError
 from volt.store import Store
@@ -301,9 +301,14 @@ def ensure_thumb(store: Store, span_id: str, out_dir: Path) -> Path:
     # The proxy is assumed to share the hi-res's start timecode and rate (docs/specs/shot-spans.md).
     seconds = float(timecode.frames_to_seconds(frame - f.start, f.rate))
     try:
+        disk.require_space(out_dir, "thumbnail")
+    except disk.DiskLowError as exc:
+        raise MediaError(507, "disk_low", str(exc)) from None
+    try:
         shots.write_thumb(proxy.path, seconds, dest, run=RUN, timeout=THUMB_TIMEOUT)
     except ShotError as exc:
         if exc.code == "thumb_timeout":
             raise MediaError(504, "thumb_timeout", exc.reason) from None
         raise MediaError(502, "thumb_failed", exc.reason) from None
+    disk.maybe_prune_thumbs(out_dir)
     return dest
