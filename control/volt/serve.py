@@ -28,10 +28,11 @@ from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
 from volt.playout import HeldError, PlayoutError, advance, hold, hold_state, release, skip
+from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
 from volt.rooms import CoreVideoProRoom, LiveError
-from volt.rundown import attach, kill, reorder
+from volt.rundown import ItemNotReady, attach, kill, reorder
 from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
 from volt.store import NotClearedError, Store
@@ -67,6 +68,8 @@ ROOM = None
 POLL = {"attempts": 40, "interval": 0.25, "sleep": time.sleep}
 # Renders the three versions of a span. Tests swap in a renderer that needs no ffmpeg.
 PUBLISH = publish_files
+# The storage backend unpublish deletes through. None = what VOLT_STORAGE says (local files under VOLT_OUT by default). Tests set one.
+UNPUBLISH_BACKEND = None
 
 # Take, go and the other sequencing writes run one at a time in this process, so two
 # operators cannot both advance the same rundown. Hold and release stay outside it:
@@ -291,14 +294,18 @@ def act_kill(store, item_id, body):
 def act_attach(store, item_id, body):
     _unknown_keys(body, {"span"})
     span_id = _str(body, "span", required=True, limit=128)
-    show_id, status = _item_show(store, item_id)
+    show_id, _ = _item_show(store, item_id)
     if store.conn.execute("SELECT 1 FROM span WHERE id = ?", (span_id,)).fetchone() is None:
         raise ApiError(404, "not_found", f"no such span: {span_id}")
-    with _SEQ:
-        if status != "ready":
-            raise ApiError(409, "not_attachable", f"cannot attach media to a {status} item")
+    # The decision is made inside attach(): one transaction under the show's lock, a conditional write. No _SEQ,
+    # like the other building edits, so attaching stays possible while a take waits on the room.
+    try:
         attach(store, item_id, span_id)
-        return {"ok": True, "item": item_id, "span": span_id, "rundown": rundown_payload(store, show_id)}
+    except ItemNotReady as exc:
+        raise ApiError(409, "not_attachable", f"cannot attach media to a {exc.status} item") from None
+    except KeyError:
+        raise ApiError(404, "not_found", "the item or span no longer exists") from None
+    return {"ok": True, "item": item_id, "span": span_id, "rundown": rundown_payload(store, show_id)}
 
 
 def act_record_start(store, _unused, body):
@@ -364,6 +371,21 @@ def act_restore(store, asset_id, body):
     if not retention.restore(store, asset_id):
         raise ApiError(409, "not_deleted", "this asset is not deleted")
     return {"ok": True, "asset": asset_payload(store, asset_id)}
+
+
+def act_unpublish(store, version_id, body):
+    """Withdraw one publish version and remove the object Volt stored for it. Idempotent; a failed storage delete is
+    a 502 `storage_failed` with the version already withdrawn, and calling again retries just the delete."""
+    _unknown_keys(body, set())
+    try:
+        out = publish_mod.unpublish(store, version_id, backend=UNPUBLISH_BACKEND, local_root=OUT_DIR)
+    except KeyError:
+        raise ApiError(404, "not_found", f"no such version: {version_id}") from None
+    except publish_mod.UnpublishError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
+    return {"ok": True, "version": {"id": out.id, "kind": out.kind, "span": out.span_id, "status": "withdrawn",
+                                    "withdrawnAt": out.withdrawn_at},
+            "alreadyWithdrawn": out.already, "storage": out.storage, "location": out.location}
 
 
 def act_publish(store, span_id, body):
@@ -535,6 +557,14 @@ def act_show_create(store, _unused, body):
             "orderVersion": building.order_version(store, show_id)}
 
 
+def act_show_delete(store, show_id, body):
+    """Delete a show that has not played: its ready/killed/skipped items and cues, then the show. Spans and
+    assets stay. Refused when any item is on air or has aired."""
+    _unknown_keys(body, set())
+    removed = _build_errors(lambda: building.delete_show(store, show_id))
+    return {"ok": True, "deleted": show_id, "removedItems": removed["items"], "removedCues": removed["cues"]}
+
+
 def act_item_add(store, show_id, body):
     _unknown_keys(body, {"slug", "script", "id"})
     slug = _str(body, "slug", required=True, limit=200).strip()
@@ -657,6 +687,7 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/delete$"), act_delete),
     (re.compile(rf"^/api/assets/{_ID}/restore$"), act_restore),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
+    (re.compile(rf"^/api/versions/{_ID}/unpublish$"), act_unpublish),
     (re.compile(rf"^/api/assets/{_ID}/spans$"), act_span_create),
     (re.compile(rf"^/api/spans/{_ID}/trim$"), act_span_trim),
     (re.compile(rf"^/api/spans/{_ID}/label$"), act_span_label),
@@ -670,6 +701,7 @@ ROUTES = [
 ROUTES += [  # show building
     (re.compile(r"^/api/shows$()"), act_show_create),
     (re.compile(rf"^/api/shows/{_ID}/items$"), act_item_add),
+    (re.compile(rf"^/api/shows/{_ID}/delete$"), act_show_delete),
     (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),

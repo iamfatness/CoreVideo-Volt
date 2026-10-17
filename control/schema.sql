@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS version (
   storage_backend TEXT,
   storage_key TEXT,
   storage_sha256 TEXT,
+  withdrawn_at TIMESTAMPTZ,
+  storage_deleted_at TIMESTAMPTZ,
   UNIQUE (asset_id, span_id, kind)
 );
 

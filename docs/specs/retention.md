@@ -18,10 +18,11 @@ Checked when the mark is set, and again when the purge runs (a hold or an attach
 | `retention_class` is `permanent` | `retention class 'permanent' is never deleted` |
 | any essence is open (still recording) | `still recording (an essence is open)` |
 | any rundown item uses one of the asset's spans | `attached to N rundown item(s)` |
-| the asset has any `version` row (published or queued) | `has N publish version(s)` |
+| the asset has an active `version` row (published or queued; a withdrawn one does not count) | `has N active publish version(s); unpublish them first` |
+| purge only, without `--include-published`: a withdrawn version whose stored object was never removed | `N withdrawn version(s) still have a stored object; call unpublish again to remove it` |
 | purge only: a job is `running` on it (other than `delete`) | `N job(s) are running on it` |
 
-Because a publish version blocks a delete, an asset that has been published cannot be deleted today; there is no unpublish yet. A purge can be told to remove versions through the storage seam (`--include-published`, below), but only for an asset that was already tombstoned.
+A publish version blocks a delete until it is withdrawn: `POST /api/versions/{id}/unpublish` (`publish.unpublish`, see `docs/specs/publish.md`) keeps the version row as history with status `withdrawn` and `withdrawn_at` (migration 14), which no longer blocks a delete. A purge can be told to remove versions through the storage seam (`--include-published`, below), but only for an asset that was already tombstoned.
 
 ## Step 2: purge
 

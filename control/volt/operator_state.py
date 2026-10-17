@@ -105,10 +105,11 @@ def spans(store: Store, kinds: Optional[Sequence[str]] = PUBLISH_KINDS, include_
             rows.sort(key=lambda r: (r["tc_in"], r["id"]))
     versions: dict[str, list[dict]] = {}
     for v in store.conn.execute(
-        "SELECT id, span_id, kind, status, url FROM version ORDER BY span_id, kind"
+        "SELECT id, span_id, kind, status, url, withdrawn_at FROM version ORDER BY span_id, kind"
     ).fetchall():
         versions.setdefault(v["span_id"], []).append(
-            {"id": v["id"], "kind": v["kind"], "status": v["status"], "url": v["url"]})
+            {"id": v["id"], "kind": v["kind"], "status": v["status"],
+             "url": None if v["withdrawn_at"] is not None else v["url"]})
     return [{
         "id": r["id"], "assetId": r["asset_id"], "kind": r["kind"], "tcIn": r["tc_in"],
         "tcOut": r["tc_out"], "text": r["text"], "label": r["label"], "camera": r["camera"],

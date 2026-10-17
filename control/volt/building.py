@@ -160,6 +160,37 @@ def remove_item(store: Store, item_id: str) -> str:
         return row["show_id"]
 
 
+def delete_show(store: Store, show_id: str) -> dict:
+    """Delete a show that has not played, with its items and cues. Returns {"items": n, "cues": n}.
+
+    Refused (409 `show_not_deletable`, nothing changed) when any item is on air or has aired (status `on air` /
+    `aired`, or an as-run time is set): the as-run log is the record. Otherwise the ready, killed and skipped
+    items and their cues go in one transaction under the show lock, the one go and take hold. Spans and assets
+    are not touched. `kill` and `skip` leave items behind with no as-run, so those are removable."""
+    if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+        raise BuildError(404, "not_found", f"no such show: {show_id}")
+    with store.transaction(show_lock(show_id)):
+        if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+            raise BuildError(404, "not_found", f"no such show: {show_id}")
+        played = store.conn.execute(
+            "SELECT id, status FROM item WHERE show_id = ? AND (status NOT IN ('ready', 'killed', 'skipped') "
+            "OR as_run_in IS NOT NULL OR as_run_out IS NOT NULL) ORDER BY position, id", (show_id,)).fetchall()
+        if played:
+            raise BuildError(409, "show_not_deletable",
+                             f"{len(played)} item(s) are on air or have aired; the as-run log keeps the show",
+                             items=[{"id": r["id"], "status": r["status"]} for r in played])
+        cues = store.conn.execute(
+            "DELETE FROM cue WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,)).rowcount
+        items = store.conn.execute(
+            "DELETE FROM item WHERE show_id = ? AND status IN ('ready', 'killed', 'skipped') "
+            "AND as_run_in IS NULL AND as_run_out IS NULL", (show_id,)).rowcount
+        left = store.conn.execute("SELECT COUNT(*) FROM item WHERE show_id = ?", (show_id,)).fetchone()[0]
+        if left:  # an item changed state between the check and the delete: undo it all
+            raise BuildError(409, "show_not_deletable", "an item changed while the show was being deleted")
+        store.conn.execute("DELETE FROM show WHERE id = ?", (show_id,))
+        return {"items": items, "cues": cues}
+
+
 def detach_span(store: Store, item_id: str) -> tuple[str, bool]:
     """Take the span off a ready item. Returns (show id, whether one was attached)."""
     row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
