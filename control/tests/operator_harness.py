@@ -302,8 +302,11 @@ if __name__ == "__main__":
     ap.add_argument("scenario", choices=SCENARIOS)
     ap.add_argument("--port", type=int, default=8791, help="0 lets the OS pick a free one")
     ap.add_argument("--no-runner", action="store_true", help="library: do not run jobs, so detection stays queued")
+    ap.add_argument("--ingest-root", default=None, help="allow ingest from this folder (sets VOLT_INGEST_ROOTS for this process)")
     ap.add_argument("--token", default=None, help="require this bearer token (16+ chars is the rule off loopback)")
     args = ap.parse_args()
+    if args.ingest_root:
+        os.environ["VOLT_INGEST_ROOTS"] = args.ingest_root
     server, _tmp, _show, _spans = serve_scenario(args.scenario, args.port, token=args.token, runner=not args.no_runner)
     args.port = server.server_port
     print(f"{args.scenario}: http://127.0.0.1:{args.port}/operator", flush=True)

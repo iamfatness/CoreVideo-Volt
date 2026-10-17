@@ -80,7 +80,7 @@ Each edit is one transaction under the show's lock (the lock `go`, `take`, `skip
 | `POST /api/cues/{cue}/remove` | none | Remove a cue that has not fired, from a ready item. Returns `removed`, `item`. | 404; 409 `not_editable`, `cue_fired` |
 | `GET /api/items/{item}/cues` | none | The item's cues in order, plus `commands`. | 404 |
 | `GET /api/cue-commands` | none | `commands: [{room, command, verified}]`. `verified` is true when `dispatch.HANDLERS` has an adapter (today `show-input.take`, `overlay.take`, `record.start`, `stream.start`). A cue for an unverified command (`audio.snapshot`, `record.arm`) can be stored and armed, but a take stops at it with `cue_unsupported`, so the UI warns when it is added. | |
-| `POST /api/ingest` | `path`, `owner?`, `show?`, `camera?` | Ingest one local file through `ingest_file`: mint, quarantine copy, ffprobe, checksum, frame rate, and the follow-on proxy and transcript jobs. Returns `asset`, `essence`, `minted`, `status` (`done` or `quarantine`), `quarantined`, `jobs: [{id, type, status, error}]`, `assetState`. Runs inside the request. A file that does not parse is a 200 with `quarantined: true` (the asset and a failed job exist; nothing airs). A replay of the same file (same path, size and modification time) is the same asset with `minted: false`. Ingest never sets `cleared`. | 403 `path_not_allowed`; 404 `not_found` (missing file or a folder); 503 `ingest_disabled`, `engine_missing` (no ffprobe); 422 |
+| `POST /api/ingest` | `path`, `owner?`, `show?`, `camera?` | Ingest one local file through `ingest_file`: mint, quarantine copy, ffprobe, checksum, frame rate, and the follow-on proxy and transcript jobs. Returns `asset`, `essence`, `minted`, `status` (`done` or `quarantine`), `quarantined`, `jobs: [{id, type, status, error}]`, `assetState`. Runs inside the request. A file that does not parse is a 200 with `quarantined: true` (the asset and a failed job exist; nothing airs). A replay of the same file (same path, size and modification time) is the same asset with `minted: false`. Ingest never sets `cleared`. | 403 `path_not_allowed`; 404 `not_found` (missing file or a folder); 507 `disk_low` (quarantine disk too full); 503 `ingest_disabled`, `engine_missing` (no ffprobe); 422 |
 
 **Ids and retries.** `id` on create is optional and caller-chosen (letters, digits, `_ . : -`, up to 128). The same id with the same content is a 200 with `existed: true` and changes nothing, so a retry after a lost response is safe; the same id with other content is `409 id_conflict`. Without `id` the server mints one.
 
@@ -166,7 +166,7 @@ The client sends word IDs and never a time; the server loads both words and buil
 
 Same rights as slice 4: marking is allowed on any asset and the response says `blockedBy`. Tests: `control/tests/test_shot_words.py` (SQLite and live Postgres).
 
-`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it).
+`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress.
 
 ### Detect, split, merge, indexing (slice 4b)
 
