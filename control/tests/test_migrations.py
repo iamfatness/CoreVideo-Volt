@@ -274,12 +274,14 @@ class Version8ToNine(unittest.TestCase):
                 cols = sqlite_columns(store.conn)
                 self.assertTrue(NEW_SPAN_COLUMNS <= cols["span"])
                 self.assertIn("duration_frames", cols["essence"])
+                self.assertTrue({"timecode_source", "video_profile", "pix_fmt", "audio_codec",
+                                 "audio_sample_rate"} <= cols["essence"])  # migration 10 follows 9 on the same open
                 self.assertIn("shot_run", cols)
                 self.assertEqual(
                     [tuple(r) for r in store.conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version")][:8],
                     [tuple(r) for r in before])
                 self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                                 list(range(1, 10)))
+                                 list(range(1, migrations.LATEST + 1)))
                 index = store.conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'span_asset_kind_frame'").fetchone()
                 self.assertIn("asset_id, kind, frame_in", index[0])
@@ -310,7 +312,7 @@ class Version8ToNinePostgres(PgCase):
         self.assertIn("duration_frames", cols["essence"])
         self.assertIn("shot_run", cols)
         self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                         list(range(1, 10)))
+                         list(range(1, migrations.LATEST + 1)))
         index = store.conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'span_asset_kind_frame'").fetchone()
         self.assertIn("(asset_id, kind, frame_in)", index[0])
@@ -322,7 +324,7 @@ class Version8ToNinePostgres(PgCase):
         self.assertEqual(tuple(store.conn.execute("SELECT frame_in, frame_out FROM span").fetchone()), (90000, 90010))
         self.stores.pop().close()
         again = self.store()  # opening again applies nothing and does not fail
-        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], 9)
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], migrations.LATEST)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,7 @@ def ingest_file(
             frame_rate=rate,
             audio_layout=shots.probe_audio_layout(dest),
         )
+        shots.record_media_facts(store, essence_id, dest)  # codecs and the embedded start timecode, before any span is placed
         from volt.record import chain_after_wrap  # record imports this module
         chain_after_wrap(store, asset.id)  # a closed file gets its proxy and transcript like a wrapped recording
     else:
