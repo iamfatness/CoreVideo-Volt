@@ -273,7 +273,7 @@ class BackupRestore(Tmp):
         manifest = backup.backup(str(self.dir / "volt.db"), str(self.dir / "bk"))
         self.assertEqual(manifest["schema_version"], 10)
         report = backup.restore(self.dir / "bk", str(self.dir / "new.db"))
-        self.assertEqual(report["migrated"], [11])
+        self.assertEqual(report["migrated"], list(range(11, backup.migrations.LATEST + 1)))
         store = Store(str(self.dir / "new.db"))
         cols = {r[1] for r in store.conn.execute("PRAGMA table_info(asset)")}
         self.assertIn("deleted_at", cols)
