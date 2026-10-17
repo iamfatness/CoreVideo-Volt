@@ -47,7 +47,12 @@ CREATE TABLE IF NOT EXISTS essence (
   audio_layout TEXT,
   open INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
-  duration_frames INTEGER
+  duration_frames INTEGER,
+  timecode_source TEXT,
+  video_profile TEXT,
+  pix_fmt TEXT,
+  audio_codec TEXT,
+  audio_sample_rate INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS span (

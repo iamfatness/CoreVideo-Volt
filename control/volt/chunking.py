@@ -24,6 +24,10 @@ class AudioError(Exception):
     pass
 
 
+class NoAudioStream(AudioError):
+    """The essence has no audio stream at all. Not a failure of the run: the asset simply has nothing to transcribe."""
+
+
 @dataclass(frozen=True)
 class ChunkSettings:
     window: float = 900.0      # seconds each window owns, before the cut moves to a quiet spot
@@ -51,7 +55,7 @@ def probe_duration(src: str) -> float:
         text = run.stdout.strip().splitlines()
         out[what] = text[0] if text else ""
         if what == "stream" and not text:
-            raise AudioError("essence has no audio")
+            raise NoAudioStream("essence has no audio")
     for what in ("stream", "format"):
         try:
             return float(out[what])
@@ -73,8 +77,35 @@ def extract(src: str, start: float, duration: Optional[float], dest: Path) -> No
     if run.returncode != 0 or not dest.exists():
         tail = (run.stderr or "")[-300:].strip()
         if "matches no streams" in tail or "Stream map" in tail:
-            raise AudioError("essence has no audio")
+            raise NoAudioStream("essence has no audio")
         raise AudioError(tail or "ffmpeg produced no audio")
+
+
+def peak_dbfs(wav: Path) -> Optional[float]:
+    """Loudest sample of a 16-bit PCM WAV in dBFS (0 = full scale), or None when it cannot be read. Digital silence
+    is -120.0. Streams the file, so a long window costs no memory."""
+    import array
+    import math
+    import sys
+    import wave
+    try:
+        with wave.open(str(wav), "rb") as w:
+            if w.getsampwidth() != 2:
+                return None
+            top = 0
+            while True:
+                data = w.readframes(1 << 20)
+                if not data:
+                    break
+                samples = array.array("h")
+                samples.frombytes(data[: len(data) - len(data) % 2])
+                if sys.byteorder == "big":
+                    samples.byteswap()
+                if samples:
+                    top = max(top, max(samples), -min(samples))
+        return -120.0 if top == 0 else max(20 * math.log10(top / 32768.0), -120.0)
+    except Exception:  # noqa: BLE001 - unreadable wav: unknown, not silent
+        return None
 
 
 _SIL_START = re.compile(r"silence_start: (-?[\d.]+)")

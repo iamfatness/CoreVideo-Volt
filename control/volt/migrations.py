@@ -74,10 +74,16 @@ MIGRATIONS = (
                        ("essence", "duration_frames", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
               postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
+    # timecode_source: where timecode_start came from (tmcd_track, video_stream_tag, format_tag, or none/invalid
+    # when it stays NULL = 00:00:00:00). The rest are what the file says about its own codecs.
+    Migration(10, "essence media facts",
+              columns=(("essence", "timecode_source", "TEXT"), ("essence", "video_profile", "TEXT"),
+                       ("essence", "pix_fmt", "TEXT"), ("essence", "audio_codec", "TEXT"),
+                       ("essence", "audio_sample_rate", "INTEGER"))),
     # runner_heartbeat is a new table (base-table creation makes it), as in 4 and 7: each runner upserts a row so
     # health can report how long ago one last checked in.
-    Migration(10, "runner_heartbeat table"),
-    # Next: Migration(11, "...", columns=(...)). Do not add a gap or reuse a number.
+    Migration(11, "runner_heartbeat table"),
+    # Next: Migration(12, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

@@ -54,9 +54,9 @@ Regression tests: `control/tests/test_ingest.py` (frame rate and audio layout re
 
 - **No HTTP way to build a show.** Creating a show, an item or a cue, and ingesting a file, are library calls. The operator API can mark, reorder, take and publish, but not set up the rundown it takes. Nothing starts a runner either; jobs sit queued until `python -m volt.runner` runs.
 - **As-run has one-second resolution.** `as_run_in` and `as_run_out` are `...Z` to the second. Items 1 and 2 aired for under a second in the fake run and show identical in and out. Item 1 on the live run read 23:32:21 to 23:32:22.
-- **Timecode and codec are not read.** `timecode_start` and `codec` stay NULL after ingest, so a file with embedded timecode is treated as starting at 00:00:00:00 in spans and in the NLE export.
+- **Timecode and codec were not read** (fixed afterwards, see below). `timecode_start` and `codec` stayed NULL after ingest, so a file with embedded timecode was treated as starting at 00:00:00:00 in spans and in the NLE export.
 - **The cue's `record.start` leaves a real recording on disk.** The live run created `Videos\CoreVideo Pro\corevideo-recording-20261016-193221` (about 4 s). It is the user's to keep or delete.
-- **The ISO copy produced 0 transcript words** with `tiny.en`. I did not find out whether that file is silent.
+- **The ISO copy produced 0 transcript words** with `tiny.en` (explained below: that file is digital silence).
 - The `proxy:` job from `record_start` and the `proxy-final:` job from `wrap` are two proxy builds of one asset (already documented in `runner.md`); both ran here without a clash.
 
 ## Not run
@@ -68,3 +68,10 @@ Regression tests: `control/tests/test_ingest.py` (frame rate and audio layout re
 - Postgres (CI only), a crash mid-take, two runners at once, a hold landing during a take.
 - Transcription with a model larger than `tiny.en`, and on the GPU specifically.
 - An ack is not evidence: every cue above was counted fired only because the dispatcher saw `recording.lifecycle` and `lowerThirdOnAir` change on the core, and the core was compared with its baseline afterwards.
+
+## Follow-up: embedded timecode, codecs, and the 0-word ISO
+
+- **Timecode and codecs are now read** (`shots.probe_media`, written by `shots.record_media_facts` at ingest and wrap, never over an existing value). The start comes from the QuickTime/MP4 timecode track (`tmcd_track`), else the video stream's `timecode` tag (`video_stream_tag`), else the container tag (`format_tag`, Matroska). It is stored in `essence.timecode_start` with the label as written (`01:00:00;00` is drop-frame), and `essence.timecode_source` records where it came from. A file with no timecode keeps `timecode_start` NULL (read everywhere as 00:00:00:00) and source `none`; a label that cannot be placed on the file's rate (drop-frame at 25 fps, a skipped drop-frame label) is ignored and recorded as `invalid`. Also stored: video `codec`, `video_profile`, `pix_fmt`, `audio_codec`, `audio_sample_rate` (migration 10). Shot spans, transcript timecodes and the NLE export already offset by `timecode_start`; they now get a real one.
+- **Observed on the real recordings:** none of the CoreVideo Pro Program or ISO files carries a timecode (source `none`); they are H.264 Constrained Baseline, `yuvj420p` (full range), AAC 48 kHz stereo. The variable-rate program still counts 3886 frames on its 60 fps rate.
+- **The ISO copy was silent, not mis-extracted.** In `corevideo-recording-20261002-072351`, seven of the eight ISO files (all but `ISO-06-Elena-Kova.mp4`) have one stereo AAC stream whose loudest sample is -91.0 dB, the codec's floor for all-zero input (Volt measured -120 dBFS on the extracted 16 kHz mono). `ISO-06` has the same audio as `Program.mp4` (mean -29.4 dB, max -8.1 dB) and `tiny.en` found 40 words in it. There is one audio stream per file, so no stream or channel was missed. The run used to look like a successful empty transcript.
+- **Reporting:** a run that finds no words now records an outcome in `asr_run.settings` (`result`): `no_speech` with reason `no_audio_stream` (the job finishes `done`; it used to fail), `silent_audio` (peak at or below -70 dBFS), or `no_words_recognized` (there is sound but no speech found). `GET /api/assets/{id}/transcript` carries it as `asr` (`null` before any run), with `wordCount` and `peakDbfs`.

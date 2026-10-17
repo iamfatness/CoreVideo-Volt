@@ -274,6 +274,8 @@ class Version8ToNine(unittest.TestCase):
                 cols = sqlite_columns(store.conn)
                 self.assertTrue(NEW_SPAN_COLUMNS <= cols["span"])
                 self.assertIn("duration_frames", cols["essence"])
+                self.assertTrue({"timecode_source", "video_profile", "pix_fmt", "audio_codec",
+                                 "audio_sample_rate"} <= cols["essence"])  # migration 10 follows 9 on the same open
                 self.assertIn("shot_run", cols)
                 self.assertEqual(
                     [tuple(r) for r in store.conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version")][:8],
