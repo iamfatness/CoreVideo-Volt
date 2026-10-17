@@ -34,6 +34,7 @@ def list_assets(store: Store) -> list[AssetRow]:
                   COALESCE(MAX(CASE WHEN e.open THEN 1 ELSE 0 END), 0) AS open
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
+           WHERE a.deleted_at IS NULL
            GROUP BY a.id
            ORDER BY a.created_at"""
     ).fetchall()

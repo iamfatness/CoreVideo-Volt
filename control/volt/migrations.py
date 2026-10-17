@@ -80,10 +80,12 @@ MIGRATIONS = (
               columns=(("essence", "timecode_source", "TEXT"), ("essence", "video_profile", "TEXT"),
                        ("essence", "pix_fmt", "TEXT"), ("essence", "audio_codec", "TEXT"),
                        ("essence", "audio_sample_rate", "INTEGER"))),
+    # purge_audit is a new table (base-table creation makes it); asset.deleted_at is the soft-delete tombstone.
+    Migration(11, "asset tombstone, purge audit table", columns=(("asset", "deleted_at", "TIMESTAMP"),)),
     # The as-run time to the millisecond, as text (2026-10-10T20:00:09.123Z). as_run_in/out keep their second precision.
-    Migration(11, "item as-run millisecond columns",
+    Migration(12, "item as-run millisecond columns",
               columns=(("item", "as_run_in_precise", "TEXT"), ("item", "as_run_out_precise", "TEXT"))),
-    # Next: Migration(12, "...", columns=(...)). Do not add a gap or reuse a number.
+    # Next: Migration(14, "...", columns=(...)); 13 is reserved for the ops PR. Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
@@ -176,11 +178,38 @@ def _ensure_columns(db: _Backend, columns) -> list:
     return added
 
 
+class SchemaTooNewError(RuntimeError):
+    """The database was migrated by newer code than this. Running anyway could misread or damage it."""
+
+    def __init__(self, database: int, code: int):
+        super().__init__(
+            f"the database schema is version {database} but this code only knows up to version {code}; "
+            "refusing to run against it. Upgrade this volt install to the version that wrote the database, "
+            "or restore a backup made at schema version "
+            f"{code} or older (python -m volt.backup restore)")
+        self.database, self.code = database, code
+
+
+def known_version() -> int:
+    """The newest schema version this code can bring a database to (read live, so a test that adds one sees it)."""
+    return max(m.version for m in MIGRATIONS)
+
+
+def check_not_newer(db: _Backend) -> int:
+    """Raise SchemaTooNewError when the database is ahead of this code. Returns the database's version."""
+    have = current_version(db)
+    if have > known_version():
+        raise SchemaTooNewError(have, known_version())
+    return have
+
+
 def run(db: _Backend) -> list:
     """Bring an existing database (base tables already present) to the latest shape.
 
-    Returns the versions applied this call. The caller owns the transaction and the lock."""
+    Returns the versions applied this call. The caller owns the transaction and the lock. Refuses
+    (SchemaTooNewError) a database whose recorded version is newer than this code knows."""
     db.ensure_version_table()
+    check_not_newer(db)
     _ensure_columns(db, legacy_columns())
     done = db.applied()
     ran = []

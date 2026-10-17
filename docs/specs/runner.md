@@ -33,7 +33,13 @@ The engine comes from `VOLT_ASR_ENGINE=faster-whisper` (plus `VOLT_ASR_MODEL`, `
 
 ## Config
 
-`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, or the matching flags.
+`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, `VOLT_QUARANTINE_DIR`, `VOLT_PURGE_EVERY`, `VOLT_PURGE_AFTER_DAYS[_<CLASS>]`, or the matching flags.
+
+At start the runner refuses (exit 3, message on stderr naming both versions) a database whose schema is newer than the code, instead of migrating or claiming jobs.
+
+## Delete and purge
+
+The `delete` handler is a soft delete only: it re-checks the safeguards and tombstones the asset (a `Permanent` failure with the reasons if it is refused). Purging is a separate periodic task, off unless `VOLT_PURGE_EVERY=<seconds>` is set. See `docs/specs/retention.md`.
 
 ## Periodic tasks and the URL refresh
 
