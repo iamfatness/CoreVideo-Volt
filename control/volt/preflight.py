@@ -139,6 +139,40 @@ def _port(host: str, port: int) -> Result:
     return Result("port", OK, f"{host}:{port} is free")
 
 
+def _retention(env) -> list:
+    """Purge settings: VOLT_PURGE_EVERY (0 = off), VOLT_PURGE_AFTER_DAYS[_CLASS], VOLT_QUARANTINE_DIR."""
+    out = []
+    try:
+        every = float(env.get("VOLT_PURGE_EVERY") or 0)
+        days = [(k, float(v)) for k, v in env.items() if k.startswith("VOLT_PURGE_AFTER_DAYS") and v]
+        if every < 0 or any(v < 0 for _k, v in days):
+            raise ValueError("must not be negative")
+    except ValueError as exc:
+        return [Result("purge", FAIL, f"VOLT_PURGE_EVERY / VOLT_PURGE_AFTER_DAYS: {exc}")]
+    if every > 0:
+        window = env.get("VOLT_PURGE_AFTER_DAYS") or "30"
+        out.append(Result("purge", OK, f"the runner purges tombstoned assets every {every:g} s after {window} day(s)"))
+    else:
+        out.append(Result("purge", OK, "off (VOLT_PURGE_EVERY=0): deleted assets stay tombstoned until purged by hand"))
+    quarantine = env.get("VOLT_QUARANTINE_DIR")
+    if quarantine and not Path(quarantine).is_dir():
+        out.append(Result("quarantine", WARN, f"{quarantine} does not exist yet"))
+    return out
+
+
+def _backup_tools(db: str) -> Result:
+    from volt import backup, pg
+
+    if not pg.is_dsn(db):
+        return Result("backup", OK, "sqlite: `volt backup` uses the online backup API, nothing to install")
+    try:
+        backup.find_pg_tool("pg_dump")
+        backup.find_pg_tool("pg_restore")
+    except backup.BackupError as exc:
+        return Result("backup", WARN, f"`volt backup` needs pg_dump and pg_restore: {exc}")
+    return Result("backup", OK, "pg_dump and pg_restore found")
+
+
 def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, port: Optional[int] = None) -> list:
     from volt import serve
 
@@ -170,6 +204,9 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
             free = entry["freeBytes"]
             detail = f"{entry['path']}: {'unknown' if free is None else f'{free // 1048576} MB'} free (floor {floor // 1048576} MB)"
             results.append(Result(f"disk {entry['name']}", WARN if entry["low"] else OK, detail))
+
+    results.extend(_retention(env))
+    results.append(_backup_tools(db))
 
     if not env.get("VOLT_PROXY_DIR"):
         results.append(Result("runner", WARN, "VOLT_PROXY_DIR is not set: proxy jobs will fail until it is"))

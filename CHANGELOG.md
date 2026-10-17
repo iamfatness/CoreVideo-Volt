@@ -22,7 +22,7 @@ control plane that had been built since 2026-10-09.
   and schema version, runner heartbeat, queue depth, stuck jobs, as-run, disk, storage.
 - Disk-space floor (`VOLT_MIN_FREE_MB`) that refuses new ingest, proxy and thumbnail work, and a capped,
   self-pruning thumbnail cache. Stale temp files from a killed encode are swept.
-- Migration 11: `runner_heartbeat` table.
+- Migration 12: `runner_heartbeat` table.
 - Service files for systemd and Windows (Task Scheduler), and `docs/operations.md`.
 
 ### Product readiness

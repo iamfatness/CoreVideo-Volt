@@ -28,7 +28,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, disk, logs, pg, publish as publish_mod, record, shots, speech, storage
+from volt import chunking, disk, logs, pg, publish as publish_mod, record, retention, shots, speech, storage
+from volt.migrations import SchemaTooNewError
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -112,6 +113,8 @@ class Config:
     refresh_urls_every: float = 0.0           # seconds between URL refresh passes; 0 = off (opt in)
     refresh_urls_within: float = 86400.0      # re-sign URLs that expire within this many seconds
     out_dir: Optional[Path] = None            # VOLT_OUT: where thumbnails are cached (same default as the server)
+    quarantine_dir: Optional[Path] = None     # VOLT_QUARANTINE_DIR: where watch-folder ingest copies cards (purge may delete there)
+    purge_every: float = 0.0                  # VOLT_PURGE_EVERY seconds between purge passes; 0 = off (opt in)
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -139,7 +142,16 @@ class Config:
             refresh_urls_every=float(env.get("VOLT_REFRESH_URLS_EVERY") or 0),
             refresh_urls_within=float(env.get("VOLT_REFRESH_URLS_WITHIN") or cls.refresh_urls_within),
             out_dir=path("VOLT_OUT"),
+            quarantine_dir=path("VOLT_QUARANTINE_DIR"),
+            purge_every=float(env.get("VOLT_PURGE_EVERY") or 0),
         )
+
+    def owned_roots(self) -> retention.OwnedRoots:
+        """The directories a purge may delete from (everything else is left alone)."""
+        return retention.OwnedRoots(
+            self.proxy_dir, self.quarantine_dir, self.out_dir,
+            backend=self.storage,
+            backend_factory=lambda: storage.from_env(local_root=self.publish_dir))
 
 
 def _need(value, name: str, flag: str):
@@ -250,8 +262,17 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
                 raise Defer(exc.reason) from exc
             raise Permanent(f"cannot detect shots: {exc.reason}") from exc
 
+    def delete(store: Store, job: Claimed) -> None:
+        """Soft delete only: tombstone the asset after re-checking the safeguards. Purging is a later, separate step."""
+        try:
+            retention.tombstone(store, job.asset_id)
+        except retention.DeleteRefused as exc:
+            raise Permanent("; ".join(exc.reasons)) from exc
+        except KeyError as exc:
+            raise Permanent(f"asset {job.asset_id} not found (already purged?)") from exc
+
     return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames,
-            shots.DETECT_TYPE: detect_shots}
+            shots.DETECT_TYPE: detect_shots, "delete": delete}
 
 
 def cache_gc_task(config: Config) -> Callable[[Store], dict]:
@@ -281,6 +302,14 @@ def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshRe
             return publish_mod.RefreshReport()
         return publish_mod.refresh_expiring(store, state["backend"], int(config.refresh_urls_within))
 
+    return run
+
+
+def purge_task(config: Config) -> Callable[[Store], retention.PurgeReport]:
+    """The periodic purge: tombstones past their retention window (VOLT_PURGE_AFTER_DAYS, default 30) are removed.
+    Published versions are never purged by this task; that needs the explicit command-line flag."""
+    def run(store: Store) -> retention.PurgeReport:
+        return retention.purge_due(store, config.owned_roots())
     return run
 
 
@@ -580,12 +609,20 @@ def main(argv: list[str]) -> int:
                     args.corrections, args.asr_window, args.asr_overlap, bool(args.asr_vad), args.asr_vocab_mode,
                     args.asr_min_word_prob, args.asr_silence_guard, args.asr_cpu_threads, args.asr_idle_release)
     pg.configure_pool_from_env(args.db, max_size=args.pg_pool_max)  # also VOLT_PG_POOL_*; heartbeats borrow
-    store = Store(args.db)
+    try:
+        store = Store(args.db)
+    except SchemaTooNewError as exc:  # a runner older than its database must not claim jobs
+        pg.close_pools()
+        print(f"volt runner: {exc}", file=sys.stderr)
+        return 78  # EX_CONFIG: `volt run` does not restart a process that exited with it
     runner = Runner(store, default_handlers(config), target=args.db, lease=args.lease,
                     max_attempts=args.max_attempts, backoff=args.backoff, poll=args.poll,
                     release=speech.release_engines, idle_release=config.asr_idle_release)
     config.refresh_urls_every, config.refresh_urls_within = args.refresh_urls_every, args.refresh_urls_within
     config.out_dir = args.out_dir
+    config.quarantine_dir, config.purge_every = env.quarantine_dir, env.purge_every
+    if config.purge_every > 0:
+        runner.periodic.append(Periodic("purge", config.purge_every, purge_task(config)))
     if args.refresh_urls_every > 0:
         runner.periodic.append(Periodic("refresh-urls", args.refresh_urls_every, refresh_urls_task(config)))
     gc_every = float(os.environ.get("VOLT_CACHE_GC_EVERY") or 600)

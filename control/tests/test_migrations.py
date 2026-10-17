@@ -253,7 +253,7 @@ def _seed_v8(execute):
 
 class Version8ToNine(unittest.TestCase):
     """The shape every deployed database has today (store.SCHEMA at version 8, versions 1-8 recorded) takes
-    exactly migration 9 and keeps its rows."""
+    migration 9 and every later one and keeps its rows."""
 
     def test_sqlite_version_8_runs_only_migration_9(self):
         with tempfile.TemporaryDirectory() as tmp:

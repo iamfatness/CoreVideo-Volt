@@ -21,7 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import health, logs, media, nle, operator_state, shots
+from volt import health, logs, media, nle, operator_state, retention, shots
+from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
@@ -341,6 +342,27 @@ def act_legal_hold(store, asset_id, body):
     return {"ok": True, "asset": asset_payload(store, asset_id)}
 
 
+def act_delete(store, asset_id, body):
+    """Soft delete (tombstone). Hides the asset; keeps every file; undone by /restore; purged later by the runner."""
+    _unknown_keys(body, set())
+    _asset_exists(store, asset_id)
+    try:
+        newly = retention.tombstone(store, asset_id)
+    except retention.DeleteRefused as exc:
+        raise ApiError(409, "delete_refused", str(exc), reasons=exc.reasons) from None
+    return {"ok": True, "alreadyDeleted": not newly, "deletedAt": store.get_asset(asset_id).deleted_at,
+            "asset": asset_payload(store, asset_id)}
+
+
+def act_restore(store, asset_id, body):
+    """Bring a tombstoned asset back. 404 once it has been purged."""
+    _unknown_keys(body, set())
+    _asset_exists(store, asset_id)
+    if not retention.restore(store, asset_id):
+        raise ApiError(409, "not_deleted", "this asset is not deleted")
+    return {"ok": True, "asset": asset_payload(store, asset_id)}
+
+
 def act_publish(store, span_id, body):
     _unknown_keys(body, set())
     span = store.conn.execute("SELECT asset_id FROM span WHERE id = ?", (span_id,)).fetchone()
@@ -499,6 +521,8 @@ ROUTES = [
     (re.compile(r"^/api/record/stop$()"), act_record_stop),
     (re.compile(rf"^/api/assets/{_ID}/cleared$"), act_cleared),
     (re.compile(rf"^/api/assets/{_ID}/legal-hold$"), act_legal_hold),
+    (re.compile(rf"^/api/assets/{_ID}/delete$"), act_delete),
+    (re.compile(rf"^/api/assets/{_ID}/restore$"), act_restore),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
     (re.compile(rf"^/api/assets/{_ID}/spans$"), act_span_create),
     (re.compile(rf"^/api/spans/{_ID}/trim$"), act_span_trim),
@@ -848,6 +872,8 @@ def main(argv=None):
         try:
             Store(DB_PATH).close()  # bootstrap the schema once
             server = ThreadingHTTPServer((host, port), Handler)
+        except SchemaTooNewError as exc:  # version-skew guard: never serve a database newer than this code
+            _config_exit(str(exc))
         except OSError as exc:
             _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
         port = server.server_address[1]

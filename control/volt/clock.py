@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from volt import logs
+from volt.migrations import SchemaTooNewError
 from volt.playout import HeldError, PlayoutError, hold_state, on_air
 from volt.store import Store
 from volt.take import take_item
@@ -273,7 +274,11 @@ def main(argv: list[str]) -> int:
         ap.error("set VOLT_ROOM_URL (and VOLT_ROOM_TOKEN if the room needs one)")
     logs.setup("clock")
     room = CoreVideoProRoom(url, os.environ.get("VOLT_ROOM_TOKEN") or None)
-    store = Store(args.db)
+    try:
+        store = Store(args.db)
+    except SchemaTooNewError as exc:  # a clock older than its database must not run
+        print(f"volt clock: {exc}", file=sys.stderr)
+        return 78  # EX_CONFIG: `volt run` does not restart it
     kw = dict(grace=args.grace, fire_after_hold=args.fire_after_hold, claim_lease=args.claim_lease)
     try:
         if args.once:

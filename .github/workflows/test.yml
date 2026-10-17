@@ -54,6 +54,8 @@ jobs:
       - uses: FedericoCarboni/setup-ffmpeg@v3
       - name: Install the Postgres drivers
         run: python -m pip install "psycopg[binary]==3.3.6" "psycopg_pool==3.3.3"
+      - name: Install the Postgres client tools (the backup tests run pg_dump and pg_restore)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
       - name: Contract tests on Postgres
         working-directory: control
         run: python -m unittest discover -s tests -v

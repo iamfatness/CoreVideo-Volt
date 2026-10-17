@@ -98,6 +98,54 @@ class Commands(unittest.TestCase):
             self.assertIn("usage:", out.stdout)
 
 
+class BackupAndSkew(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.db = str(self.dir / "v.db")
+        Store(self.db).close()
+
+    def volt(self, *args, env=None):
+        full = {k: v for k, v in os.environ.items() if k != "VOLT_DB"}
+        full.update(env or {})
+        return subprocess.run([sys.executable, "-m", "volt", *args], cwd=CONTROL, capture_output=True, text=True,
+                              timeout=120, env=full)
+
+    def test_backup_verify_restore_through_the_volt_command(self):
+        out = self.volt("backup", self.db, str(self.dir / "bk"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.volt("verify", str(self.dir / "bk")).returncode, 0)
+        target = str(self.dir / "restored.db")
+        out = self.volt("restore", str(self.dir / "bk"), target)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue(Path(target).exists())
+        self.assertEqual(self.volt("verify-storage", target).returncode, 0)
+
+    def _make_newer(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db)
+        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (999, 'future', 'now')")
+        conn.commit()
+        conn.close()
+
+    def test_serve_runner_and_clock_refuse_a_newer_database_with_exit_78(self):
+        self._make_newer()
+        env = {"VOLT_DB": self.db, "VOLT_ROOM_URL": "http://127.0.0.1:1"}
+        for args in (("serve", "--port", "0"), ("runner", "--once"), ("clock", "--once")):
+            out = self.volt(*args, env=env)
+            self.assertEqual(out.returncode, supervisor.EX_CONFIG, (args, out.stderr))
+            self.assertIn("schema", out.stderr)
+
+    def test_check_describes_purge_and_backup_and_rejects_bad_purge_settings(self):
+        base = {"VOLT_MIN_FREE_MB": "1", "VOLT_PURGE_EVERY": "3600", "VOLT_PURGE_AFTER_DAYS": "14"}
+        results = {r.name: r for r in preflight.run_checks(env=base, db=self.db, port=0)}
+        self.assertIn("14 day", results["purge"].detail)
+        self.assertEqual(results["backup"].status, preflight.OK)
+        bad = {r.name: r for r in preflight.run_checks(env={**base, "VOLT_PURGE_EVERY": "soon"}, db=self.db, port=0)}
+        self.assertEqual(bad["purge"].status, preflight.FAIL)
+
+
 class Check(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

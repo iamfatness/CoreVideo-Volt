@@ -14,6 +14,8 @@ Backend.delete(key)                       -> None (a missing key is not an error
 
 Keys are relative, `/`-separated, with no `..`, empty segments or backslashes (`asset/span-kind.mp4`). `put_file` replaces an existing object, verifies what arrived and never leaves a partial object visible. A new backend must pass `BackendContract` in `control/tests/test_storage.py` (subclass it and supply `make_backend`).
 
+Two optional methods exist for verification (`python -m volt.backup verify-storage`, see [backup](backup.md)): `stat(key) -> ObjectInfo(size, sha256 or None)` on all four backends (S3 gives a SHA-256 only for single-part objects; Azure returns the `sha256` metadata Volt wrote; GCS gives size only), and `list_keys()` on the local and S3 backends, so orphan detection works there and not on Azure or GCS. Neither writes anything. They are proven on the fakes only, like the rest of the cloud code.
+
 ## Configuration
 
 Environment only. Nothing here holds a credential.

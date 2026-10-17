@@ -100,7 +100,17 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_PART_MAX_AGE_HOURS` | `24` | A `*.part.mp4` in the proxy directory untouched this long is a killed encode's leftover and is removed. |
 | `VOLT_RUNNER_STALE_SECONDS` | `120` | A runner with no heartbeat for this long counts as gone. |
 | `VOLT_STUCK_JOB_SECONDS` | `14400` | A running job older than this is reported as stuck (an expired lease always is). |
-| `VOLT_QUARANTINE_DIR` | none | Only reported in health and `volt check`; `ingest_file` takes its quarantine directory as an argument. |
+| `VOLT_QUARANTINE_DIR` | none | Where watch-folder ingest copies cards. Purge deletes there only when this names the directory; `volt verify-storage` checks it; health and `volt check` report its disk. |
+
+### Deletion and retention
+
+Deleting an asset is a soft delete (tombstone); a purge removes its files after a window. Details in
+`docs/specs/retention.md`. `volt check` validates these and says whether purging is on.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VOLT_PURGE_EVERY` | `0` (off) | Seconds between the runner's purge passes. Off means tombstoned assets are never purged automatically. |
+| `VOLT_PURGE_AFTER_DAYS` | `30` | Days a tombstone waits before purge. `VOLT_PURGE_AFTER_DAYS_<CLASS>` overrides it for one `retention_class`; `0` = at once. |
 
 ### Runner and speech
 
@@ -219,17 +229,30 @@ gets an error (`507 disk_low` for a thumbnail). Only rebuildable files are ever 
 beyond the cap, oldest first, and stale `*.part.mp4` leftovers. Registered essences (hi-res, proxies, published
 files) are never touched; free that space yourself.
 
+## Backup and restore
+
+Provided by `volt.backup` (`python -m volt.backup` does the same). Stop serve and the runner before a restore.
+
+| Command | Does |
+|---|---|
+| `volt backup <db> <dir>` | Writes a new directory: the data file plus `manifest.json` (schema version, row counts, SHA-256), written last. SQLite uses the online backup API, so it is safe while Volt runs; Postgres needs `pg_dump`. `<db>` defaults to `VOLT_DB`. |
+| `volt verify <dir>` | Checks a backup against its manifest without restoring. |
+| `volt restore <dir> [db] [--overwrite]` | Restores into `db` (default `VOLT_DB`), migrating forward if the backup is older. Refuses a non-empty target without `--overwrite`; Postgres needs `pg_restore`. |
+| `volt verify-storage [db] [--deep]` | Read-only check that every file and published object the database references exists. Uses `VOLT_PROXY_DIR`, `VOLT_QUARANTINE_DIR`, `VOLT_PUBLISH_DIR` and `VOLT_STORAGE`. |
+
+Media files and object storage are not copied by `volt backup`; see `docs/specs/backup.md`. `volt check`
+reports whether `pg_dump` and `pg_restore` are available when the database is Postgres.
+
 ## Upgrade
 
 1. Read `CHANGELOG.md` for the versions you are crossing.
-2. Back up the database. SQLite runs in WAL mode, so copy with `sqlite3 volt.db ".backup volt.bak"`, not by
-   copying the file alone. Postgres: `pg_dump`. (Backup and restore are not automated or drilled yet; see
-   product-readiness gap 1.)
+2. Back up the database: `volt backup <db> <new-dir>` (see Backup and restore below).
 3. Stop: `systemctl stop volt`, `Stop-ScheduledTask -TaskName Volt`, or Ctrl-C.
 4. `git pull`, then `venv/bin/pip install -e "control[...]"` for the extras you use.
 5. `volt check --env-file ...`. A `warn` on the database means it will migrate on start; a `fail` that the
    schema is newer than the build means you are running older code than the database was upgraded by: stop and
-   use the newer build.
+   use the newer build. serve, the runner and the clock also refuse to start against such a database (exit code
+   78, so `volt run` does not retry), and `volt restore` of a backup made at that version is the way back.
 6. Start. Migrations run once, at the first start, inside a transaction. They are forward-only: there is no
    downgrade, so a rollback means restoring the backup taken in step 2.
 7. Confirm with `/health` (version) and `/api/health` (`status`, `schemaState` current).
@@ -243,7 +266,7 @@ is not blocked from starting.
   right to install or redistribute Volt. Third-party notices (ffmpeg, models, optional SDKs) are also absent.
 - **Auth.** One shared bearer token, no users, roles or audit trail. Behaviour unchanged by this page.
 - **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
-- **Backup and restore**, **asset deletion and retention**, and **version-skew refusal at start** (see
-  product-readiness).
+- **Scheduling backups.** `volt backup` exists; nothing runs it on a timer, and copying media files and object
+  storage is yours to arrange (docs/specs/backup.md). Run a restore drill once before relying on it.
 - **Not exercised on real systems:** the Task Scheduler registration and the systemd unit were reviewed and the
   installer's plan was tested with `-DryRun`, but neither was installed on a live machine.

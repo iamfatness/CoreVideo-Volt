@@ -39,6 +39,7 @@ def assets(store: Store) -> list[dict]:
                   EXISTS (SELECT 1 FROM essence p WHERE p.asset_id = a.id AND p.role = 'proxy') AS has_proxy
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
+           WHERE a.deleted_at IS NULL
            ORDER BY a.created_at, a.id"""
     ).fetchall()
     out = []
@@ -62,7 +63,7 @@ _EXTRA_LIMIT = 500
 def _span_rows(store: Store, where: str, params: Sequence, limit: int) -> list:
     return store.conn.execute(
         f"""SELECT s.id, s.asset_id, s.kind, s.tc_in, s.tc_out, s.text, s.label, a.cleared, a.legal_hold, a.camera
-           FROM span s JOIN asset a ON a.id = s.asset_id
+           FROM span s JOIN asset a ON a.id = s.asset_id AND a.deleted_at IS NULL
            {where}
            ORDER BY s.tc_in, s.id LIMIT ?""",
         (*params, limit),

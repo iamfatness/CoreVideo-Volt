@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS asset (
   room TEXT,
   camera TEXT,
   source_key TEXT UNIQUE,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS essence (
@@ -177,6 +178,18 @@ CREATE TABLE IF NOT EXISTS cue (
   fail_detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS purge_audit (
+  id TEXT PRIMARY KEY,
+  purged_at TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  ref TEXT,
+  role TEXT,
+  location TEXT,
+  outcome TEXT NOT NULL,
+  detail TEXT
+);
+
 CREATE TABLE IF NOT EXISTS runner_heartbeat (
   name TEXT PRIMARY KEY,
   pid INTEGER,
@@ -241,6 +254,7 @@ class Asset:
     room: Optional[str]
     camera: Optional[str]
     source_key: Optional[str] = None
+    deleted_at: Optional[str] = None  # soft-delete tombstone; None = live
 
 
 @dataclass
@@ -353,6 +367,7 @@ class Store:
             room=row["room"],
             camera=row["camera"],
             source_key=row["source_key"],
+            deleted_at=row["deleted_at"],
         )
 
     def find_by_source(self, source_key: str) -> Optional[Asset]:
@@ -521,6 +536,8 @@ class Store:
         self.conn.commit()
 
     def delete_asset(self, asset_id: str) -> str:
+        """Queue the delete job. The runner's handler soft-deletes (tombstones) the asset after re-checking the
+        safeguards; purging is a separate, later step. See volt/retention.py and docs/specs/retention.md."""
         asset = self.get_asset(asset_id)
         if asset.legal_hold:
             raise HoldError(asset_id)
@@ -528,7 +545,7 @@ class Store:
 
     def assert_publishable(self, asset_id: str) -> None:
         asset = self.get_asset(asset_id)
-        if asset.legal_hold or not asset.cleared:
+        if asset.legal_hold or not asset.cleared or asset.deleted_at:
             raise NotClearedError(asset_id)
 
 

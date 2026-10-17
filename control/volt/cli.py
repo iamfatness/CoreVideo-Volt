@@ -3,6 +3,8 @@
     volt serve    the operator API and session shell        (same as python -m volt.serve)
     volt runner   the job runner                            (same as python -m volt.runner)
     volt clock    the schedule clock                        (same as python -m volt.clock)
+    volt backup   back up the database into a new directory     (volt.backup; the same module does the next three)
+    volt restore  restore a backup into a database; volt verify checks one; volt verify-storage checks media
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
     volt version  the build
@@ -23,6 +25,7 @@ import volt
 from volt import envfile
 
 USAGE = __doc__
+BACKUP_COMMANDS = {"backup": "backup", "restore": "restore", "verify": "verify", "verify-storage": "verify-storage"}
 
 
 def _bridge_break_signal() -> None:
@@ -144,6 +147,9 @@ def main(argv=None) -> int:
         return _check(rest)
     if command == "run":
         return _run(rest)
+    if command in BACKUP_COMMANDS:  # volt backup <db> <dir>, volt restore <dir> [db], volt verify <dir>, volt verify-storage
+        from volt import backup
+        return backup.main([BACKUP_COMMANDS[command], *rest])
     if command == "serve":
         from volt import serve
         _bridge_break_signal()
