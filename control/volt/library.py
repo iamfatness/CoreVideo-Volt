@@ -49,6 +49,7 @@ def search(store: Store, query: str) -> list[Hit]:
         """SELECT id, asset_id, tc_in, tc_out, text
            FROM span
            WHERE kind = 'transcript' AND lower(text) LIKE ?
+             AND asset_id NOT IN (SELECT id FROM asset WHERE deleted_at IS NOT NULL)
            ORDER BY tc_in""",
         (f"%{needle}%",),
     ).fetchall()

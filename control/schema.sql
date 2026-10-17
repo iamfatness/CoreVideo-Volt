@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS asset (
   room TEXT,
   camera TEXT,
   source_key TEXT UNIQUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS essence (
@@ -153,4 +154,16 @@ CREATE TABLE IF NOT EXISTS cue (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   fail_status TEXT,
   fail_detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS purge_audit (
+  id TEXT PRIMARY KEY,
+  purged_at TIMESTAMPTZ NOT NULL,
+  asset_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  ref TEXT,
+  role TEXT,
+  location TEXT,
+  outcome TEXT NOT NULL,
+  detail TEXT
 );
