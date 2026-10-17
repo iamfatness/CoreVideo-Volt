@@ -22,7 +22,7 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 
 `Authorization: Bearer <VOLT_TOKEN>`, compared in constant time (`hmac.compare_digest`). Missing or wrong: `401 unauthorized` with `WWW-Authenticate: Bearer`, checked before routing. When a token is set it also guards the GET data routes (`/assets`, `/rundown`, `/seek`); only the static shell at `/` stays open.
 
-Environment: `VOLT_HOST` (default `127.0.0.1`), `VOLT_PORT` (default 8765), `VOLT_TOKEN`, `VOLT_DB`, `VOLT_OUT` (publish output directory, default `control/out`), `VOLT_ROOM_URL` and `VOLT_ROOM_TOKEN` (the CoreVideoPro room; unset means room-backed routes answer `503 no_room`).
+Environment: `VOLT_HOST` (default `127.0.0.1`), `VOLT_PORT` (default 8765), `VOLT_TOKEN`, `VOLT_DB`, `VOLT_INGEST_ROOTS` and `VOLT_QUARANTINE` (ingest, see Show building), `VOLT_OUT` (publish output directory, default `control/out`), `VOLT_ROOM_URL` and `VOLT_ROOM_TOKEN` (the CoreVideoPro room; unset means room-backed routes answer `503 no_room`).
 
 ## Endpoints
 
@@ -34,7 +34,7 @@ IDs are path segments. All are `POST`.
 | `/api/shows/{show}/take` | `owner?` | Advance and dispatch the new item's cues to the room (`take_item`). Returns `advanced`, `item`, `results`, `rundown`. | 404; 409 `held`; 409 `not_cleared`; 409 `no_media`; 503 `no_room`; 409 `cue_failed` or `cue_unsupported` (see below); 422 |
 | `/api/shows/{show}/hold` | `reason?` (string, 500 max) | Hold the rundown. Holding twice keeps the first hold (`alreadyHeld: true`). | 404; 422 |
 | `/api/shows/{show}/release` | none | Release the hold. Releasing a show that is not held is a 200 with `wasHeld: false`. | 404 |
-| `/api/shows/{show}/reorder` | `items`: every item id of the show, once each | Set the order. | 404; 422 `bad_input` (missing, duplicate or foreign ids) |
+| `/api/shows/{show}/reorder` | `items`: every item id of the show, once each; `version?` | Set the order, atomically (one transaction under the show's lock). With `version` (the `orderVersion` the page last saw) it is conditional: see [Show building](#show-building). Returns `rundown`, `orderVersion`. | 404; 422 `bad_input` (missing, duplicate or foreign ids); 409 `stale_order`; 409 `order_locked` |
 | `/api/items/{item}/skip` | none | Mark a ready item skipped. | 404; 409 `not_skippable` (on air or already past) |
 | `/api/items/{item}/kill` | none | Kill a ready item. The asset stays. | 404; 409 `not_killable` |
 | `/api/items/{item}/attach` | `span` | Attach a span to a ready item. | 404 (item or span); 409 `not_attachable`; 422 |
@@ -59,6 +59,36 @@ IDs are path segments. All are `POST`.
 ```
 
 `cue_unsupported` is the same shape for a command that has no verified adapter.
+
+## Show building
+
+Endpoints that let an operator make a show without a developer. The rules live in `control/volt/building.py`; the handlers in `serve.py` (a separate block) read the body, call it, and map its refusals. Same auth, JSON, unknown-field and body-size rules as every POST. Every success carries `rundown` (the `/rundown` shape, unchanged) and `orderVersion`. A refusal writes nothing.
+
+Each edit is one transaction under the show's lock (the lock `go`, `take`, `skip` and `kill` also take, in any process, on SQLite and Postgres) and ends in a write that restates its condition (`WHERE status = 'ready'`), so an edit that races a take gets one outcome. They do not take the in-process sequencing lock, so editing stays possible while a take waits on the room. Only a `ready` item can be edited; once an item is on air or has aired, the as-run log is its record.
+
+| Path | Body | Does | Refusals |
+| --- | --- | --- | --- |
+| `POST /api/shows` | `title` (1 to 200), `id?` | Create a show. Returns `show: {id, title}`, `existed`. | 409 `id_conflict` (the id is another show's); 422 |
+| `POST /api/shows/{show}/items` | `slug` (1 to 200), `script?` (20000 max), `id?` | Append an item (status `ready`, no media). Returns `item`, `existed`. | 404; 409 `id_conflict`; 422 |
+| `POST /api/items/{item}/rename` | `slug?`, `script?` (at least one) | Rename. | 404; 409 `not_editable` (not ready); 422 |
+| `POST /api/items/{item}/remove` | none | Delete an item that has not aired, with its cues. Allowed for `ready`, `killed`, `skipped` with no as-run. `kill` keeps the item in the list as killed; this takes it out. Returns `removed`. | 404; 409 `not_removable` (on air or aired) |
+| `POST /api/items/{item}/attach` | `span` | (existing) attach a clip. | see above |
+| `POST /api/items/{item}/detach` | none | Take the span off a ready item. A repeat is a 200 with `wasAttached: false`. | 404; 409 `not_attachable` |
+| `POST /api/items/{item}/cues` | `command`, `room?` (only `corevideo.pro`), `payload?` (2000 max) | Add a cue at the end of the item's cues. Returns `cue` (`id, room, command, payload, status, verified, failure`) and, for a command with no verified adapter, `warning`. | 404; 409 `not_editable`; 422 `bad_command` (not in `cues.COREVIDEO_COMMANDS`; body lists `commands`), `bad_input` |
+| `POST /api/cues/{cue}/remove` | none | Remove a cue that has not fired, from a ready item. Returns `removed`, `item`. | 404; 409 `not_editable`, `cue_fired` |
+| `GET /api/items/{item}/cues` | none | The item's cues in order, plus `commands`. | 404 |
+| `GET /api/cue-commands` | none | `commands: [{room, command, verified}]`. `verified` is true when `dispatch.HANDLERS` has an adapter (today `show-input.take`, `overlay.take`, `record.start`, `stream.start`). A cue for an unverified command (`audio.snapshot`, `record.arm`) can be stored and armed, but a take stops at it with `cue_unsupported`, so the UI warns when it is added. | |
+| `POST /api/ingest` | `path`, `owner?`, `show?`, `camera?` | Ingest one local file through `ingest_file`: mint, quarantine copy, ffprobe, checksum, frame rate, and the follow-on proxy and transcript jobs. Returns `asset`, `essence`, `minted`, `status` (`done` or `quarantine`), `quarantined`, `jobs: [{id, type, status, error}]`, `assetState`. Runs inside the request. A file that does not parse is a 200 with `quarantined: true` (the asset and a failed job exist; nothing airs). A replay of the same file (same path, size and modification time) is the same asset with `minted: false`. Ingest never sets `cleared`. | 403 `path_not_allowed`; 404 `not_found` (missing file or a folder); 503 `ingest_disabled`, `engine_missing` (no ffprobe); 422 |
+
+**Ids and retries.** `id` on create is optional and caller-chosen (letters, digits, `_ . : -`, up to 128). The same id with the same content is a 200 with `existed: true` and changes nothing, so a retry after a lost response is safe; the same id with other content is `409 id_conflict`. Without `id` the server mints one.
+
+**Reorder is conditional.** `orderVersion` (in `GET /api/state` and in every building response) is a token over the show's item ids in order. `POST .../reorder` with `version` set to the token the page last saw runs one transaction: if the token no longer matches (anyone added, removed or moved an item) it is `409 stale_order` and nothing moves; otherwise it validates and writes. Of N operators holding one token, exactly one wins (a test races four, on SQLite and Postgres). `version` is optional so older clients keep working, but without it the order is set unconditionally. The ids must be exactly the show's items. Items that are on air or have aired keep their relative order and every ready item must stay below them (`409 order_locked`): `go` walks forward from the item on air, so a ready item moved above it could never air.
+
+**Ingest allow-list.** Like the media proxy, ingest only touches files the server was told about, but a file to ingest is not registered yet, so the allowed place is a folder: `VOLT_INGEST_ROOTS`, folders separated by the OS path separator (`;` on Windows, `:` elsewhere). `path` must be absolute; it is resolved (`..` and symlinks followed) and must lie inside a root, compared on path segments (`/inbox-evil` is not inside `/inbox`). Anything else is `403 path_not_allowed` with a fixed message, the same whether or not the file exists and without echoing it. With no root configured every ingest is `503 ingest_disabled`. The quarantine copy goes to `VOLT_QUARANTINE`, default `VOLT_OUT/quarantine`.
+
+**As-run to the millisecond.** Migration 10 adds `item.as_run_in_precise` and `as_run_out_precise` (text, `2026-10-10T20:00:09.123Z`). `advance` writes the second-precision `as_run_in/out` and the millisecond value from one read of the clock (the second is the millisecond text's prefix); a rewind clears both. Each item in the `/rundown` shape gains `asRunInPrecise` and `asRunOutPrecise`; the old `asRunIn` and `asRunOut` are unchanged. A row stamped before the migration, or by a test's injected clock, has no millisecond value, and the precise field then repeats the second so clients can read it without a branch. `advance(..., precise_clock=)` lets a test supply one.
+
+Not done here: `attach` still reads the item's status and then writes, outside the show lock (it predates this section), so an attach that races a take can land on an item that just went on air; and there is no endpoint to delete a show.
 
 ## Export (shot spans, slice 6)
 

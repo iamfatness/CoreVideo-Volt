@@ -74,7 +74,10 @@ MIGRATIONS = (
                        ("essence", "duration_frames", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
               postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
-    # Next: Migration(10, "...", columns=(...)). Do not add a gap or reuse a number.
+    # The as-run time to the millisecond, as text (2026-10-10T20:00:09.123Z). as_run_in/out keep their second precision.
+    Migration(10, "item as-run millisecond columns",
+              columns=(("item", "as_run_in_precise", "TEXT"), ("item", "as_run_out_precise", "TEXT"))),
+    # Next: Migration(11, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

@@ -17,6 +17,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _now_precise() -> str:
+    """Now to the millisecond, UTC: 2026-10-10T20:00:09.123Z. The second-precision _now() is its prefix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def _id() -> str:
     return str(uuid.uuid4())
 
@@ -142,7 +147,9 @@ CREATE TABLE IF NOT EXISTS item (
   scheduled_at TEXT,
   schedule_state TEXT,
   schedule_note TEXT,
-  schedule_claimed_at TEXT
+  schedule_claimed_at TEXT,
+  as_run_in_precise TEXT,
+  as_run_out_precise TEXT
 );
 
 CREATE TABLE IF NOT EXISTS version (

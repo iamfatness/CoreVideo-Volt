@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from volt.rundown import show_lock, take
-from volt.store import Store, _now
+from volt.store import Store, _now, _now_precise
 
 
 class PlayoutError(Exception):
@@ -87,17 +87,29 @@ def rewind(store: Store, adv: Advance) -> None:
     with store.transaction():
         if adv.target is not None:
             store.conn.execute(
-                "UPDATE item SET status = 'ready', as_run_in = NULL WHERE id = ?", (adv.target,)
+                "UPDATE item SET status = 'ready', as_run_in = NULL, as_run_in_precise = NULL WHERE id = ?", (adv.target,)
             )
         if adv.previous is not None:
             store.conn.execute(
-                "UPDATE item SET status = 'on air', as_run_out = NULL WHERE id = ?", (adv.previous,)
+                "UPDATE item SET status = 'on air', as_run_out = NULL, as_run_out_precise = NULL WHERE id = ?", (adv.previous,)
             )
         for item_id in adv.passed:
             store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
 
 
-def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Advance:
+def _stamp(clock: Callable[[], str], precise_clock: Optional[Callable[[], str]]) -> tuple[str, Optional[str]]:
+    """One read of the clock for the as-run: (second-precision text, millisecond text or None).
+
+    With the default clock both come from the same instant, so the second is the millisecond text's prefix.
+    A caller-supplied `clock` (tests) keeps its own text and has no millisecond value unless it gives one."""
+    if clock is _now and precise_clock is None:
+        precise = _now_precise()
+        return precise[:19] + "Z", precise
+    return clock(), precise_clock() if precise_clock is not None else None
+
+
+def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
+            precise_clock: Optional[Callable[[], str]] = None) -> Advance:
     """Take the next item and say what changed.
 
     The outgoing item gets its as-run out and the incoming item its as-run in from
@@ -128,15 +140,17 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Adva
                 break
         if target is not None:
             take(store, target)  # raises before changing anything if it cannot air
-        now = clock()
+        now, precise = _stamp(clock, precise_clock)
         if current is not None:
             store.conn.execute(
-                "UPDATE item SET status = 'aired', as_run_out = ? WHERE id = ?", (now, current)
+                "UPDATE item SET status = 'aired', as_run_out = ?, as_run_out_precise = ? WHERE id = ?",
+                (now, precise, current)
             )
         for item_id in passed:
             store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))
         if target is not None:
-            store.conn.execute("UPDATE item SET as_run_in = ? WHERE id = ?", (now, target))
+            store.conn.execute(
+                "UPDATE item SET as_run_in = ?, as_run_in_precise = ? WHERE id = ?", (now, precise, target))
         return Advance(target, current, passed)
 
 

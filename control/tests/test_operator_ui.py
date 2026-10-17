@@ -82,6 +82,9 @@ class Endpoints(Api):
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual(status, 200, tpl)
                 self.assertIn("rundown", payload)
+            elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"]), (200, True), tpl)
             else:  # the library's reads: a route that exists answers an unknown id with a stable 404, not "no such route"
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["error"]["code"]), (404, "not_found"), tpl)

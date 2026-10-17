@@ -95,6 +95,14 @@
     detect:      ['POST', '/api/assets/{id}/shots/detect'],
     spanFrames:  ['POST', '/api/assets/{id}/span-frames'],
     exportNle:   ['POST', '/api/exports/nle'],
+    showCreate:  ['POST', '/api/shows'],
+    itemAdd:     ['POST', '/api/shows/{id}/items'],
+    itemRename:  ['POST', '/api/items/{id}/rename'],
+    itemRemove:  ['POST', '/api/items/{id}/remove'],
+    itemDetach:  ['POST', '/api/items/{id}/detach'],
+    cueAdd:      ['POST', '/api/items/{id}/cues'],
+    cueRemove:   ['POST', '/api/cues/{id}/remove'],
+    cueCommands: ['GET',  '/api/cue-commands'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -116,6 +124,8 @@
     thumb_timeout: 'Thumbnail timed out', bad_range: 'Bad range',
     detect_busy: 'Detection already running', essence_open: 'Still recording', not_adjacent: 'Not neighbours',
     indexing: 'Still indexing', engine_missing: 'ffmpeg missing',
+    stale_order: 'The list changed', order_locked: 'Order is locked', not_removable: 'Cannot remove',
+    id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
   };
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
@@ -139,6 +149,9 @@
     data: null, show: null, screen: 'show', epoch: 0, seq: false, busy: false,
     pending: new Set(), lastOk: 0, conn: 'connecting', selected: null, armed: null,
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
+    cmds: null, cmdsTried: 0,
+    // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
+    build: { title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
 
   // ---- tiny DOM helper -----------------------------------------------------
@@ -165,7 +178,9 @@
     if (!iso) return '';
     const d = new Date(iso);
     if (isNaN(d)) return String(iso);
-    return d.toLocaleTimeString([], { hour12: false });
+    const t = d.toLocaleTimeString([], { hour12: false });
+    const ms = /\.(\d{3})Z?$/.exec(String(iso));   // the server's as-run is to the millisecond; older rows are whole seconds
+    return ms ? t + '.' + ms[1] : t;
   }
 
   // ---- the one place that knows the /rundown shape: {hold, items} ----------
@@ -174,7 +189,7 @@
     const hold = r.hold ? { reason: r.hold.reason || '', heldAt: r.hold.heldAt || '' } : null;
     const items = (r.items || []).map((i) => ({
       id: i.id, slug: i.slug, status: i.status, urls: i.urls || [],
-      asRunIn: i.asRunIn || null, asRunOut: i.asRunOut || null,
+      asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
     }));
     return { hold, items };
   }
@@ -305,6 +320,7 @@
       const { status, data } = await call(kind, id, body);
       // Show the server's returned state first, then refuse or confirm.
       if (data && data.rundown) { S.data.rundown = parseRundown(data.rundown); }
+      if (data && data.orderVersion) S.data.orderVersion = data.orderVersion;
       if (data && data.asset && S.data) {
         S.data.assets = S.data.assets.map((a) => (a.id === data.asset.id ? Object.assign({}, a, data.asset) : a));
       }
@@ -411,7 +427,8 @@
     if (i < 0 || j < 0 || j >= items.length) return;
     const ids = items.map((x) => x.id);
     [ids[i], ids[j]] = [ids[j], ids[i]];
-    act('reorder', S.show, { items: ids }, { key: 'move:' + id, okTitle: 'Reordered.', ok: () => 'New order saved.' });
+    // `version` makes the move conditional on the list this screen shows: if another operator changed it, the server refuses.
+    act('reorder', S.show, { items: ids, version: S.data.orderVersion || undefined }, { key: 'move:' + id, okTitle: 'Reordered.', ok: () => 'New order saved.' });
   }
 
   // ---- rendering -----------------------------------------------------------
@@ -543,25 +560,143 @@
     const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
     S.selected = sel || null;
     paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq], () => {
-      if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Create one, then reload.' });
+      if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
       return el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next)));
     });
 
     const sItem = items.find((i) => i.id === S.selected);
     $('h-cues').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
-    paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast], () => {
+    paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
       if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown row.' });
       const cs = cuesOf(sItem.id);
       if (!cs.length) return el('p', { class: 'empty', text: 'No cues on this item. Taking it only changes the rundown.' });
       return [cs.map((c) => el('div', { class: 'cue' },
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
           el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
-        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)))),
+        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
+        sItem.status === 'ready' && c.status !== 'fired' ? btn('Remove', { key: 'cue-rm:' + c.id, cls: 'ghost small', aria: 'Remove cue ' + (CUE_LABEL[c.command] || c.command),
+          onclick: () => act('cueRemove', c.id, {}, { key: 'cue-rm:' + c.id, okTitle: 'Cue removed.', ok: () => '' }) }) : null)),
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
     });
 
     paint('room', S.data.room, () => roomPanel(S.data.room));
+    renderBuild(sItem);
+  }
+
+  // ---- show building: new show, add / rename / remove an item, attach a clip, add / remove a cue ---------------
+  // Every rule is the server's (volt/building.py): an item that is on air or has aired cannot be edited, a reorder
+  // that quotes an old list is refused. This section sends the request and shows what came back.
+  function loadCmds() {
+    if (S.cmds || Date.now() - S.cmdsTried < 10000) return;
+    S.cmdsTried = Date.now();
+    call('cueCommands').then((r) => { if (r.data && r.data.ok) { S.cmds = r.data.commands; S.sigs['cue-add'] = null; render(); } }).catch(() => {});
+  }
+  const cmdInfo = (command) => (S.cmds || []).find((c) => c.command === command) || null;
+
+  function formRow(label, id, input) {
+    return [el('label', { class: 'f', for: id, text: label }), input];
+  }
+  function textIn(id, draftKey, o) {
+    return el('input', Object.assign({ id, type: 'text', 'data-fk': id, value: S.build[draftKey], autocomplete: 'off',
+      oninput: (e) => { S.build[draftKey] = e.target.value; } }, o || {}));
+  }
+  function needName(what) {
+    setFlash({ kind: 'bad', title: 'Name the ' + what + ' first.', code: 'bad_input', reason: 'A ' + what + ' needs a name.' });
+    render();
+  }
+
+  function createShow() {
+    const title = S.build.title.trim();
+    if (!title) { needName('show'); return; }
+    S.build.title = '';
+    act('showCreate', '', { title }, { key: 'show-create', okTitle: 'Show created.', ok: (d) => {
+      // The new show becomes the open one, the way choosing it in the header would. Runs before act's own refresh.
+      S.show = d.show.id; S.selected = null; S.sigs = {};
+      try { sessionStorage.setItem('volt.show', S.show); } catch (x) { /* ignore */ }
+      return '"' + d.show.title + '" is open and has no items yet.';
+    } });
+  }
+  function addItem() {
+    const slug = S.build.slug.trim();
+    if (!slug) { needName('item'); return; }
+    S.build.slug = '';
+    act('itemAdd', S.show, { slug }, { key: 'item-add', okTitle: 'Item added.', ok: () => '"' + slug + '" is last in the rundown.' });
+  }
+  function renameItem(it) {
+    const slug = S.build.rename.trim();
+    if (!slug) { needName('item'); return; }
+    act('itemRename', it.id, { slug }, { key: 'item-rename', okTitle: 'Renamed.', ok: () => 'Now "' + slug + '".' });
+  }
+  function removeItem(it) {
+    armedAction('remove:' + it.id, () => act('itemRemove', it.id, {}, { key: 'item-remove', okTitle: 'Removed.',
+      ok: () => '"' + it.slug + '" is gone from the rundown. Kill keeps an item in the list instead.' }));
+  }
+  function attachFromSelection(it) {
+    const e = (typeof L !== 'undefined' ? L.sel : []).find((x) => x.id === S.build.pick);
+    if (!e) {
+      setFlash({ kind: 'bad', title: 'Choose a clip first.', code: 'bad_input', reason: 'Tick clips on the Library screen, then pick one here.' });
+      render();
+      return;
+    }
+    act('attach', it.id, { span: e.id }, { key: 'item-attach', okTitle: 'Attached.', ok: () => e.name + ' is on "' + it.slug + '".' });
+  }
+  function addCue(it) {
+    const payload = S.build.payload;
+    S.build.payload = '';
+    act('cueAdd', it.id, { command: S.build.cmd, payload }, { key: 'cue-add', okTitle: 'Cue added.',
+      ok: (d) => (CUE_LABEL[d.cue.command] || d.cue.command) + ' is on "' + it.slug + '".' + (d.warning ? ' ' + d.warning : '') });
+  }
+
+  function renderBuild(sItem) {
+    loadCmds();
+    const b = S.build;
+    const editable = !!sItem && sItem.status === 'ready';
+    if (sItem && b.renameId !== sItem.id) { b.renameId = sItem.id; b.rename = sItem.slug; }
+    const sel = typeof L !== 'undefined' ? L.sel : [];
+    const m = sItem ? mediaOf(sItem.id) : {};
+    const pending = [...S.pending];
+    const rmKey = sItem ? 'remove:' + sItem.id : '';
+    paint('build', [S.data.show, sItem, m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick], () => [
+      el('div', { class: 'body' },
+        el('form', { 'aria-label': 'Add an item', onsubmit: (e) => { e.preventDefault(); addItem(); } },
+          formRow('New item', 'build-slug', textIn('build-slug', 'slug', { maxlength: '200', disabled: !S.data.show })),
+          el('div', { class: 'bar flush' }, btn('Add item', { key: 'item-add', cls: 'ghost', disabled: !S.data.show, onclick: addItem }))),
+        sItem ? el('fieldset', { class: 'grp' }, el('legend', { text: 'Edit ' + sItem.slug }),
+          editable ? [
+            el('form', { 'aria-label': 'Rename the selected item', onsubmit: (e) => { e.preventDefault(); renameItem(sItem); } },
+              formRow('Name', 'build-rename', textIn('build-rename', 'rename', { maxlength: '200' })),
+              el('div', { class: 'bar flush' }, btn('Rename', { key: 'item-rename', cls: 'ghost', onclick: () => renameItem(sItem) }))),
+            formRow('Clip from the Library selection', 'build-pick', el('select', { id: 'build-pick', 'data-fk': 'build-pick', onchange: (e) => { b.pick = e.target.value; } },
+              el('option', { value: '' }, sel.length ? 'Choose a clip' : 'Nothing selected in the Library'),
+              sel.map((e) => el('option', { value: e.id, selected: b.pick === e.id }, e.name + ' · ' + e.tcIn)))),
+            el('div', { class: 'bar flush' },
+              btn('Attach clip', { key: 'item-attach', cls: 'ghost', disabled: !sel.length, onclick: () => attachFromSelection(sItem) }),
+              m.span ? btn('Detach clip', { key: 'item-detach', cls: 'ghost', aria: 'Detach the clip from ' + sItem.slug,
+                onclick: () => act('itemDetach', sItem.id, {}, { key: 'item-detach', okTitle: 'Detached.', ok: () => 'The item has no media now.' }) }) : null,
+              btn(S.armed === rmKey ? 'Confirm remove' : 'Remove item', { key: 'item-remove', cls: 'danger' + (S.armed === rmKey ? ' armed' : ''),
+                aria: (S.armed === rmKey ? 'Confirm remove ' : 'Remove ') + sItem.slug, onclick: () => removeItem(sItem) })),
+            el('small', { text: m.span ? 'Clip ' + (m.tcIn || '') + ' to ' + (m.tcOut || '') + '.' : 'No clip yet: this item cannot be taken until one is attached.' }),
+          ] : el('small', { text: 'This item is ' + sItem.status + ' and cannot be edited.' })) : null,
+        el('details', { class: 'newshow' }, el('summary', { text: 'New show' }),
+          el('form', { 'aria-label': 'Create a show', onsubmit: (e) => { e.preventDefault(); createShow(); } },
+            formRow('Show name', 'build-title', textIn('build-title', 'title', { maxlength: '200' })),
+            el('div', { class: 'bar flush' }, btn('Create show', { key: 'show-create', cls: 'ghost', onclick: createShow }))))),
+    ]);
+
+    paint('cue-add', [sItem && sItem.id, editable, S.cmds, b.cmd, pending], () => {
+      if (!editable) return [];
+      const cmds = S.cmds || [];
+      const info = cmdInfo(b.cmd);
+      return el('div', { class: 'body' }, el('form', { 'aria-label': 'Add a cue to ' + sItem.slug, onsubmit: (e) => { e.preventDefault(); addCue(sItem); } },
+        formRow('Add a cue', 'cue-cmd', el('select', { id: 'cue-cmd', 'data-fk': 'cue-cmd', disabled: !cmds.length,
+          onchange: (e) => { b.cmd = e.target.value; S.sigs['cue-add'] = null; render(); } },
+          cmds.length ? cmds.map((c) => el('option', { value: c.command, selected: c.command === b.cmd },
+            (CUE_LABEL[c.command] || c.command) + (c.verified ? '' : ' (no verified adapter)'))) : el('option', { value: '' }, 'Loading commands'))),
+        formRow('Payload (optional)', 'cue-payload', textIn('cue-payload', 'payload', { maxlength: '2000' })),
+        info && !info.verified ? el('small', { class: 'no', text: '? No verified adapter for ' + info.command + ' yet. The cue is stored, but a take stops at it.' }) : null,
+        el('div', { class: 'bar flush' }, btn('Add cue', { key: 'cue-add', cls: 'ghost', disabled: !cmds.length, onclick: () => addCue(sItem) }))));
+    });
   }
 
   function rundownRow(it, idx, items, air, next) {

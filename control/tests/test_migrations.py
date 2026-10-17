@@ -279,7 +279,7 @@ class Version8ToNine(unittest.TestCase):
                     [tuple(r) for r in store.conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version")][:8],
                     [tuple(r) for r in before])
                 self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                                 list(range(1, 10)))
+                                 list(range(1, migrations.LATEST + 1)))  # 9, then whatever shipped after it
                 index = store.conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'span_asset_kind_frame'").fetchone()
                 self.assertIn("asset_id, kind, frame_in", index[0])
@@ -310,7 +310,7 @@ class Version8ToNinePostgres(PgCase):
         self.assertIn("duration_frames", cols["essence"])
         self.assertIn("shot_run", cols)
         self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                         list(range(1, 10)))
+                         list(range(1, migrations.LATEST + 1)))
         index = store.conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'span_asset_kind_frame'").fetchone()
         self.assertIn("(asset_id, kind, frame_in)", index[0])
@@ -322,7 +322,52 @@ class Version8ToNinePostgres(PgCase):
         self.assertEqual(tuple(store.conn.execute("SELECT frame_in, frame_out FROM span").fetchone()), (90000, 90010))
         self.stores.pop().close()
         again = self.store()  # opening again applies nothing and does not fail
-        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], 9)
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], migrations.LATEST)
+
+
+class Version9ToTen(unittest.TestCase):
+    """Migration 10 adds the millisecond as-run columns to a database at version 9 and keeps its rows."""
+
+    def test_sqlite_version_9_gains_the_precise_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "v9.db")
+            store = Store(path)
+            store.conn.execute("INSERT INTO show (id, title, created_at) VALUES ('s', 'S', '2026-10-10T20:00:00Z')")
+            store.conn.execute(
+                "INSERT INTO item (id, show_id, position, slug, status, created_at, as_run_in) "
+                "VALUES ('i', 's', 1, 'x', 'aired', '2026-10-10T20:00:00Z', '2026-10-10T20:00:09Z')")
+            store.conn.execute("ALTER TABLE item DROP COLUMN as_run_in_precise")
+            store.conn.execute("ALTER TABLE item DROP COLUMN as_run_out_precise")
+            store.conn.execute("DELETE FROM schema_version WHERE version = 10")
+            store.conn.commit()
+            store.close()
+            store = Store(path)
+            try:
+                self.assertTrue({"as_run_in_precise", "as_run_out_precise"} <= sqlite_columns(store.conn)["item"])
+                row = store.conn.execute("SELECT as_run_in, as_run_in_precise FROM item").fetchone()
+                self.assertEqual(tuple(row), ("2026-10-10T20:00:09Z", None))
+                self.assertEqual(max(r[0] for r in store.conn.execute("SELECT version FROM schema_version")),
+                                 migrations.LATEST)
+            finally:
+                store.close()
+
+
+class Version9ToTenPostgres(PgCase):
+    def test_postgres_version_9_gains_the_precise_columns(self):
+        store = self.store()
+        store.conn.execute("INSERT INTO show (id, title) VALUES ('s', 'S')")
+        store.conn.execute(
+            "INSERT INTO item (id, show_id, position, slug, status, as_run_in) "
+            "VALUES ('i', 's', 1, 'x', 'aired', '2026-10-10T20:00:09Z')")
+        store.conn.execute("ALTER TABLE item DROP COLUMN as_run_in_precise")
+        store.conn.execute("ALTER TABLE item DROP COLUMN as_run_out_precise")
+        store.conn.execute("DELETE FROM schema_version WHERE version = 10")
+        store.conn.commit()
+        store.close()
+        again = self.store()
+        cols = PostgresForward.pg_columns(None, again.conn)
+        self.assertTrue({"as_run_in_precise", "as_run_out_precise"} <= cols["item"])
+        self.assertEqual(again.conn.execute("SELECT as_run_in_precise FROM item").fetchone()[0], None)
 
 
 if __name__ == "__main__":

@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS item (
   scheduled_at TIMESTAMPTZ,
   schedule_state TEXT,
   schedule_note TEXT,
-  schedule_claimed_at TIMESTAMPTZ
+  schedule_claimed_at TIMESTAMPTZ,
+  as_run_in_precise TEXT,
+  as_run_out_precise TEXT
 );
 
 CREATE TABLE IF NOT EXISTS version (
