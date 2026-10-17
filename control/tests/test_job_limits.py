@@ -113,6 +113,42 @@ class JobLimitTests(unittest.TestCase):
                 speech._release_slot(store, slot)
             self.assertEqual(calls, [])
 
+    def _dead_pid(self):
+        import sys
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        return p.pid
+
+    def test_a_killed_transcribe_does_not_hold_its_slot_for_the_rest_of_the_lease(self):
+        """Found on a real kill/resume: the runner killed mid-file left asr-slot:<asset> leased for 30 minutes, so
+        the retry was deferred until then. A holder that is a dead process on this host is replaced at once."""
+        store = Store()
+        asset = store.mint_asset(owner="desk")
+        slot = speech._claim_slot(store, asset.id)
+        self.assertIsNotNone(slot)
+        self.assertIsNone(speech._claim_slot(store, asset.id))  # a live holder still excludes everyone else
+        store.conn.execute("UPDATE job SET claimed_by = ? WHERE id = ?",
+                           (f"asr-{speech.socket.gethostname()}-{self._dead_pid()}", slot[0]))
+        store.conn.commit()
+        again = speech._claim_slot(store, asset.id)
+        self.assertIsNotNone(again)
+        self.assertEqual(again[0], slot[0])
+        # a holder on another host cannot be judged from here: it keeps the slot until its lease lapses
+        store.conn.execute("UPDATE job SET claimed_by = 'asr-other-host-1' WHERE id = ?", (slot[0],))
+        store.conn.commit()
+        self.assertIsNone(speech._claim_slot(store, asset.id))
+
+    def test_the_slot_lease_is_renewed_after_each_window(self):
+        store = Store()
+        asset = store.mint_asset(owner="desk")
+        slot = speech._claim_slot(store, asset.id)
+        store.conn.execute("UPDATE job SET lease_expires_at = '2000-01-01T00:00:00Z' WHERE id = ?", (slot[0],))
+        store.conn.commit()
+        speech._renew_slot(store, slot)
+        row = store.conn.execute("SELECT lease_expires_at FROM job WHERE id = ?", (slot[0],)).fetchone()
+        self.assertGreater(row["lease_expires_at"], speech._now())
+        self.assertIsNone(speech._claim_slot(store, asset.id))  # a renewed, live slot is not stolen
+
 
 if __name__ == "__main__":
     unittest.main()
