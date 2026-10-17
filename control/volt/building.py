@@ -21,6 +21,7 @@ from typing import Optional
 
 from volt import cues as cue_mod
 from volt.dispatch import HANDLERS
+from volt.disk import DiskLowError
 from volt.ingest import IngestError, ingest_file
 from volt.rundown import show_lock
 from volt.store import Store, _id, _now
@@ -291,6 +292,8 @@ def ingest_allowed(store: Store, path: str, quarantine: Path, owner: str,
     try:
         result = ingest_file(store, resolved, quarantine, owner, source_key=key, show_name=show_name, camera=camera)
     except IngestError as exc:
+        if isinstance(exc.__cause__, DiskLowError):  # not a missing file: the disk is too full to take the copy
+            raise BuildError(507, "disk_low", str(exc)) from None
         raise BuildError(404, "not_found", str(exc)) from None
     jobs = store.conn.execute(
         "SELECT id, type, status, error FROM job WHERE asset_id = ? ORDER BY created_at, id", (result.asset_id,)).fetchall()

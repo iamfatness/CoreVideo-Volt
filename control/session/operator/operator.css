@@ -169,7 +169,15 @@ table.keys td:first-child{white-space:nowrap}
 }
 
 /* library: shots, clips, player, marks, selection (docs/mockups/shot-spans.html) */
-.lib-pick{margin-bottom:16px}
+.lib-ingest,.lib-pick{margin-bottom:16px}
+.lib-ingest .form-row .grow{flex:1;min-width:18em}
+.lib-ingest input[type=text]{width:100%;font-family:Consolas,monospace}
+.lib-ingest .result{padding:0 14px 12px}
+.lib-ingest .result p{margin:6px 0}
+.lib-ingest .jobs{list-style:none;margin:6px 0;padding:0;display:grid;gap:6px}
+.lib-ingest .jobs li{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.lib-ingest .jobs .jn{min-width:9em}
+.chip.running{color:var(--blue-hi);border-color:var(--blue-hi)}
 .lib-pick .form-row{align-items:flex-end}
 .lib-pick select{min-width:20em;max-width:100%}
 .cols.lib{grid-template-columns:minmax(0,1fr) 340px}

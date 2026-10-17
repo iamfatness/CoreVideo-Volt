@@ -103,6 +103,7 @@
     cueAdd:      ['POST', '/api/items/{id}/cues'],
     cueRemove:   ['POST', '/api/cues/{id}/remove'],
     cueCommands: ['GET',  '/api/cue-commands'],
+    ingest:      ['POST', '/api/ingest'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -126,6 +127,18 @@
     indexing: 'Still indexing', engine_missing: 'ffmpeg missing',
     stale_order: 'The list changed', order_locked: 'Order is locked', not_removable: 'Cannot remove',
     id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
+    path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
+  };
+  // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
+  const INGEST_WHY = {
+    path_not_allowed: 'That file is not inside a folder this server may ingest from. Move it into an allowed folder, or ask whoever runs the server which folders are allowed (VOLT_INGEST_ROOTS).',
+    ingest_disabled: 'The server has no ingest folder configured, so ingest is off. Whoever runs the server sets VOLT_INGEST_ROOTS to turn it on.',
+    not_found: 'Nothing was read: there is no file at that path (a folder does not count).',
+    bad_input: 'Type the full path to one file, starting at the drive letter or the root.',
+    engine_missing: 'ffprobe is not installed on the server, so the file cannot be checked.',
+    disk_low: 'The server’s disk is too full to take a copy. Free space there, then try again.',
+    unauthorized: 'A token is needed. Press Token at the top, then try again.',
+    network: 'The server did not answer. The file may or may not have been taken in; check the asset list before trying again.',
   };
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
@@ -428,7 +441,8 @@
     const ids = items.map((x) => x.id);
     [ids[i], ids[j]] = [ids[j], ids[i]];
     // `version` makes the move conditional on the list this screen shows: if another operator changed it, the server refuses.
-    act('reorder', S.show, { items: ids, version: S.data.orderVersion || undefined }, { key: 'move:' + id, okTitle: 'Reordered.', ok: () => 'New order saved.' });
+    act('reorder', S.show, { items: ids, version: S.data.orderVersion || undefined }, { key: 'move:' + id, okTitle: 'Reordered.', ok: () => 'New order saved.',
+      hint: 'Nothing moved. The rundown shown is now the server’s current order; press the arrow again if you still want the move.' });
   }
 
   // ---- rendering -----------------------------------------------------------
@@ -1670,8 +1684,92 @@
     sel.value = L.assetId && assets.some((a) => a.id === L.assetId) ? L.assetId : '';
   }
 
+  // ---- ingest: one file from a folder the server allows ----------------------------------------------------
+  // The server reads the file in the request (probe and checksum), so the button shows busy until it answers.
+  // The follow-on jobs are then read from the existing state poll (assets[].jobs lists the unfinished ones).
+  const I = { path: '', busy: false, result: null, err: null };
+  const JOB_NAME = { ingest: 'Copy and check', proxy: 'Proxy', asr: 'Transcript', shots: 'Shot detection' };
+  const JOB_CHIP = Object.assign({ running: ['running', '▶', 'Running'] }, VER_CHIP);
+
+  async function ingestNow() {
+    const path = I.path.trim();
+    if (I.busy) return;
+    I.result = null;
+    if (!path) { I.err = { code: 'bad_input', reason: 'Enter the path of a file first.', local: true }; render(); return; }
+    I.busy = true; I.err = null; S.epoch++; render();
+    try {
+      const { status, data } = await call('ingest', '', { path });
+      if (status === 401) { setConn('token'); openToken(); }
+      if (data && data.ok) { I.result = data; I.path = ''; announce('Ingested. Asset ' + short(data.asset) + '.'); }
+      else {
+        const e = codeOf(data, status);
+        I.err = { code: e.code, reason: e.reason };
+        announce((ERR_LABEL[e.code] || 'Refused') + '. ' + (INGEST_WHY[e.code] || e.reason));
+      }
+    } catch (err) {
+      I.err = { code: 'network', reason: 'No answer from the server.' };
+      setConn('lost');
+    } finally {
+      I.busy = false; S.epoch++; render(); refresh();
+    }
+  }
+
+  // The job rows for the asset just ingested: the types the server queued, each with its state from the last poll.
+  function ingestJobs() {
+    const r = I.result;
+    const a = ((S.data && S.data.assets) || []).find((x) => x.id === r.asset);
+    const live = {};
+    ((a && a.jobs) || []).forEach((j) => { live[j.type] = j; });
+    const types = r.jobs.map((j) => j.type);
+    Object.keys(live).forEach((t) => { if (!types.includes(t)) types.push(t); });
+    return types.map((t) => {
+      const first = r.jobs.find((j) => j.type === t);
+      const j = live[t] || (first && first.status !== 'done' && !a ? first : null);
+      const status = j ? j.status : 'done';
+      let note = j && j.error ? j.error : '';
+      if (t === 'asr' && status === 'queued' && a && !a.cleared) note = 'Waits until the asset is cleared (Rights screen).';
+      if (t === 'proxy' && status === 'queued') note = 'Waits for a runner; the Library cannot play it until it is done.';
+      return { type: t, status, note };
+    });
+  }
+
+  function paintIngest() {
+    const r = I.result;
+    const a = r && ((S.data && S.data.assets) || []).find((x) => x.id === r.asset);
+    paint('lib-ingest', [I.busy, I.err, r, a && [a.jobs, a.cleared, a.hasProxy]], () => {
+      const out = [
+        el('form', { 'aria-label': 'Ingest a file', autocomplete: 'off', onsubmit: (e) => { e.preventDefault(); ingestNow(); } },
+          el('div', { class: 'form-row' },
+            el('div', { class: 'grow' }, el('label', { for: 'ingest-path', text: 'Path of the file, as the server sees it' }),
+              el('input', { id: 'ingest-path', type: 'text', 'data-fk': 'ingest-path', value: I.path, spellcheck: 'false', maxlength: '4096',
+                'aria-describedby': 'ingest-hint', placeholder: '/media/inbox/clip.mov', oninput: (e) => { I.path = e.target.value; } })),
+            el('button', { type: 'submit', class: 'btn', 'data-fk': 'ingest-go', 'aria-disabled': I.busy ? 'true' : null }, I.busy ? 'Ingesting…' : 'Ingest')),
+          el('p', { id: 'ingest-hint', class: 'note', text: 'Only files inside a folder the server allows can be taken in. The server copies the file, checks it and queues its proxy and transcript.' })),
+      ];
+      if (I.err) {
+        const w = I.err.local ? null : INGEST_WHY[I.err.code];
+        out.push(el('div', { class: 'result', role: 'alert' },
+          el('p', {}, el('strong', { text: '✕ ' + (ERR_LABEL[I.err.code] || 'Refused') + '.' }), ' ', w || I.err.reason),
+          w && I.err.reason && I.err.reason !== w ? el('p', { class: 'hint', text: 'Server says: ' + I.err.reason }) : null,
+          el('p', { class: 'hint', text: 'code: ' + I.err.code })));
+      } else if (r) {
+        const jobs = ingestJobs();
+        out.push(el('div', { class: 'result', role: 'status' },
+          el('p', {}, el('strong', { text: r.quarantined ? '! Taken in, but the file did not parse.' : '✓ Ingested.' }), ' Asset ',
+            el('span', { class: 'mono', text: r.asset }), r.minted ? ' is new.' : ' was already ingested; nothing was copied again.',
+            r.quarantined ? ' It is held in quarantine and nothing will air from it.' : ''),
+          el('ul', { class: 'jobs', 'aria-label': 'Follow-on work' }, jobs.map((j) => el('li', {},
+            el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), chip(JOB_CHIP, j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
+          el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'ingest-open',
+            onclick: () => { setAsset(r.asset); } }, 'Open this asset below'))));
+      }
+      return out;
+    });
+  }
+
   function renderLibrary() {
     renderLibPicker();
+    paintIngest();
     paint('lib-msg', [S.flash], () => (S.flash ? flashNode(S.flash) : []));
     const assets = (S.data && S.data.assets) || [];
     if (L.assetId && !assets.some((a) => a.id === L.assetId)) { L.assetId = null; store('volt.lib.asset', null); L.load = 'idle'; L.data = null; }

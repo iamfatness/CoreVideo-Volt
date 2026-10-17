@@ -42,6 +42,12 @@ def assets(store: Store) -> list[dict]:
            WHERE a.deleted_at IS NULL
            ORDER BY a.created_at, a.id"""
     ).fetchall()
+    # Work that is not finished (queued, running or failed), so the Library can show an ingest's progress on the
+    # existing poll. A job that is not listed has finished.
+    pending: dict = {}
+    for j in store.conn.execute(
+            "SELECT asset_id, type, status, error FROM job WHERE status != 'done' ORDER BY created_at, id").fetchall():
+        pending.setdefault(j["asset_id"], {})[j["type"]] = {"type": j["type"], "status": j["status"], "error": j["error"]}
     out = []
     for r in rows:
         cleared, held = bool(r["cleared"]), bool(r["legal_hold"])
@@ -52,6 +58,7 @@ def assets(store: Store) -> list[dict]:
             "file": r["location"], "checksum": r["checksum"],
             "open": bool(r["open"]) if r["open"] is not None else False,
             "hasProxy": bool(r["has_proxy"]),
+            "jobs": list(pending.get(r["id"], {}).values()),
         })
     return out
 

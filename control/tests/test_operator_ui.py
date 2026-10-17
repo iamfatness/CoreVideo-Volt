@@ -190,6 +190,34 @@ class Library(Api):
         for code in sorted(server_codes):
             self.assertRegex(body, rf"\b{code}: \[", code)
 
+    def test_ingest_panel_is_wired_says_every_refusal_in_words_and_owns_no_keys(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        self.assertIn('id="lib-ingest"', html)
+        self.assertIn("ingest:      ['POST', '/api/ingest']", js)
+        body = js[js.index("// ---- ingest: one file"):js.index("  function renderLibrary()")]
+        why = js[js.index("const INGEST_WHY"):js.index("const CUE_LABEL")]
+        for code in ("path_not_allowed", "ingest_disabled", "not_found", "bad_input", "engine_missing", "disk_low", "unauthorized", "network"):
+            self.assertIn(code + ": ", why)
+        for forbidden in ("keydown", "takeNow", "toggleHold", "e.key", "location.hash"):
+            self.assertNotIn(forbidden, body)
+        # progress comes from the poll (assets[].jobs), not a second request loop
+        self.assertIn("a.jobs", body)
+        self.assertNotIn("setInterval", body)
+        self.assertIn("role: 'alert'", body)    # a refusal is announced
+
+    def test_the_attach_and_stale_order_paths_have_words_and_a_hint(self):
+        js = FILES["operator.js"]
+        self.assertIn("stale_order: 'The list changed'", js)
+        move = js[js.index("function move(id, dir)"):js.index("// ---- rendering")]
+        self.assertIn("version: S.data.orderVersion", move)
+        self.assertIn("Nothing moved.", move)
+        self.assertIn("act('attach', it.id, { span: e.id }", js)
+        self.assertIn("act('itemDetach'", js)
+
+    def test_no_complementary_landmark_sits_inside_main(self):
+        # axe landmark-complementary-is-top-level: an aside inside <main> is a violation.
+        self.assertNotIn("<aside", FILES["index.html"])
+
     def test_the_old_keys_are_unchanged(self):
         js = FILES["operator.js"]
         for line in ("if (k === 't') { if (!e.repeat) takeNow(true); return; }", "if (k === 'h') { if (!e.repeat) toggleHold(); return; }",
