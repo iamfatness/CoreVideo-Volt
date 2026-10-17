@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -245,6 +246,32 @@ def _cuda_why_not() -> str:
     return "cuda was requested but no CUDA GPU is available" if not _cuda_gpu() else f"cuda was requested but {_cuda_libs_error()}"
 
 
+RECOVER_MIN_GAP = 5.0   # seconds without a word before a stretch is checked for missed speech
+RECOVER_MIN_SPEECH = 0.5  # ...and it is re-read only if at least this fraction of it is voice per the VAD
+
+
+def uncovered_speech(words: Sequence[Word], speech: Sequence[tuple[float, float]], total: float,
+                     min_gap: float = RECOVER_MIN_GAP, min_speech: float = RECOVER_MIN_SPEECH) -> list[tuple[float, float]]:
+    """Stretches of the audio (start, end) that hold no word for at least `min_gap` seconds although the voice
+    detector found speech in at least `min_speech` of them. Long-form whisper decoding silently skips whole
+    30 s stretches of real speech (measured on a podcast: 25 s of an ad read, differently placed with every
+    setting); this finds them so they can be decoded again on their own."""
+    ordered = sorted(words, key=lambda w: w.start)
+    pairs, last = [], 0.0
+    for w in ordered:
+        pairs.append((last, w.start))
+        last = max(last, w.end)
+    pairs.append((last, total))
+    out = []
+    for a, b in pairs:
+        if b - a < min_gap:
+            continue
+        voiced = sum(max(0.0, min(e, b) - max(s, a)) for s, e in speech)
+        if voiced / (b - a) >= min_speech:
+            out.append((a, b))
+    return out
+
+
 class FasterWhisperEngine:
     """faster-whisper with word timestamps. CUDA gets large-v3 float16, otherwise CPU distil-large-v3 int8;
     `model` and `compute_type` override. Asking for cuda without a GPU fails; there is no quiet CPU fallback.
@@ -255,13 +282,15 @@ class FasterWhisperEngine:
                         glossary sentence as prior text) or `none` (the vocabulary is ignored).
       min_word_prob     drop words the model itself was less sure of than this (None = keep all).
       silence_guard     seconds; faster-whisper skips a silent stretch this long when it sees a hallucination.
+      recover           with the VAD on, a stretch of voiced audio left without words (see uncovered_speech) is
+                        decoded again on its own; the words found there are added, counted in the run's stats.
     """
 
     def __init__(self, device: str = "auto", model: str | None = None, compute_type: str | None = None,
                  language: str | None = None, model_dir: str | None = None, vad_filter: bool = True,
                  vocab_mode: str = "initial_prompt", min_word_prob: float | None = None,
                  silence_guard: float | None = None, cpu_threads: int = 0, beam_size: int = 5,
-                 condition_on_previous_text: bool = True):
+                 condition_on_previous_text: bool = True, recover: bool = True):
         if device not in ("auto", "cuda", "cpu"):
             raise SpeechError(f"device must be auto, cuda or cpu, not {device!r}")
         if vocab_mode not in VOCAB_MODES:
@@ -281,13 +310,15 @@ class FasterWhisperEngine:
         self.cpu_threads = cpu_threads
         self.beam_size = beam_size
         self.condition_on_previous_text = condition_on_previous_text
+        self.recover = recover and vad_filter
         self._model = None
 
     def describe(self) -> dict:
         return {"engine": "faster-whisper", "model": self.model_name, "device": self.device,
                 "compute_type": self.compute_type, "vad_filter": self.vad_filter, "vocab_mode": self.vocab_mode,
                 "min_word_prob": self.min_word_prob, "silence_guard": self.silence_guard,
-                "beam_size": self.beam_size, "condition_on_previous_text": self.condition_on_previous_text}
+                "beam_size": self.beam_size, "condition_on_previous_text": self.condition_on_previous_text,
+                "recover": self.recover}
 
     def _load(self):
         if self._model is None:
@@ -344,9 +375,46 @@ class FasterWhisperEngine:
                         dropped += 1
                         continue
                     words.append(Word(w.word.strip(), float(w.start), float(w.end)))
+            stats = {"dropped_low_prob": dropped} if self.min_word_prob is not None else {}
+            if self.recover:
+                words = self._recover(model, wav, words, stats)
         except Exception as exc:
             raise SpeechError(f"transcription failed: {exc}") from exc
-        return Transcription(words, used, {"dropped_low_prob": dropped} if self.min_word_prob is not None else {})
+        return Transcription(words, used, stats)
+
+    def _load_audio(self, wav: Path):
+        from faster_whisper.audio import decode_audio
+        return decode_audio(str(wav), sampling_rate=16000)
+
+    def _speech_spans(self, audio) -> list[tuple[float, float]]:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        ts = get_speech_timestamps(audio, VadOptions(min_silence_duration_ms=300, speech_pad_ms=100))
+        return [(t["start"] / 16000, t["end"] / 16000) for t in ts]
+
+    def _recover(self, model, wav: Path, words: list[Word], stats: dict) -> list[Word]:
+        """Decode again, alone, each voiced stretch the main pass left empty. Only words that fall inside the
+        stretch are taken, so nothing already found is repeated; a stretch that still yields nothing (music the
+        VAD took for voice) stays empty."""
+        audio = self._load_audio(wav)
+        total = len(audio) / 16000
+        gaps = uncovered_speech(words, self._speech_spans(audio), total)
+        added, found = [], 0
+        for a, b in gaps:
+            lo, hi = max(0.0, a - 1.0), min(total, b + 1.0)
+            segments, _ = model.transcribe(audio[int(lo * 16000):int(hi * 16000)], word_timestamps=True,
+                                           vad_filter=True, language=self.language, beam_size=self.beam_size,
+                                           condition_on_previous_text=False)
+            got = [Word(w.word.strip(), lo + float(w.start), lo + float(w.end))
+                   for seg in segments for w in (seg.words or []) if w.word.strip()]
+            got = [w for w in got if a <= (w.start + w.end) / 2 < b]
+            if got:
+                found += 1
+                added.extend(got)
+        if gaps:
+            stats["recover_gaps"] = len(gaps)
+            stats["recovered_gaps"] = found
+            stats["recovered_words"] = len(added)
+        return sorted([*words, *added], key=lambda w: w.start) if added else words
 
 
 # ---- one engine per process -------------------------------------------------------------------------
@@ -543,8 +611,13 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         rate = timecode.parse_rate(essence["frame_rate"]) if essence["frame_rate"] else _probe_rate(essence["location"])
         drop = timecode.is_drop(essence["timecode_start"])  # `;` before the frames = drop-frame
         origin = timecode.tc_to_frames(essence["timecode_start"] or "00:00:00:00", rate, drop)
+        def window_done(n, done, total):
+            _renew_slot(store, slot)
+            if progress:
+                progress(n, done, total)
+
         found, facts, used = _window_run(store, job.id, essence["location"], engine, vocabulary, chunk,
-                                         _fingerprint(info, vocabulary, chunk, essence["location"]), progress)
+                                         _fingerprint(info, vocabulary, chunk, essence["location"]), window_done)
         words, applied = apply_corrections(found, corrections)
         one = 1 / rate
         rows = []
@@ -593,20 +666,71 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
     return len(rows)
 
 
+SLOT_LEASE = 1800  # seconds; renewed after every finished window, so it only lapses when the holder is gone
+
+
+def _slot_owner() -> str:
+    return f"asr-{socket.gethostname()}-{os.getpid()}"
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _slot_expiry() -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=SLOT_LEASE)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _claim_slot(store: Store, asset_id: str):
-    """One engine run per asset. A second transcribe does not start the model."""
+    """One engine run per asset. A second transcribe does not start the model.
+
+    A holder that was killed leaves its slot behind with a lease that has not run out; a retry would then wait
+    out the rest of SLOT_LEASE (up to 30 minutes) before it could resume. When the holder is a process on this
+    host that no longer exists, its slot is taken over at once."""
     job = store.enqueue(asset_id, "asr-slot", f"asr-slot:{asset_id}")
-    owner = f"asr-{os.getpid()}"
+    owner = _slot_owner()
+    held = store.conn.execute("SELECT claimed_by FROM job WHERE id = ? AND status = 'running'", (job.id,)).fetchone()
+    prefix = f"asr-{socket.gethostname()}-"
+    if held and held["claimed_by"] and held["claimed_by"].startswith(prefix):
+        tail = held["claimed_by"][len(prefix):]
+        if tail.isdigit() and not _pid_alive(int(tail)):
+            store.conn.execute("UPDATE job SET lease_expires_at = NULL WHERE id = ? AND claimed_by = ?",
+                               (job.id, held["claimed_by"]))
+            store.conn.commit()
     now = _now()
-    expires = (datetime.now(timezone.utc) + timedelta(seconds=1800)).strftime("%Y-%m-%dT%H:%M:%SZ")
     cur = store.conn.execute(
         """UPDATE job SET status = 'running', claimed_by = ?, lease_expires_at = ?, updated_at = ?
            WHERE id = ? AND (status != 'running' OR lease_expires_at IS NULL OR lease_expires_at < ?)""",
-        (owner, expires, now, job.id, now))
+        (owner, _slot_expiry(), now, job.id, now))
     store.conn.commit()
     if cur.rowcount != 1:
         return None
     return job.id, owner
+
+
+def _renew_slot(store: Store, slot) -> None:
+    """Push the slot's lease out; called after each window so a long file never lets it lapse under the holder."""
+    if slot is None:
+        return
+    job_id, owner = slot
+    store.conn.execute("UPDATE job SET lease_expires_at = ? WHERE id = ? AND claimed_by = ?",
+                       (_slot_expiry(), job_id, owner))
+    store.conn.commit()
 
 
 def _release_slot(store: Store, slot) -> None:
