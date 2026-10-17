@@ -627,7 +627,7 @@ def transcribe_pending(store: Store, engine: Engine, vocabulary: Sequence[str] =
     One failure does not stop the rest."""
     rows = store.conn.execute(
         """SELECT DISTINCT e.asset_id, a.cleared FROM essence e JOIN asset a ON a.id = e.asset_id
-           WHERE e.role = 'hi-res' AND e.open = 0
+           WHERE e.role = 'hi-res' AND e.open = 0 AND a.deleted_at IS NULL
              AND NOT EXISTS (SELECT 1 FROM span s WHERE s.asset_id = e.asset_id AND s.kind = 'transcript')
            ORDER BY e.asset_id""").fetchall()
     out: dict[str, int | str] = {}

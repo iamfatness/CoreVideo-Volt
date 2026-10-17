@@ -63,6 +63,23 @@ class Backend(Protocol):
         """Remove the object. Deleting a missing key is not an error."""
 
 
+@dataclass(frozen=True)
+class ObjectInfo:
+    """What a backend can say about a stored object without downloading it. `sha256` (hex) is None when the backend
+    does not expose one (S3 multipart composites, GCS, and Azure objects Volt did not write)."""
+    size: int
+    sha256: Optional[str] = None
+
+
+def stat_object(backend, key: str) -> Optional[ObjectInfo]:
+    """ObjectInfo for `key`, or None when it is missing. Uses the backend's optional `stat`; a backend without one is
+    answered with exists() and size -1 (unknown)."""
+    stat = getattr(backend, "stat", None)
+    if stat is not None:
+        return stat(key)
+    return ObjectInfo(-1) if backend.exists(key) else None
+
+
 _KEY_OK = re.compile(r"^[A-Za-z0-9._~@=+,!()' -]+(/[A-Za-z0-9._~@=+,!()' -]+)*$")
 
 
@@ -126,6 +143,21 @@ class LocalBackend:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+
+    def stat(self, key: str) -> Optional[ObjectInfo]:
+        path = self._path(key)
+        if not path.is_file():
+            return None
+        digest, size = sha256_file(path)
+        return ObjectInfo(size, digest)
+
+    def list_keys(self):
+        """Every stored key (relative, '/'-separated), skipping in-flight .part files."""
+        if not self.root.is_dir():
+            return
+        for path in sorted(self.root.rglob("*")):
+            if path.is_file() and not path.name.endswith(".part"):
+                yield path.relative_to(self.root).as_posix()
 
 
 # ---- S3 ------------------------------------------------------------------------------------------
@@ -307,6 +339,42 @@ class S3Backend:
             if self._status(exc) == 404:
                 return False
             raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+
+    def stat(self, key: str) -> Optional[ObjectInfo]:
+        try:
+            head = self.client.head_object(Bucket=self.config.bucket, Key=self._object_key(key),
+                                           ChecksumMode="ENABLED")
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self._status(exc) == 404:
+                return None
+            raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+        sha = head.get("ChecksumSHA256")
+        if sha and "-" not in sha:   # a multipart composite is a hash of hashes: not comparable with the file's
+            sha = base64.b64decode(sha).hex()
+        else:
+            sha = None
+        return ObjectInfo(int(head.get("ContentLength", -1)), sha)
+
+    def list_keys(self):
+        """Every key under this backend's prefix, with the prefix removed."""
+        token = None
+        try:
+            while True:
+                args = {"Bucket": self.config.bucket, "Prefix": self.prefix}
+                if token:
+                    args["ContinuationToken"] = token
+                page = self.client.list_objects_v2(**args)
+                for item in page.get("Contents") or []:
+                    yield item["Key"][len(self.prefix):]
+                if not page.get("IsTruncated"):
+                    return
+                token = page.get("NextContinuationToken")
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not list {self.id}: {self._explain(exc)}") from exc
 
     def delete(self, key: str) -> None:
         try:
@@ -596,6 +664,18 @@ class AzureBlobBackend:
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
 
+    def stat(self, key: str) -> Optional[ObjectInfo]:
+        try:
+            props = self._blob(self._object_key(key)).get_blob_properties()
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if _status_of(exc) == 404:
+                return None
+            raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+        meta = getattr(props, "metadata", None) or {}
+        return ObjectInfo(int(props.size), meta.get("sha256"))
+
     def delete(self, key: str) -> None:
         try:
             self._blob(self._object_key(key)).delete_blob(delete_snapshots="include")
@@ -771,6 +851,18 @@ class GcsBackend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+
+    def stat(self, key: str) -> Optional[ObjectInfo]:
+        blob = self._blob(self._object_key(key))
+        try:
+            if not blob.exists():
+                return None
+            blob.reload()
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+        return ObjectInfo(int(blob.size), None)  # GCS exposes MD5/CRC32C, not SHA-256
 
     def delete(self, key: str) -> None:
         try:

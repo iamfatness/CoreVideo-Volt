@@ -66,6 +66,17 @@ class BackendContract:
         self.assertFalse(self.backend.exists(key))
         self.backend.delete(key)  # deleting a missing key is not an error
 
+    def test_stat_reports_size_and_a_checksum_only_when_it_has_one(self):
+        key = "asset1/span1-stat.mp4"
+        self.assertIsNone(storage.stat_object(self.backend, key))
+        data = os.urandom(3000)
+        obj = self.backend.put_file(self._file(data), key)
+        info = storage.stat_object(self.backend, key)
+        self.assertEqual(info.size, len(data))
+        self.assertIn(info.sha256, (None, obj.sha256))
+        self.backend.delete(key)
+        self.assertIsNone(storage.stat_object(self.backend, key))
+
     def test_put_replaces_an_existing_object(self):
         key = "a/b.mp4"
         self.backend.put_file(self._file(b"one"), key)

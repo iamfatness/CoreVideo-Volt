@@ -74,7 +74,9 @@ MIGRATIONS = (
                        ("essence", "duration_frames", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
               postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
-    # Next: Migration(10, "...", columns=(...)). Do not add a gap or reuse a number.
+    # purge_audit is a new table (base-table creation makes it); asset.deleted_at is the soft-delete tombstone.
+    Migration(10, "asset tombstone, purge audit table", columns=(("asset", "deleted_at", "TIMESTAMP"),)),
+    # Next: Migration(11, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
@@ -167,11 +169,38 @@ def _ensure_columns(db: _Backend, columns) -> list:
     return added
 
 
+class SchemaTooNewError(RuntimeError):
+    """The database was migrated by newer code than this. Running anyway could misread or damage it."""
+
+    def __init__(self, database: int, code: int):
+        super().__init__(
+            f"the database schema is version {database} but this code only knows up to version {code}; "
+            "refusing to run against it. Upgrade this volt install to the version that wrote the database, "
+            "or restore a backup made at schema version "
+            f"{code} or older (python -m volt.backup restore)")
+        self.database, self.code = database, code
+
+
+def known_version() -> int:
+    """The newest schema version this code can bring a database to (read live, so a test that adds one sees it)."""
+    return max(m.version for m in MIGRATIONS)
+
+
+def check_not_newer(db: _Backend) -> int:
+    """Raise SchemaTooNewError when the database is ahead of this code. Returns the database's version."""
+    have = current_version(db)
+    if have > known_version():
+        raise SchemaTooNewError(have, known_version())
+    return have
+
+
 def run(db: _Backend) -> list:
     """Bring an existing database (base tables already present) to the latest shape.
 
-    Returns the versions applied this call. The caller owns the transaction and the lock."""
+    Returns the versions applied this call. The caller owns the transaction and the lock. Refuses
+    (SchemaTooNewError) a database whose recorded version is newer than this code knows."""
     db.ensure_version_table()
+    check_not_newer(db)
     _ensure_columns(db, legacy_columns())
     done = db.applied()
     ran = []
