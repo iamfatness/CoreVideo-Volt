@@ -153,14 +153,79 @@ def probe_audio_layout(path) -> Optional[str]:
         return None
 
 
+def _tag(tags, name):
+    """A tag value by case-insensitive name (ffprobe writes `timecode` on streams and `TIMECODE` on Matroska)."""
+    for key, value in (tags or {}).items():
+        if key.lower() == name and isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def probe_media(path) -> dict:
+    """Codec facts and the embedded start timecode of a file, from one ffprobe. Never raises; a field that cannot
+    be read is absent. Keys: codec, video_profile, pix_fmt, audio_codec, audio_sample_rate, audio_channels,
+    timecode (the label as written, e.g. "01:00:00;00") and timecode_from (where it was found: "tmcd_track" for a
+    QuickTime/MP4 timecode track, "video_stream_tag", or "format_tag" for Matroska and MXF-style containers)."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            return {}
+        data = json.loads(out.stdout)
+    except Exception:  # noqa: BLE001 - ffprobe missing, bad json: nothing known
+        return {}
+    streams = data.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"
+                  and not (s.get("disposition") or {}).get("attached_pic")), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    found: dict = {}
+    if video:
+        found["codec"] = video.get("codec_name")
+        found["video_profile"] = video.get("profile")
+        found["pix_fmt"] = video.get("pix_fmt")
+    if audio:
+        found["audio_codec"] = audio.get("codec_name")
+        rate = audio.get("sample_rate")
+        found["audio_sample_rate"] = int(rate) if isinstance(rate, str) and rate.isdigit() else None
+        found["audio_channels"] = audio.get("channels")
+    tmcd = next((_tag(s.get("tags"), "timecode") for s in streams
+                 if s.get("codec_type") == "data" and _tag(s.get("tags"), "timecode")), None)
+    for label, origin in ((tmcd, "tmcd_track"),
+                          (_tag((video or {}).get("tags"), "timecode"), "video_stream_tag"),
+                          (_tag((data.get("format") or {}).get("tags"), "timecode"), "format_tag")):
+        if label:
+            found["timecode"], found["timecode_from"] = label, origin
+            break
+    return {k: v for k, v in found.items() if v is not None}
+
+
+def start_timecode(found: dict, rate) -> tuple[Optional[str], str]:
+    """(label to store, source) for a probe result and the essence's frame rate. The label is the embedded start
+    timecode when it is a real label on this rate (a drop-frame `;` label only exists at 29.97 and 59.94); otherwise
+    None, which every reader takes as 00:00:00:00, and the source says why: "none" (the file carries no timecode)
+    or "invalid" (it carries one that cannot be placed on this rate, so it is ignored, not guessed at)."""
+    label = found.get("timecode")
+    if not label:
+        return None, "none"
+    try:
+        timecode.tc_to_frames(label, rate, timecode.is_drop(label))
+    except (timecode.TimecodeError, ValueError, TypeError, ZeroDivisionError):
+        return None, "invalid"
+    return label, found["timecode_from"]
+
+
 def record_media_facts(store: Store, essence_id: str, path) -> Optional[str]:
-    """Write the file's frame rate and audio channel count on an essence row that lacks them. Returns the frame
-    rate the row ends up with (None if unknown). A value already on the row is never replaced.
+    """Write what the file says about itself on an essence row that lacks it: frame rate, audio channel count, video
+    codec/profile/pix_fmt, audio codec and sample rate, the embedded start timecode and where it came from. Returns
+    the frame rate the row ends up with (None if unknown). A value already on the row is never replaced.
 
     Nothing else writes these. Without a frame rate `facts` refuses the asset, so shot detection, marking and the
     NLE export all refuse a freshly ingested or wrapped one; without the audio layout the NLE export silently
-    carries no audio tracks."""
-    row = store.conn.execute("SELECT frame_rate, audio_layout FROM essence WHERE id = ?", (essence_id,)).fetchone()
+    carries no audio tracks; without the start timecode a file that starts at 01:00:00:00 has its shots, words and
+    NLE clips placed an hour early."""
+    row = store.conn.execute(
+        "SELECT frame_rate, audio_layout, codec, timecode_start, timecode_source FROM essence WHERE id = ?",
+        (essence_id,)).fetchone()
     if row is None:
         return None
     rate, layout = row["frame_rate"], row["audio_layout"]
@@ -173,6 +238,16 @@ def record_media_facts(store: Store, essence_id: str, path) -> Optional[str]:
         if found is not None:
             store.conn.execute(
                 "UPDATE essence SET audio_layout = ? WHERE id = ? AND audio_layout IS NULL", (found, essence_id))
+    media = probe_media(path)
+    for column in ("codec", "video_profile", "pix_fmt", "audio_codec", "audio_sample_rate"):
+        if column in media:
+            store.conn.execute(f"UPDATE essence SET {column} = ? WHERE id = ? AND {column} IS NULL",
+                               (media[column], essence_id))
+    if media and rate and not row["timecode_source"] and not row["timecode_start"]:
+        label, origin = start_timecode(media, rate)
+        store.conn.execute(
+            "UPDATE essence SET timecode_start = ?, timecode_source = ? WHERE id = ? "
+            "AND timecode_start IS NULL AND timecode_source IS NULL", (label, origin, essence_id))
     store.conn.commit()
     return rate
 

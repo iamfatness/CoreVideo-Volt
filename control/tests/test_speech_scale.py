@@ -136,15 +136,16 @@ class Windows(unittest.TestCase):
         with self.assertRaisesRegex(SpeechError, "window"):
             transcribe(self.store, asset.id, FakeEngine(), chunk=chunking.ChunkSettings(window=4, search=3))
 
-    def test_no_audio_still_fails_with_the_reason(self):
+    def test_no_audio_is_a_no_speech_outcome(self):
         clip = self.root / "silent.mp4"
         _long_clip(clip, 3, audio=False)
         asset = self.store.mint_asset(owner="desk")
         self.store.set_cleared(asset.id, True)
         self.store.add_essence(asset.id, role="hi-res", location=str(clip), open_file=False, frame_rate="25",
                                timecode_start="01:00:00:00")
-        with self.assertRaisesRegex(SpeechError, "no audio"):
-            transcribe(self.store, asset.id, FakeEngine(), chunk=SMALL)
+        self.assertEqual(transcribe(self.store, asset.id, FakeEngine(), chunk=SMALL), 0)  # not a failure any more
+        from volt.speech import asr_outcome
+        self.assertEqual(asr_outcome(self.store, asset.id)["reason"], "no_audio_stream")
 
 
 class Resume(unittest.TestCase):

@@ -194,8 +194,10 @@ def transcript(store: Store, asset_id: str, query: dict) -> dict:
     after = _decode_cursor(q["after"]) if "after" in q else None
     blocked = _blocked_by(bool(asset["cleared"]), bool(asset["legal_hold"]))
     words, nxt = _page(store, asset_id, ("transcript",), lo, hi, after, limit, blocked)
+    from volt import speech  # speech imports the store, as this module does; kept local like the other late imports
     return {"ok": True, "assetId": asset_id, "words": words, "next": nxt,
-            "pendingFrames": shots.pending_frames(store, asset_id)}
+            "pendingFrames": shots.pending_frames(store, asset_id),
+            "asr": speech.asr_outcome(store, asset_id)}  # null until a run finishes; "no_speech" + reason when it found none
 
 
 # ---- proxy and HTTP Range -------------------------------------------------------------------------
