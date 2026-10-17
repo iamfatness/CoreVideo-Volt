@@ -289,6 +289,73 @@ class Hooks(unittest.TestCase):
         self.assertEqual(Config().chunk_settings().window, 900.0)
 
 
+class RecoverSkippedSpeech(unittest.TestCase):
+    """Long-form whisper decoding skips whole stretches of real speech (seen on a podcast: 25 s of an ad read,
+    dropped with the default settings and again, elsewhere, with others). The engine finds voiced stretches with
+    no words and decodes them again alone."""
+
+    def test_uncovered_speech_finds_long_voiced_gaps_only(self):
+        words = [Word("a", 1.0, 1.3), Word("b", 30.0, 30.4)]
+        voiced = [(0.9, 1.4), (5.0, 28.0), (30.0, 30.5), (40.0, 41.0)]
+        # 1.3..30 holds 23 s of voice -> found; 30.4..60 is mostly silence -> not; a 2 s gap is never checked
+        self.assertEqual(speech.uncovered_speech(words, voiced, 60.0), [(1.3, 30.0)])
+        self.assertEqual(speech.uncovered_speech(words, [], 60.0), [])  # music the VAD does not call voice
+        self.assertEqual(speech.uncovered_speech([Word("a", 0.0, 1.0), Word("b", 4.0, 5.0)], [(1.0, 4.0)], 5.0), [])
+
+    def _engine(self, main_words, rescued):
+        calls = []
+
+        class Seg:
+            def __init__(self, words):
+                self.words = words
+
+        class W:
+            def __init__(self, text, start, end):
+                self.word, self.start, self.end, self.probability = text, start, end, 1.0
+
+        class Model:
+            def transcribe(self, audio, **kw):
+                calls.append((audio if isinstance(audio, str) else len(audio), kw.get("condition_on_previous_text")))
+                if isinstance(audio, str):
+                    return [Seg([W(*w) for w in main_words])], None
+                return [Seg([W(t, s, e) for t, s, e in rescued])], None
+
+        class Engine(FasterWhisperEngine):
+            def _load_audio(self, wav):
+                return [0.0] * (60 * 16000)
+
+            def _speech_spans(self, audio):
+                return [(0.0, 12.0), (20.0, 45.0)]
+
+        eng = Engine(device="cpu", model="x")
+        eng._model = Model()
+        return eng, calls
+
+    def test_a_skipped_stretch_is_decoded_again_and_added_once(self):
+        main = [("one", 0.5, 0.9), ("two", 4.0, 4.4), ("three", 8.0, 8.4), ("four", 11.5, 11.9), ("tail", 50.0, 50.4)]
+        # the rescue decodes 10.9..51 (the 11.9..50 gap plus a second each side); times are clip-relative
+        eng, calls = self._engine(main, [("edge", 0.2, 0.5), ("skipped", 6.0, 6.4), ("also", 20.0, 20.4)])
+        result = eng.transcribe(Path("x.wav"))
+        self.assertEqual([w.text for w in result.words], ["one", "two", "three", "four", "skipped", "also", "tail"])
+        self.assertAlmostEqual(result.words[4].start, 16.9)  # 10.9 + 6: back on the window's timeline
+        self.assertEqual((result.stats["recover_gaps"], result.stats["recovered_words"]), (1, 2))
+        # "edge" is at 11.1, outside the stretch it was asked to fill (it is a word the main pass already has)
+        self.assertEqual(calls[1][1], False)  # the rescue does not carry the previous text forward
+
+    def test_nothing_missing_means_no_second_pass(self):
+        main = [("w%d" % i, float(i), i + 0.4) for i in range(0, 45)]
+        eng, calls = self._engine(main, [("never", 1.0, 1.2)])
+        result = eng.transcribe(Path("x.wav"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(result.words), 45)
+        self.assertNotIn("recovered_words", result.stats)
+
+    def test_recovery_is_part_of_the_recorded_settings(self):
+        self.assertTrue(FasterWhisperEngine(device="cpu", model="x").describe()["recover"])
+        self.assertFalse(FasterWhisperEngine(device="cpu", model="x", recover=False).describe()["recover"])
+        self.assertFalse(FasterWhisperEngine(device="cpu", model="x", vad_filter=False).describe()["recover"])
+
+
 class ChunkHelpers(unittest.TestCase):
     def test_choose_cut_takes_the_longest_quiet_stretch_and_its_middle(self):
         self.assertEqual(chunking.choose_cut(10, [(8.0, 8.5), (11.0, 13.0)]), (12.0, True))
