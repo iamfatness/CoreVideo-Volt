@@ -49,6 +49,20 @@ Deviations from the mockup: there are no In and Out thumbnails in the panel (the
 
 Why this and not the alternatives: it changes nothing on the server's auth surface, puts no token in a URL (URLs reach logs, history and referrers), and needs no service worker (which needs a secure context, and a LAN address over http is not one). The cost is real: with a token the operator waits for the whole proxy, and a large proxy cannot be played. If that bites, the next step is a short-lived signed URL for the proxy route; it is not built. The CSP gained `img-src blob:` and `media-src 'self' blob:` and nothing else.
 
+### Building the show (Show screen)
+
+Below the rundown, a small panel (`#build`) and, under the Cues panel, an add-cue form (`#cue-add`). No new screen. All of it is forms and buttons with labels; there is no single-key shortcut, and Space types inside a field and never takes (the take rule is unchanged, and none of this is on the Library screen).
+
+- **New item**: a name field and Add item (Enter works). The item goes last.
+- **Edit the selected row** (a ready row only; otherwise it says why it cannot be edited): Rename; a picker of the clips ticked in the Library's Selection tray, with Attach clip; Detach clip when one is attached; Remove item (armed: the button turns to Confirm remove for 4 s, like Kill). Kill stays on the row and keeps the item in the list.
+- **Reorder** is the row's existing up and down buttons, now sending `version` (`orderVersion` from `/api/state`). If another operator changed the list the server answers `stale_order`, the page shows "The list changed" and the refreshed list; nothing moved.
+- **Add a cue** (selected ready row): a command picker from `GET /api/cue-commands` (unverified commands are labelled "(no verified adapter)" and a warning appears under the picker), a payload field, Add cue. Each unfired cue has a Remove button.
+- **New show**: a disclosure with a name field; the new show opens.
+- As-run times in the rundown show milliseconds when the server has them.
+- Not built in the page: ingest (the endpoint exists), deleting a show.
+
+Checked with axe-core 4.10 in a real browser against the harness (`library` scenario): no violations on the Show screen with the panel and the add-cue form showing, and again after the New show disclosure was opened and used.
+
 ## Keys (Show screen)
 
 | Key | Does |

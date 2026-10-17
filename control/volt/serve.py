@@ -21,7 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import health, logs, media, nle, operator_state, retention, shots
+from volt import building, health, logs, media, nle, operator_state, retention, shots
+from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
@@ -129,7 +130,10 @@ def rundown_payload(store: Store, show_id: str) -> dict:
     held = hold_state(store, show_id)
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
-         "asRunIn": row.as_run_in, "asRunOut": row.as_run_out}
+         "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
+         # Millisecond as-run (migration 13). Rows stamped before it, or by a test clock, have none: the second.
+         "asRunInPrecise": row.as_run_in_precise or row.as_run_in,
+         "asRunOutPrecise": row.as_run_out_precise or row.as_run_out}
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
@@ -249,17 +253,16 @@ def act_take(store, show_id, body):
 
 
 def act_reorder(store, show_id, body):
-    _unknown_keys(body, {"items"})
+    """Set the order. `version` (the `version` of the /rundown payload the page last saw) makes it conditional: a
+    changed list is 409 `stale_order` and nothing moves. Without it the order is set unconditionally (older clients)."""
+    _unknown_keys(body, {"items", "version"})
     _show_exists(store, show_id)
     ids = body.get("items")
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
         raise ApiError(422, "bad_input", "items must be a list of item ids")
-    with _SEQ:
-        have = {r["id"] for r in store.conn.execute("SELECT id FROM item WHERE show_id = ?", (show_id,))}
-        if len(set(ids)) != len(ids) or set(ids) != have:
-            raise ApiError(422, "bad_input", "items must list every item of the show exactly once")
-        reorder(store, show_id, ids)
-        return {"ok": True, "rundown": rundown_payload(store, show_id)}
+    version = _str(body, "version", limit=64)
+    _build_errors(lambda: building.reorder(store, show_id, ids, version))
+    return {"ok": True, "rundown": rundown_payload(store, show_id), "orderVersion": building.order_version(store, show_id)}
 
 
 def act_skip(store, item_id, body):
@@ -504,6 +507,136 @@ def act_export_nle(store, _unused, body):
         raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
 
 
+# ---- show building: create, edit, cue and ingest (docs/specs/operator-api.md, "Show building") ------------------
+# Rules live in volt/building.py; these handlers read the body, call it, and map BuildError to HTTP. They take no
+# _SEQ: each edit is one transaction under the show's own lock, which go and take also take, in every process.
+
+def _build_errors(fn):
+    try:
+        return fn()
+    except building.BuildError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
+
+
+def _client_id(body: dict):
+    """Optional caller-chosen id: a retry of the same create is then a 200 `existed`, not a second show or item."""
+    value = _str(body, "id", limit=128)
+    if value is not None and not re.fullmatch(_ID, value):
+        raise ApiError(422, "bad_input", "id may use letters, digits and _ . : - only (1 to 128)")
+    return value
+
+
+def act_show_create(store, _unused, body):
+    _unknown_keys(body, {"title", "id"})
+    title = _str(body, "title", required=True, limit=200).strip()
+    show_id, created = _build_errors(lambda: building.create_show(store, title, _client_id(body)))
+    return {"ok": True, "show": {"id": show_id, "title": title}, "existed": not created,
+            "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def act_item_add(store, show_id, body):
+    _unknown_keys(body, {"slug", "script", "id"})
+    slug = _str(body, "slug", required=True, limit=200).strip()
+    script = _str(body, "script", default="", limit=20000)
+    item_id = _client_id(body)
+    _show_exists(store, show_id)
+    item, created = _build_errors(lambda: building.add_item(store, show_id, slug, script, item_id))
+    return {"ok": True, "item": item, "existed": not created, "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def act_item_rename(store, item_id, body):
+    _unknown_keys(body, {"slug", "script"})
+    slug = _str(body, "slug", limit=200)
+    script = _str(body, "script", limit=20000)
+    if slug is None and script is None:
+        raise ApiError(422, "bad_input", "give slug, script or both")
+    if slug is not None:
+        slug = slug.strip()
+        if not slug:
+            raise ApiError(422, "bad_input", "slug cannot be empty")
+    show_id, _ = _item_show(store, item_id)
+    _build_errors(lambda: building.rename_item(store, item_id, slug, script))
+    return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def act_item_remove(store, item_id, body):
+    _unknown_keys(body, set())
+    _item_show(store, item_id)
+    show_id = _build_errors(lambda: building.remove_item(store, item_id))
+    return {"ok": True, "removed": item_id, "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def act_item_detach(store, item_id, body):
+    _unknown_keys(body, set())
+    _item_show(store, item_id)
+    show_id, was = _build_errors(lambda: building.detach_span(store, item_id))
+    return {"ok": True, "item": item_id, "wasAttached": was, "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def _cue_json(store, cue_id: str) -> dict:
+    row = store.conn.execute("SELECT item_id FROM cue WHERE id = ?", (cue_id,)).fetchone()
+    c = next(c for c in cues_of(store, row["item_id"]) if c.id == cue_id)
+    return {"id": c.id, "room": c.room, "command": c.command, "payload": c.payload, "status": c.status,
+            "verified": c.command in building.HANDLERS,
+            "failure": None if c.fail_status is None else {"status": c.fail_status, "detail": c.fail_detail}}
+
+
+def act_cue_add(store, item_id, body):
+    _unknown_keys(body, {"room", "command", "payload"})
+    room = _str(body, "room", default=building.CUE_ROOM, limit=100)
+    command = _str(body, "command", required=True, limit=100)
+    payload = _str(body, "payload", default="", limit=2000)
+    show_id, _ = _item_show(store, item_id)
+    cue_id, _show, verified = _build_errors(lambda: building.add_cue(store, item_id, room, command, payload))
+    out = {"ok": True, "cue": _cue_json(store, cue_id), "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+    if not verified:
+        out["warning"] = (f"{command} has no verified adapter yet: the cue is stored, but a take stops at it "
+                          "with cue_unsupported")
+    return out
+
+
+def act_cue_remove(store, cue_id, body):
+    _unknown_keys(body, set())
+    item_id, show_id = _build_errors(lambda: building.remove_cue(store, cue_id))
+    return {"ok": True, "removed": cue_id, "item": item_id, "rundown": rundown_payload(store, show_id),
+            "orderVersion": building.order_version(store, show_id)}
+
+
+def act_ingest(store, _unused, body):
+    """Ingest one file from an allowed folder (VOLT_INGEST_ROOTS). Runs in the request: probe and checksum of a
+    large file take as long as they take. Replay is safe (same file, same asset)."""
+    _unknown_keys(body, {"path", "owner", "show", "camera"})
+    path = _str(body, "path", required=True, limit=4096)
+    owner = _str(body, "owner", default="desk", limit=100)
+    out = _build_errors(lambda: building.ingest_allowed(
+        store, path, Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine"), owner,
+        _str(body, "show", limit=200), _str(body, "camera", limit=100)))
+    return {"ok": True, **out, "assetState": asset_payload(store, out["asset"])}
+
+
+def show_building_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/cue-commands and GET /api/items/{item}/cues. Returns True when it answered."""
+    m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
+    if path != "/api/cue-commands" and not m:
+        return False
+    if query:
+        raise ApiError(422, "bad_input", "this route takes no parameters")
+    if m:
+        _item_show(store, m.group(1))
+        handler._json(200, {"ok": True, "item": m.group(1),
+                            "cues": [_cue_json(store, c.id) for c in cues_of(store, m.group(1))],
+                            "commands": building.cue_commands()})
+    else:
+        handler._json(200, {"ok": True, "commands": building.cue_commands()})
+    return True
+
+
 # Reads on an asset and on a span, served by do_GET. IDs are path segments, never file names.
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
@@ -533,6 +666,16 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/shots/detect$"), act_detect),
     (re.compile(rf"^/api/assets/{_ID}/span-frames$"), act_span_frames),
     (re.compile(r"^/api/exports/nle$()"), act_export_nle),
+]
+ROUTES += [  # show building
+    (re.compile(r"^/api/shows$()"), act_show_create),
+    (re.compile(rf"^/api/shows/{_ID}/items$"), act_item_add),
+    (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
+    (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
+    (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
+    (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
+    (re.compile(rf"^/api/cues/{_ID}/remove$"), act_cue_remove),
+    (re.compile(r"^/api/ingest$()"), act_ingest),
 ]
 
 
@@ -682,6 +825,8 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._send(200, "application/json", json.dumps(payload).encode())
             return
+        if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
         m = READ_ROUTES.match(parsed.path)
         if m:
             asset_id, what = m.group(1), m.group(2)
@@ -781,7 +926,10 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError:  # a remembered show that no longer exists: fall back to the newest
                 show_id = listing[-1]["id"] if listing else None
                 rundown = rundown_payload(store, show_id) if show_id else None
-        return operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room))
+        state = operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room))
+        # What a reorder must quote to be conditional on the list the page is showing (building.order_version).
+        state["orderVersion"] = building.order_version(store, show_id) if show_id and rundown is not None else None
+        return state
 
     def _json(self, status: int, payload: dict):
         self._send(status, "application/json", json.dumps(payload).encode())

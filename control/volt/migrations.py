@@ -85,7 +85,10 @@ MIGRATIONS = (
     # runner_heartbeat is a new table (base-table creation makes it), as in 4 and 7: each runner upserts a row so
     # health can report how long ago one last checked in.
     Migration(12, "runner_heartbeat table"),
-    # Next: Migration(13, "...", columns=(...)). Do not add a gap or reuse a number.
+    # The as-run time to the millisecond, as text (2026-10-10T20:00:09.123Z). as_run_in/out keep their second precision.
+    Migration(13, "item as-run millisecond columns",
+              columns=(("item", "as_run_in_precise", "TEXT"), ("item", "as_run_out_precise", "TEXT"))),
+    # Next: Migration(14, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
