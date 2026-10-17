@@ -121,7 +121,7 @@ def rundown_payload(store: Store, show_id: str) -> dict:
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
-         # Millisecond as-run (migration 10). Rows stamped before it, or by a test clock, have none: the second.
+         # Millisecond as-run (migration 11). Rows stamped before it, or by a test clock, have none: the second.
          "asRunInPrecise": row.as_run_in_precise or row.as_run_in,
          "asRunOutPrecise": row.as_run_out_precise or row.as_run_out}
         for row in rundown(store, show_id)

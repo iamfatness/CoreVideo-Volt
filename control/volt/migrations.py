@@ -74,10 +74,16 @@ MIGRATIONS = (
                        ("essence", "duration_frames", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
               postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
+    # timecode_source: where timecode_start came from (tmcd_track, video_stream_tag, format_tag, or none/invalid
+    # when it stays NULL = 00:00:00:00). The rest are what the file says about its own codecs.
+    Migration(10, "essence media facts",
+              columns=(("essence", "timecode_source", "TEXT"), ("essence", "video_profile", "TEXT"),
+                       ("essence", "pix_fmt", "TEXT"), ("essence", "audio_codec", "TEXT"),
+                       ("essence", "audio_sample_rate", "INTEGER"))),
     # The as-run time to the millisecond, as text (2026-10-10T20:00:09.123Z). as_run_in/out keep their second precision.
-    Migration(10, "item as-run millisecond columns",
+    Migration(11, "item as-run millisecond columns",
               columns=(("item", "as_run_in_precise", "TEXT"), ("item", "as_run_out_precise", "TEXT"))),
-    # Next: Migration(11, "...", columns=(...)). Do not add a gap or reuse a number.
+    # Next: Migration(12, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version
