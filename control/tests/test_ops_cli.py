@@ -322,8 +322,9 @@ class RunEndToEnd(unittest.TestCase):
             except OSError:
                 pass
         if self.proc.poll() is None:
-            self.proc.kill()
+            supervisor.kill_tree(self.proc)
         self.proc.wait(timeout=30)
+        time.sleep(0.5)  # let Windows release the log files before the temp directory is removed
 
     def get(self, path):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
@@ -373,16 +374,18 @@ class RunEndToEnd(unittest.TestCase):
         for name in ("run.log", "serve.log", "runner.log"):
             self.assertTrue((self.logs / name).exists(), name)
 
-        runner_pid = [p for p in self._child_pids()][-1]  # started last: the runner
+        def runner_names():
+            return {r["name"] for r in json.loads(self.get("/api/health")[1])["runners"]["runners"]}
+        before = runner_names()
+        runner_pid = self._child_pids()[-1]  # started last: the runner
         os.kill(runner_pid, signal.SIGTERM)
         self.assertTrue(self.wait_for(lambda: "restarting in" in self.log_text("run.log")), self.log_text("run.log"))
         self.assertTrue(self.wait_for(lambda: len(self._child_pids()) >= 3), self.log_text("run.log"))
-        new_pid = self._child_pids()[-1]
-        self.assertNotEqual(new_pid, runner_pid)
+        self.assertNotEqual(self._child_pids()[-1], runner_pid)
 
-        def new_runner_beating():
+        def new_runner_beating():  # a runner the health report has not seen before, heartbeating now
             rows = json.loads(self.get("/api/health")[1])["runners"]["runners"]
-            return any(r["pid"] == new_pid and r["alive"] for r in rows)
+            return any(r["name"] not in before and r["alive"] for r in rows)
         self.assertTrue(self.wait_for(new_runner_beating), self.log_text("run.log"))
 
         self.stop_supervisor()

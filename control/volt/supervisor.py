@@ -27,6 +27,15 @@ EX_CONFIG = 78
 IS_WINDOWS = os.name == "nt"
 
 
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill a child we started and anything it started. On Windows a virtualenv's python.exe is a launcher that
+    runs the real interpreter as its own child, so killing only the launcher is not enough."""
+    if IS_WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
+    if proc.poll() is None:
+        proc.kill()
+
+
 @dataclass
 class Child:
     name: str
@@ -110,7 +119,7 @@ class Supervisor:
                 log.info("stopped child=%s code=%s", child.name, child.proc.returncode)
             except subprocess.TimeoutExpired:
                 log.warning("child=%s did not stop in %.0fs; killing it", child.name, self.grace)
-                child.proc.kill()
+                kill_tree(child.proc)
                 child.proc.wait(timeout=10)
 
     @staticmethod

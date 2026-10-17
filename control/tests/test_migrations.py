@@ -322,7 +322,7 @@ class Version8ToNinePostgres(PgCase):
         self.assertEqual(tuple(store.conn.execute("SELECT frame_in, frame_out FROM span").fetchone()), (90000, 90010))
         self.stores.pop().close()
         again = self.store()  # opening again applies nothing and does not fail
-        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], 9)
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0], migrations.LATEST)
 
 
 if __name__ == "__main__":
