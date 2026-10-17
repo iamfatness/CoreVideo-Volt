@@ -1,6 +1,6 @@
 # Speech at scale
 
-Status: implemented on branch `speech-scale`; measured on one machine (RTX 4090 24 GB, 28-thread CPU, Windows 11,
+Status: implemented; measured on one machine (RTX 4090 24 GB, 28-thread CPU, Windows 11,
 faster-whisper 1.2.1 / ctranslate2, av 16.1.0). Everything under "Measured" was observed by running the scripts in
 `control/bench/`; raw rows live outside the repo (`VOLT_BENCH_DIR`, default `D:/scratch/bench`).
 
@@ -97,6 +97,95 @@ Takeaway: GPU concurrency beyond 2 buys almost nothing for large-v3 (throughput 
 CUDA OOM: the old agent's earlier report of a CUDA OOM was not reproduced; large-v3 x4 fit in 24 GB and x5 stalled at
 full VRAM instead of raising. Treat "out of VRAM" as a possible hang as well as an error.
 
+## Real speech (measured 2026-10-16)
+
+First run of the pipeline on recordings of real people, through the real runner CLI (`control/bench/asr_real.py`,
+throwaway databases under `D:/scratch/real`, models offline from the local cache). Hardware: RTX 4090 24 GB, CUDA path
+works (large-v3 float16 on `cuda`; the pip cublas DLLs were found); faster-whisper 1.2.1. **The GPU was shared** with a
+running CoreVideo Pro and other desktop apps (30-94 % busy and 2-10 GB used by others at the start of each run), so every
+wall time below is "on a busy box" and some are far from the idle numbers above. No ground-truth transcripts exist for any
+of this audio; "accuracy" below means plausibility by reading plus agreement between models, never WER.
+
+Inputs (copied to scratch, originals untouched):
+- `dtns_1944s.mp3`: one episode of a daily tech-news podcast, 1944 s (32.4 min); several hosts, ad reads over music beds, jingles.
+- `church_5667s.mp3`: a church anniversary-service recording, 5667 s (94.5 min); reverberant room, preaching, long
+  stretches of congregational singing, a Spanish-interpreted passage. Essence given `01:00:00:00` at 30 fps.
+- `Blessed Assurance.mp4`, 256 s: instrumental music (VAD finds 0.3 s of speech in it). A 105 s ISO that is digital silence.
+- The CoreVideo Pro recordings (`Program.mp4`, `ISO-*.mp4`) are a scripted panel ("Dr. Carter", "Dr. Patel") that reads
+  like synthetic voices; I did not count them as real speech. Most ISO files are silent (-91 dB). The longest recording is
+  106 s, so no recording from the app is a long file.
+
+**Speed and memory (large-v3, cuda, 900 s windows).** 1944 s podcast: 250 s wall (RTF 0.13) on the quietest run, 598 s and
+772 s on busier ones (same audio, the 772 s one includes the recovery pass below). 5667 s church service, uninterrupted:
+967 s (RTF 0.17), 7 windows. Peak RAM of the runner process tree (sum of per-process peaks, so an upper bound): 3.34 GB for
+the 94 min file and 3.32 GB for a 3 min clip, so memory does not grow with length. 180 s of the podcast, wall including model
+load: GPU tiny.en 5.5 s, distil-large-v3 7.1 s, large-v3 20.7 s; CPU int8 tiny.en 8.2 s (RTF 0.05), distil-large-v3 62.9 s
+(0.35), large-v3 178.8 s (0.99). Peak RAM 0.4/1.8/3.3 GB (CPU), 0.9/1.8/3.3 GB (GPU). large-v3 on CPU int8 and on GPU
+float16 differed in 2 of 513 words, with identical start times (median diff 0.00 s, p99 0.08 s).
+
+**Found: long-form decoding silently skips stretches of real speech (fixed).** With the shipped defaults the podcast lost
+25.7 s of an ad read (91.8 s to 117.5 s) with no error: the words were simply not in the transcript, while the same
+stretch decoded alone gave 76 words. Changing settings only moved the holes: `condition_on_previous_text=False` recovered
+that one and lost others (636-666 s, 697-717 s, 1351-1363 s); a 120 s window still lost 93-117 s and 637-661 s; disabling
+the VAD or `no_speech_threshold` did not help. Using the VAD as a second opinion (a stretch of at least 5 s with no word
+where at least half the audio is voiced) found the holes in every variant: 6 holes / 92 s (defaults), 4 / 83 s (no
+previous-text), 3 / 74 s (120 s windows). Fix: `FasterWhisperEngine(recover=True)` (default; needs the VAD on) decodes each
+such stretch again on its own, keeps only words whose midpoint falls inside it, and records `recover_gaps`,
+`recovered_gaps`, `recovered_words` in the run's stats; `recover` is part of the engine's recorded settings, so it is a new
+run identity. Result on the podcast: 3 holes recovered (150 words), 1 hole left (6 s, a jingle). Church: 16 holes found,
+13-14 recovered (140-147 words); about 10 stretches of ~5 s with voice and no word remain (56 s of 5667 s, 1 %).
+Tests: `RecoverSkippedSpeech` in `tests/test_speech_scale.py` (fake model).
+
+**Found: a killed transcribe blocked its own retry for up to 30 minutes (fixed).** `transcribe` takes a per-asset
+`asr-slot:<asset>` job with a 30 minute lease that was never renewed and is not released by a kill. A runner killed
+mid-file and restarted after its job lease expired logged "recovered 1 job(s) with an expired lease" and then
+`deferred=1`, because the dead process still held the slot. Now the slot owner records host and pid; a slot held by a dead
+process on this host is taken over at once; the lease is renewed after every window (a file longer than 30 minutes cannot
+lose it under the holder). A holder on another host still keeps the slot until its lease lapses. Tests:
+`tests/test_job_limits.py`.
+
+**Kill and resume on the 94.5 min file.** Runner killed (taskkill of the process tree the script started) 48 s in, after 2
+windows were saved; restarted after the 30 s job lease: log `resuming at window 2 (1800 of 5667 s already done)`, windows
+3-7 decoded, job done, `resumed_windows = 2`, 734 s. The uninterrupted run of the same file gave 6719 words, the resumed
+one 6669 (0.7 % fewer; sequence ratio 0.955, 106 differing regions). The first two windows had identical word counts in
+both (164 and 248). The differing regions are one run skipping or recovering a stretch the other did not, and the Spanish
+passage (one run kept the Spanish words, the other produced English). So resume is "same within decoder variation", which
+on real speech is wider than the 0.1 % seen on synthetic speech. I did not run the uninterrupted file twice, so I cannot
+say how much of the 0.7 % is run-to-run variation rather than resume.
+
+**Chunk boundaries.** The church file had 6 hard cuts and 1 quiet cut (noisy room: silencedetect found no quiet stretch);
+the podcast had one cut, near 880 s. At the four church seams with words nearby (1800, 2700, 3600, 4500 s) and the podcast
+seam: no doubled word runs except ones in the speech itself ("88 ... 88"), and the last word before and first word after
+each cut were 0.3 to 2.7 s apart. One word ("The", 880.2 s) present when the neighbourhood is decoded alone is missing from
+the windowed result; I did not establish the cause.
+
+**Timecode.** Church words carry `01:00:00:00`-based labels (first word 64.07 s into the file). Against the waveform (only
+pauses with at least 15 dB between the quietest and loudest 20 ms, starting or ending quiet): podcast onsets n=36, word
+start minus sound onset median -0.09 s (abs median 0.20 s, p90 0.36 s), word ends n=44 median -0.18 s; church onsets n=159
+median +0.22 s (abs median 0.26 s, p90 0.44 s), ends n=199 median -0.18 s. Starts later and ends earlier than the energy
+burst by about 0.2 s: word spans sit inside the bursts, with no one-direction offset that would be a timecode shift. The
+method is crude (reverb, music beds); read it as "within about +/-0.3 s", not frame accurate. Across models on 180 s of the
+podcast, matched words' start times: tiny.en 0.24 s later than large-v3 (p90 0.36 s), distil-large-v3 0.08 s later (p90
+0.24 s); the earlier synthetic result had large-v3 about 0.19 s early.
+
+**Word accuracy.** No truth. The first 90 words of the podcast (a toilet advertisement) and the church opening ("We are
+celebrating 88 years at the Apostolic Church...") read as correct, coherent English. Disagreement with large-v3 on the 180 s
+clip (substitutions + deletions + insertions over large-v3's word count): tiny.en 6.4 % (GPU) / 5.5 % (CPU),
+distil-large-v3 6.6 % / 5.8 %. That is agreement, not error rate.
+
+**Non-speech.** 105 s of digital silence: 0 words. 256 s of instrumental music: 2 words, "Thank you." at 2.5 s, from a 0.3 s
+blip the VAD called speech, so the "0 invented words with VAD on" result on synthetic noise did not hold on this music. Sung
+words are not transcribed: about 25 minutes of the church file (112-628 s and 682-1589 s) have no words, the VAD finds
+under 1 s of speech in them, and a standalone decode of 1000-1030 s without the VAD gives intelligible lyrics ("Even when I
+was unaware, you were consistent..."). That is the VAD guard doing what it was chosen for, but singing is invisible.
+
+**Job behaviour on a real file (tiny.en CPU, 180 s of the podcast, asset on legal hold):** transcribed (511 words) with the
+hold set; the same configuration again: 0 engine calls, still 1 `asr_run`; a different model replaced the transcript (2
+`asr_run` rows). With a hand-run `transcribe` (distil-large-v3, 46 s) holding the slot: a second hand-run raised "another
+transcribe holds this asset" with 0 engine calls, and `runner --once` printed `deferred=1`; after the first finished, the
+runner ran its job. A refused hand-run leaves one `queued` `asr` job row with a run-key idempotency key that no runner
+claims (`CLAIM_PREFIX` only claims `asr:`); not fixed.
+
 ## Tests
 
 `control/tests/test_speech_scale.py` (fake engines): every word exactly once across windows, quiet-cut choice, hard
@@ -113,7 +202,13 @@ real windows each appear once; both passed here.
 - A stale runner and its replacement could both write the same `asr_chunk` row; the second insert fails on the primary
   key and that attempt errors (outcome is lease-guarded, so nothing is corrupted), it is then retried. Not exercised
   against a live Postgres here; Postgres paths were only exercised by the existing skipped tests.
-- Quality numbers are synthetic TTS speech; real voices, accents, crosstalk and music beds are untested.
+- The quality numbers in "Measured" above are synthetic TTS. Real speech was run once ("Real speech" above): one podcast, one
+  church recording, no ground truth, one machine with a shared GPU. Still untested: real Zoom participant audio from the
+  app's ISO path, a whole non-English file (only a Spanish passage inside English), overlapping speakers on separate
+  channels, telephone-band audio, a second run of the same long file to measure run-to-run variation, models other than
+  tiny.en / distil-large-v3 / large-v3, and the `recover` pass under Postgres.
+- The recovery pass finds holes with the same Silero VAD that gates the main pass: speech the VAD calls non-speech (singing,
+  speech under loud music) stays missing, and a VAD blip can still produce a hallucinated phrase (see Non-speech).
 - Silence-guard and `min_word_prob` are plumbed and recorded but their effect was not measured.
 - Resume was proven by killing the runner process between windows, not mid-window (a mid-window kill just redoes
   that window).
