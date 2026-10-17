@@ -26,7 +26,12 @@ CREATE TABLE IF NOT EXISTS essence (
   audio_layout TEXT,
   open BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  duration_frames INTEGER
+  duration_frames INTEGER,
+  timecode_source TEXT,
+  video_profile TEXT,
+  pix_fmt TEXT,
+  audio_codec TEXT,
+  audio_sample_rate INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS span (

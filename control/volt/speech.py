@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Optional, Protocol, Sequence
 
 from volt import chunking, timecode
 from volt.deliverables import _probe_rate
@@ -491,7 +491,8 @@ def _saved_windows(store: Store, job_id: str, fingerprint: str) -> list[dict]:
         body = json.loads(r["words"])
         keep.append({"idx": r["idx"], "own_start": r["own_start"], "own_end": r["own_end"],
                      "words": [Word(t, s, e) for t, s, e in body["words"]], "quiet": body.get("quiet", True),
-                     "stats": body.get("stats", {}), "vocab_used": body.get("vocab_used", [])})
+                     "stats": body.get("stats", {}), "vocab_used": body.get("vocab_used", []),
+                     "peak": body.get("peak")})
         end = r["own_end"]
     if len(keep) != len(rows):
         store.conn.execute("DELETE FROM asr_chunk WHERE job_id = ? AND idx >= ?", (job_id, len(keep)))
@@ -508,6 +509,10 @@ def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary:
     nothing."""
     try:
         total = chunking.probe_duration(src)
+    except chunking.NoAudioStream:
+        # Not a failure: there is nothing to transcribe. The caller records it as a no_speech outcome.
+        return [], {"chunk": chunk.as_dict(), "audio_seconds": 0.0, "windows": 0, "resumed_windows": 0,
+                    "quiet_cuts": 0, "hard_cuts": 0, "engine_stats": {}, "no_audio_stream": True}, []
     except chunking.AudioError as exc:
         raise SpeechError(str(exc)) from exc
     windows = _saved_windows(store, job_id, fingerprint)
@@ -519,6 +524,7 @@ def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary:
         for k, v in win["stats"].items():
             stats[k] = stats.get(k, 0) + v
     used: list[str] = windows[0]["vocab_used"] if windows else []
+    peaks: list = [win.get("peak") for win in windows]
     own_start = windows[-1]["own_end"] if windows else 0.0
     idx = resumed
     if resumed:
@@ -532,6 +538,7 @@ def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary:
             with tempfile.TemporaryDirectory() as tmp:
                 wav = Path(tmp) / "audio.wav"
                 chunking.extract(src, a0, a1 - a0, wav)
+                peaks.append(chunking.peak_dbfs(wav))
                 result = engine.transcribe(wav, vocabulary, window=(a0, a1))
         except chunking.AudioError as exc:
             raise SpeechError(str(exc)) from exc
@@ -542,7 +549,8 @@ def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary:
                 "INSERT INTO asr_chunk VALUES (?,?,?,?,?,?,?)",
                 (job_id, idx, fingerprint, own_start, own_end,
                  json.dumps({"words": [[w.text, w.start, w.end] for w in kept], "quiet": found,
-                             "stats": result.stats, "vocab_used": result.vocabulary_used}), _run_time(store)))
+                             "stats": result.stats, "vocab_used": result.vocabulary_used,
+                             "peak": peaks[-1]}), _run_time(store)))
             store.conn.commit()
         words.extend(kept)
         quiet += 1 if found else 0
@@ -555,7 +563,47 @@ def _window_run(store: Store, job_id: str, src: str, engine: Engine, vocabulary:
     facts = {"chunk": chunk.as_dict(), "audio_seconds": round(total, 3), "windows": idx, "resumed_windows": resumed,
              "quiet_cuts": quiet, "hard_cuts": idx - quiet,
              "engine_stats": stats}
+    known = [p for p in peaks if p is not None]
+    if known:
+        facts["peak_dbfs"] = round(max(known), 1)
     return words, facts, used
+
+
+# Below this the loudest sample of the whole file is digital silence: a muted or unconnected input, not quiet
+# speech (AAC encodes a zero input as about -91 dBFS).
+SILENT_PEAK_DBFS = -70.0
+
+
+def run_outcome(word_count: int, facts: dict) -> dict:
+    """What a finished run found. {"outcome": "words"} when it has words; otherwise {"outcome": "no_speech",
+    "reason": ...} with reason no_audio_stream (the file has no audio), silent_audio (every sample is digital
+    silence) or no_words_recognized (there is sound, but the engine found no speech in it)."""
+    if word_count > 0:
+        return {"outcome": "words"}
+    if facts.get("no_audio_stream"):
+        return {"outcome": "no_speech", "reason": "no_audio_stream"}
+    peak = facts.get("peak_dbfs")
+    if peak is not None and peak <= SILENT_PEAK_DBFS:
+        return {"outcome": "no_speech", "reason": "silent_audio"}
+    return {"outcome": "no_speech", "reason": "no_words_recognized"}
+
+
+def asr_outcome(store: Store, asset_id: str) -> Optional[dict]:
+    """The latest run's outcome for an asset: {"outcome", "reason"?, "wordCount", "peakDbfs"?}, or None when no run
+    has finished. A run from before outcomes were recorded is reported from its word count."""
+    row = store.conn.execute(
+        "SELECT word_count, settings FROM asr_run WHERE asset_id = ? ORDER BY created_at DESC"
+        + ("" if store.postgres else ", rowid DESC") + " LIMIT 1", (asset_id,)).fetchone()
+    if row is None:
+        return None
+    try:
+        facts = json.loads(row["settings"] or "{}")
+    except ValueError:
+        facts = {}
+    out = {**(facts.get("result") or run_outcome(row["word_count"], facts)), "wordCount": row["word_count"]}
+    if facts.get("peak_dbfs") is not None:
+        out["peakDbfs"] = facts["peak_dbfs"]
+    return out
 
 
 def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence[str] = (),
@@ -619,6 +667,7 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
         found, facts, used = _window_run(store, job.id, essence["location"], engine, vocabulary, chunk,
                                          _fingerprint(info, vocabulary, chunk, essence["location"]), window_done)
         words, applied = apply_corrections(found, corrections)
+        facts["result"] = run_outcome(len(words), facts)
         one = 1 / rate
         rows = []
         for w in words:

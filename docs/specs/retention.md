@@ -51,7 +51,7 @@ Files are removed first, rows last. If any removal fails, the rows stay, the ass
 
 ### Audit
 
-`purge_audit` (migration 10) has one row per object touched and one summary row per purged asset (`kind = 'asset'`, JSON `detail` with owner, show, source key, class, tombstone time and counts). Columns: `purged_at`, `asset_id`, `kind` (`essence`, `thumbs`, `version`, `asset`), `ref`, `role`, `location`, `outcome` (`deleted`, `already_missing`, `left_in_place`, `failed`, `purged`), `detail`. It has no foreign key, so it outlives the asset. Rows within one second have no defined order.
+`purge_audit` (migration 11) has one row per object touched and one summary row per purged asset (`kind = 'asset'`, JSON `detail` with owner, show, source key, class, tombstone time and counts). Columns: `purged_at`, `asset_id`, `kind` (`essence`, `thumbs`, `version`, `asset`), `ref`, `role`, `location`, `outcome` (`deleted`, `already_missing`, `left_in_place`, `failed`, `purged`), `detail`. It has no foreign key, so it outlives the asset. Rows within one second have no defined order.
 
 ## Not proven
 

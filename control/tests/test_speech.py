@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from volt.library import search
-from volt.speech import (FakeEngine, FasterWhisperEngine, SpeechError, Word, apply_corrections,
+from volt.speech import (FakeEngine, asr_outcome, FasterWhisperEngine, SpeechError, Word, apply_corrections,
                          parse_corrections, seconds_to_tc, select_vocabulary, show_vocabulary,
                          transcribe, transcribe_pending)
 from volt.store import Store
@@ -15,7 +15,9 @@ from volt.store import Store
 
 def _clip(path: Path, audio=True) -> None:
     cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=s=160x90:r=25:d=3"]
-    if audio:
+    if audio == "silent":
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-c:a", "aac", "-shortest"]
+    elif audio:
         cmd += ["-f", "lavfi", "-i", "sine=f=440:d=3", "-c:a", "aac", "-shortest"]
     cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -82,12 +84,58 @@ class Transcribe(unittest.TestCase):
             transcribe(self.store, asset.id, FakeEngine(WORDS))
         self.assertIsNone(_job(self.store, asset))
 
-    def test_no_audio_fails_the_job_with_the_reason(self):
+    def test_no_audio_is_a_no_speech_outcome_not_a_failure(self):
         asset = _asset(self.store, self.root, audio=False)
-        with self.assertRaisesRegex(SpeechError, "no audio"):
-            transcribe(self.store, asset.id, FakeEngine(WORDS))
-        self.assertEqual(_job(self.store, asset)["status"], "failed")
-        self.assertIn("no audio", _job(self.store, asset)["error"])
+        self.assertEqual(transcribe(self.store, asset.id, FakeEngine(WORDS)), 0)
+        self.assertEqual(_job(self.store, asset)["status"], "done")
+        self.assertIsNone(_job(self.store, asset)["error"])
+        self.assertEqual(asr_outcome(self.store, asset.id),
+                         {"outcome": "no_speech", "reason": "no_audio_stream", "wordCount": 0})
+
+    def test_silent_audio_is_reported_as_silent_not_as_an_empty_success(self):
+        # Found with the dress rehearsal: 7 of 8 CoreVideo ISO files carry an all-zero stereo AAC track (-91 dB,
+        # the codec's floor); the engine heard nothing and the run looked like a successful empty transcript.
+        asset = _asset(self.store, self.root, audio="silent")
+        engine = FakeEngine([])
+        self.assertEqual(transcribe(self.store, asset.id, engine), 0)
+        out = asr_outcome(self.store, asset.id)
+        self.assertEqual((out["outcome"], out["reason"], out["wordCount"]), ("no_speech", "silent_audio", 0))
+        self.assertLessEqual(out["peakDbfs"], -70)
+        self.assertEqual(_job(self.store, asset)["status"], "done")
+
+    def test_sound_with_no_recognised_words_is_a_different_reason(self):
+        asset = _asset(self.store, self.root)  # a loud sine tone: audio is present, no speech is found in it
+        self.assertEqual(transcribe(self.store, asset.id, FakeEngine([])), 0)
+        out = asr_outcome(self.store, asset.id)
+        self.assertEqual((out["outcome"], out["reason"]), ("no_speech", "no_words_recognized"))
+        self.assertGreater(out["peakDbfs"], -20)
+
+    def test_a_transcript_with_words_reports_words_and_the_endpoint_carries_the_outcome(self):
+        from volt import media
+        asset = _asset(self.store, self.root)
+        self.assertIsNone(media.transcript(self.store, asset.id, {})["asr"])  # no run yet
+        transcribe(self.store, asset.id, FakeEngine(WORDS))
+        self.assertEqual(media.transcript(self.store, asset.id, {})["asr"]["outcome"], "words")
+        (self.root / "s").mkdir()
+        silent = _asset(self.store, self.root / "s", audio="silent")
+        transcribe(self.store, silent.id, FakeEngine([]))
+        body = media.transcript(self.store, silent.id, {})
+        self.assertEqual((body["words"], body["asr"]["outcome"], body["asr"]["reason"]), ([], "no_speech", "silent_audio"))
+
+    def test_one_extracted_stream_is_what_the_engine_hears(self):
+        # The ISO files have a single stereo AAC stream; extraction maps audio stream 0 and mixes to mono. A tone on
+        # the RIGHT channel only must survive that mix (not be reported silent).
+        clip = self.root / "right.mp4"
+        subprocess.check_call(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=s=160x90:r=25:d=2", "-f", "lavfi", "-i",
+             "sine=f=440:d=2", "-filter_complex", "[1:a]pan=stereo|c0=0*c0|c1=c0[a]", "-map", "0:v", "-map", "[a]",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(clip)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        asset = self.store.mint_asset(owner="desk")
+        self.store.set_cleared(asset.id, True)
+        self.store.add_essence(asset.id, role="hi-res", location=str(clip), frame_rate="25")
+        transcribe(self.store, asset.id, FakeEngine([]))
+        self.assertEqual(asr_outcome(self.store, asset.id)["reason"], "no_words_recognized")
 
     def test_engine_failure_fails_job_and_retry_succeeds(self):
         asset = _asset(self.store, self.root)
@@ -106,7 +154,8 @@ class Transcribe(unittest.TestCase):
         still_open = _asset(self.store, self.root / "c", open_file=True)
         out = transcribe_pending(self.store, FakeEngine(WORDS))
         self.assertEqual(out[good.id], 3)
-        self.assertTrue(str(out[bad.id]).startswith("failed:"))
+        self.assertEqual(out[bad.id], 0)  # no audio: a no_speech outcome, not a failure
+        self.assertEqual(asr_outcome(self.store, bad.id)["reason"], "no_audio_stream")
         self.assertNotIn(still_open.id, out)
 
 
