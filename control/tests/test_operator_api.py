@@ -1,4 +1,6 @@
+import contextlib
 import http.client
+import io
 import json
 import os
 import tempfile
@@ -397,9 +399,10 @@ class Auth(Api):
 
     def test_main_exits_on_non_loopback_without_token(self):
         with mock.patch.dict(os.environ, {"VOLT_HOST": "0.0.0.0"}), mock.patch.object(serve, "TOKEN", None):
-            with self.assertRaises(SystemExit) as cm:
-                serve.main()
-        self.assertIn("VOLT_TOKEN", str(cm.exception))
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as err:
+                serve.main([])
+        self.assertEqual(cm.exception.code, serve.EX_CONFIG)  # 78: a supervisor must not restart a bad configuration
+        self.assertIn("VOLT_TOKEN", err.getvalue())
 
     def test_no_cors_headers_anywhere(self):
         show, _ = _show(self.store)

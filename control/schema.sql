@@ -149,3 +149,11 @@ CREATE TABLE IF NOT EXISTS cue (
   fail_status TEXT,
   fail_detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS runner_heartbeat (
+  name TEXT PRIMARY KEY,
+  pid INTEGER,
+  host TEXT,
+  started_at TIMESTAMPTZ NOT NULL,
+  beat_at TIMESTAMPTZ NOT NULL
+);

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
+from volt import logs
 from volt.playout import HeldError, PlayoutError, hold_state, on_air
 from volt.store import Store
 from volt.take import take_item
@@ -270,7 +271,7 @@ def main(argv: list[str]) -> int:
     url = os.environ.get("VOLT_ROOM_URL")
     if not url:
         ap.error("set VOLT_ROOM_URL (and VOLT_ROOM_TOKEN if the room needs one)")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logs.setup("clock")
     room = CoreVideoProRoom(url, os.environ.get("VOLT_ROOM_TOKEN") or None)
     store = Store(args.db)
     kw = dict(grace=args.grace, fire_after_hold=args.fire_after_hold, claim_lease=args.claim_lease)

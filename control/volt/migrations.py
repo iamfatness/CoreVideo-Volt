@@ -74,7 +74,10 @@ MIGRATIONS = (
                        ("essence", "duration_frames", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",),
               postgres=("CREATE INDEX IF NOT EXISTS span_asset_kind_frame ON span (asset_id, kind, frame_in)",)),
-    # Next: Migration(10, "...", columns=(...)). Do not add a gap or reuse a number.
+    # runner_heartbeat is a new table (base-table creation makes it), as in 4 and 7: each runner upserts a row so
+    # health can report how long ago one last checked in.
+    Migration(10, "runner_heartbeat table"),
+    # Next: Migration(11, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

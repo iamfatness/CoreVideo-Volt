@@ -279,7 +279,7 @@ class Version8ToNine(unittest.TestCase):
                     [tuple(r) for r in store.conn.execute("SELECT version, applied_at FROM schema_version ORDER BY version")][:8],
                     [tuple(r) for r in before])
                 self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                                 list(range(1, 10)))
+                                 list(range(1, migrations.LATEST + 1)))
                 index = store.conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'span_asset_kind_frame'").fetchone()
                 self.assertIn("asset_id, kind, frame_in", index[0])
@@ -310,7 +310,7 @@ class Version8ToNinePostgres(PgCase):
         self.assertIn("duration_frames", cols["essence"])
         self.assertIn("shot_run", cols)
         self.assertEqual([r[0] for r in store.conn.execute("SELECT version FROM schema_version ORDER BY version")],
-                         list(range(1, 10)))
+                         list(range(1, migrations.LATEST + 1)))
         index = store.conn.execute(
             "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'span_asset_kind_frame'").fetchone()
         self.assertIn("(asset_id, kind, frame_in)", index[0])

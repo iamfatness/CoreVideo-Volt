@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, pg, publish as publish_mod, record, shots, speech, storage
+from volt import chunking, disk, logs, pg, publish as publish_mod, record, shots, speech, storage
 from volt.store import Store
 
 log = logging.getLogger("volt.runner")
@@ -38,6 +38,8 @@ DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_BACKOFF = 5.0  # seconds before the 2nd attempt; doubles each time
 DEFAULT_BACKOFF_CAP = 300.0
 DEFAULT_DEFER = 30.0  # seconds before a deferred job is looked at again
+BEAT_EVERY = 10.0  # seconds between runner heartbeat writes
+BEAT_KEEP = 86400.0  # heartbeat rows older than this are dropped
 
 # Only jobs whose key starts with this are claimable for the type. The functions behind these types write
 # their own transient queued rows (publish: one per kind; asr when called by hand); a runner must not take those.
@@ -170,6 +172,10 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
     def proxy(store: Store, job: Claimed) -> None:
         proxy_dir = _need(config.proxy_dir, "proxy directory", "VOLT_PROXY_DIR or --proxy-dir")
         try:
+            disk.require_space(proxy_dir, "proxy build")
+        except disk.DiskLowError as exc:
+            raise Defer(str(exc), 60.0) from exc  # wait for space; no attempt is used
+        try:
             record.build_proxy(store, job.asset_id, proxy_dir, owned=True)
         except record.ProxyBusy as exc:
             raise Defer(f"another proxy build holds {job.asset_id}") from exc
@@ -248,6 +254,18 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
             shots.DETECT_TYPE: detect_shots}
 
 
+def cache_gc_task(config: Config) -> Callable[[Store], dict]:
+    """Housekeeping that only ever deletes rebuildable files: over-cap thumbnails and stale temp files."""
+    def task(_store: Store) -> dict:
+        out: dict = {}
+        if config.out_dir:
+            out["thumbs"] = disk.prune_thumbs(config.out_dir)
+        if config.proxy_dir:
+            out["stale_parts"] = disk.sweep_stale_parts(config.proxy_dir)
+        return out
+    return task
+
+
 def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshReport]:
     """The periodic URL refresh: one `publish.refresh_expiring` pass over the configured storage.
 
@@ -303,6 +321,33 @@ class Runner:
         self._stop = threading.Event()
         self.failed_terminally = 0
         self.periodic_failures = 0
+        self._started_at = _fmt(datetime.now(timezone.utc))
+        self._last_beat = float("-inf")
+
+    # -- liveness (read by volt.health)
+    def beat(self, conn=None, force: bool = False) -> None:
+        """Record that this runner is alive: one upserted row in runner_heartbeat. At most every BEAT_EVERY seconds
+        unless forced. A failure is logged and swallowed; liveness reporting must never stop the work."""
+        now = self.mono()
+        if not force and now - self._last_beat < BEAT_EVERY:
+            return
+        self._last_beat = now
+        conn = conn or self.store.conn
+        stamp = self._t()
+        try:
+            conn.execute(
+                """INSERT INTO runner_heartbeat (name, pid, host, started_at, beat_at) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT (name) DO UPDATE SET beat_at = excluded.beat_at""",
+                (self.name, os.getpid(), os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "",
+                 self._started_at, stamp))
+            conn.execute("DELETE FROM runner_heartbeat WHERE beat_at < ?", (self._t(-BEAT_KEEP),))
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            log.warning("runner heartbeat not recorded: %s", str(exc) or exc.__class__.__name__)
 
     def run_periodic(self, force: bool = False) -> dict[str, object]:
         """Run every Periodic task that is due (all of them when `force`). Returns {name: result}; a task that
@@ -410,6 +455,8 @@ class Runner:
         beat = _Heartbeat(self, job) if self.target and self.target != ":memory:" else None
         if beat:
             beat.start()
+        started = time.monotonic()
+        log.info("job start id=%s type=%s asset=%s attempt=%d", job.id, job.type, job.asset_id, job.attempt)
         try:
             self.handlers[job.type](self.store, job)
             outcome, settle = "done", (self._done, ())
@@ -429,6 +476,8 @@ class Runner:
         if not settle[0](job, *settle[1]):
             log.warning("job %s: lease was lost; outcome %s not recorded", job.id, outcome)
             return "lost"
+        log.info("job end id=%s type=%s asset=%s outcome=%s ms=%d", job.id, job.type, job.asset_id, outcome,
+                 (time.monotonic() - started) * 1000)
         return outcome
 
     def drain(self) -> dict[str, int]:
@@ -445,6 +494,7 @@ class Runner:
     def run_forever(self) -> None:
         idle_since: Optional[float] = None
         while not self._stop.is_set():
+            self.beat()
             self.run_periodic()
             if self.drain():
                 idle_since = time.monotonic()
@@ -477,6 +527,7 @@ class _Heartbeat(threading.Thread):
                     "UPDATE job SET lease_expires_at = ? WHERE id = ? AND claimed_by = ? AND status = 'running'",
                     (self.runner._t(self.runner.lease), self.job.id, self.runner.name))
                 store.conn.commit()
+                self.runner.beat(store.conn, force=True)  # a long job keeps the runner visibly alive
                 if cur.rowcount != 1:
                     break
         except Exception:  # noqa: BLE001 - a failed heartbeat only means the lease may lapse
@@ -524,7 +575,7 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     if not args.db:
         ap.error("a database path or DSN is required")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logs.setup("runner")
     config = Config(args.proxy_dir, args.publish_dir, args.asr_engine, args.asr_model, args.asr_device,
                     args.corrections, args.asr_window, args.asr_overlap, bool(args.asr_vad), args.asr_vocab_mode,
                     args.asr_min_word_prob, args.asr_silence_guard, args.asr_cpu_threads, args.asr_idle_release)
@@ -537,6 +588,9 @@ def main(argv: list[str]) -> int:
     config.out_dir = args.out_dir
     if args.refresh_urls_every > 0:
         runner.periodic.append(Periodic("refresh-urls", args.refresh_urls_every, refresh_urls_task(config)))
+    gc_every = float(os.environ.get("VOLT_CACHE_GC_EVERY") or 600)
+    if gc_every > 0 and not args.once:
+        runner.periodic.append(Periodic("cache-gc", gc_every, cache_gc_task(config)))
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: runner.stop())
     try:

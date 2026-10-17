@@ -1,0 +1,47 @@
+# Volt as a systemd service: serve + runner (+ clock when VOLT_ROOM_URL is set), supervised by `volt run`.
+#
+# Install (as root), assuming Volt is installed in /opt/volt/venv:
+#   useradd --system --home /var/lib/volt --shell /usr/sbin/nologin volt
+#   install -d -o root -g volt -m 750 /etc/volt
+#   install -o root -g volt -m 640 volt.env.example /etc/volt/volt.env     # then edit it
+#   install -m 644 volt.service /etc/systemd/system/volt.service
+#   systemctl daemon-reload && systemctl enable --now volt
+# Media directories outside /var/lib/volt must be writable by the service: add them with
+#   systemctl edit volt     ->   [Service]
+#                                ReadWritePaths=/srv/volt-media
+# See docs/operations.md.
+
+[Unit]
+Description=Volt control plane (serve, runner, clock)
+Documentation=https://github.com/iamfatness/CoreVideo-Volt/blob/main/docs/operations.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=volt
+Group=volt
+WorkingDirectory=/var/lib/volt
+ExecStart=/opt/volt/venv/bin/volt run --env-file /etc/volt/volt.env
+# `volt run` already restarts a crashed serve, runner or clock. This restarts `volt run` itself.
+Restart=on-failure
+RestartSec=5
+# Exit code 78 means the configuration is wrong; restarting cannot fix it.
+RestartPreventExitStatus=78
+# SIGTERM is a clean stop: the runner finishes its job in flight, serve closes, then everything exits.
+KillSignal=SIGTERM
+TimeoutStopSec=40
+StateDirectory=volt
+LogsDirectory=volt
+Environment=VOLT_LOG_DIR=/var/log/volt
+# Hardening that needs no configuration.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
