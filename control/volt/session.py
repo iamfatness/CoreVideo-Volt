@@ -68,7 +68,7 @@ def rundown(store: Store, show_id: str) -> list[ItemRow]:
             urls = [
                 hit["url"]
                 for hit in store.conn.execute(
-                    "SELECT url FROM version WHERE span_id = ? AND url IS NOT NULL ORDER BY kind",
+                    "SELECT url FROM version WHERE span_id = ? AND url IS NOT NULL AND withdrawn_at IS NULL ORDER BY kind",
                     (row["span_id"],),
                 ).fetchall()
             ]

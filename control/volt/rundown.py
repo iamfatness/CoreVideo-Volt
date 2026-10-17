@@ -47,12 +47,33 @@ def add_item(store: Store, show_id: str, slug: str, script: str = "") -> str:
     return item_id
 
 
+class ItemNotReady(Exception):
+    """The item is not `ready` (on air, aired, killed or skipped), so its media cannot change. Nothing was written."""
+
+    def __init__(self, item_id: str, status: str):
+        super().__init__(f"cannot attach media to a {status} item")
+        self.item_id, self.status = item_id, status
+
+
 def attach(store: Store, item_id: str, span_id: str) -> None:
-    span = store.conn.execute("SELECT asset_id FROM span WHERE id = ?", (span_id,)).fetchone()
-    if span is None:
-        raise KeyError(span_id)
-    store.conn.execute("UPDATE item SET span_id = ? WHERE id = ?", (span_id, item_id))
-    store.conn.commit()
+    """Attach a span to a ready item. KeyError for an unknown span or item; ItemNotReady otherwise refused.
+
+    One transaction under the show's lock (the one go and take hold) ending in a write that restates the
+    condition (`status = 'ready'`), so an attach racing a take gets one outcome: it lands before the item airs,
+    or it is refused. It can never change the media of an item that is on air."""
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise KeyError(item_id)
+    with store.transaction(show_lock(row["show_id"])):
+        if store.conn.execute("SELECT 1 FROM span WHERE id = ?", (span_id,)).fetchone() is None:
+            raise KeyError(span_id)
+        cur = store.conn.execute(
+            "UPDATE item SET span_id = ? WHERE id = ? AND status = 'ready'", (span_id, item_id))
+        if cur.rowcount != 1:
+            now = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()
+            if now is None:
+                raise KeyError(item_id)
+            raise ItemNotReady(item_id, now["status"])
 
 
 def take(store: Store, item_id: str) -> None:

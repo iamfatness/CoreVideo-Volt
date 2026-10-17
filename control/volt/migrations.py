@@ -88,7 +88,11 @@ MIGRATIONS = (
     # The as-run time to the millisecond, as text (2026-10-10T20:00:09.123Z). as_run_in/out keep their second precision.
     Migration(13, "item as-run millisecond columns",
               columns=(("item", "as_run_in_precise", "TEXT"), ("item", "as_run_out_precise", "TEXT"))),
-    # Next: Migration(14, "...", columns=(...)). Do not add a gap or reuse a number.
+    # Unpublish: a withdrawn version keeps its row (status 'withdrawn'); withdrawn_at is when, storage_deleted_at is when the
+    # object Volt stored for it was removed through the storage seam (NULL while that is still to do or was never owned).
+    Migration(14, "version withdrawal columns",
+              columns=(("version", "withdrawn_at", "TIMESTAMP"), ("version", "storage_deleted_at", "TIMESTAMP"))),
+    # Next: Migration(15, "...", columns=(...)). Do not add a gap or reuse a number.
 )
 
 LATEST = MIGRATIONS[-1].version

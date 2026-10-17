@@ -195,7 +195,7 @@ def publish(
                     status = "done"
                     store.conn.execute(
                         """UPDATE version SET status = 'done', url = ?, storage_backend = ?, storage_key = ?,
-                           storage_sha256 = ? WHERE id = ?""",
+                           storage_sha256 = ?, withdrawn_at = NULL, storage_deleted_at = NULL WHERE id = ?""",
                         (url, stored and stored.backend, stored and stored.key, stored and stored.sha256,
                          version_id))
         versions.append(Version(version_id, kind, status, url) if held else Version(version_id, kind, "busy", None))
@@ -238,6 +238,133 @@ def publish_files(
         return obj
 
     return publish(store, span_id, renderer=render_and_store)
+
+
+# ---- unpublish ---------------------------------------------------------------------------------------
+
+class UnpublishError(Exception):
+    """A refusal. `status` is the HTTP status, `code` is stable. Nothing changed (or, for `storage_failed`, the
+    version IS withdrawn and only the stored object is still to remove: call again to retry)."""
+
+    def __init__(self, status: int, code: str, reason: str, **extra):
+        super().__init__(reason)
+        self.status, self.code, self.reason, self.extra = status, code, reason, extra
+
+
+@dataclass
+class Unpublished:
+    id: str
+    kind: str
+    span_id: str
+    withdrawn_at: str
+    already: bool           # the version was already withdrawn before this call
+    storage: str            # deleted | already_deleted | none | not_owned | kept_shared | pending_on_air
+    location: str | None = None
+
+
+def _audit(store: Store, asset_id: str, version_id: str, outcome: str, location: str | None, detail: str | None = None):
+    store.conn.execute(
+        """INSERT INTO purge_audit (id, purged_at, asset_id, kind, ref, role, location, outcome, detail)
+           VALUES (?, ?, ?, 'version', ?, NULL, ?, ?, ?)""",
+        (_id(), _now(), asset_id, version_id, location, outcome, detail))
+
+
+def _on_air_with(store: Store, span_id: str) -> list:
+    return store.conn.execute(
+        "SELECT id, show_id FROM item WHERE span_id = ? AND status = 'on air' ORDER BY id", (span_id,)).fetchall()
+
+
+def unpublish(store: Store, version_id: str, backend: Optional[Backend] = None,
+              local_root: Optional[Path] = None) -> Unpublished:
+    """Withdraw one publish version, then remove the object Volt stored for it.
+
+    The row is kept (status `withdrawn`, `withdrawn_at`, the url and storage key stay as history, an audit row is
+    written) and leaves the rundown's item URLs and the operator's published URL. Refused (409 `on_air`) while a
+    rundown item using the version's span is on air: that version is the live one. Refused (409 `publish_busy`)
+    while a writer is rendering it.
+
+    The stored object is deleted through the storage seam only when (a) the version recorded a storage backend and
+    key, (b) the key is under this asset's own prefix, i.e. Volt made it (nothing registered from elsewhere is
+    ever touched), and (c) no other not-withdrawn version points at the same key. It is checked again for an
+    on-air item just before the delete. A failed delete raises `storage_failed` with the version already withdrawn
+    and `storage_deleted_at` still empty; calling unpublish again retries just the delete. Idempotent."""
+    row = store.conn.execute(
+        "SELECT id, asset_id, span_id, kind, status, storage_backend, storage_key, withdrawn_at, storage_deleted_at "
+        "FROM version WHERE id = ?", (version_id,)).fetchone()
+    if row is None:
+        raise KeyError(version_id)
+    already = row["withdrawn_at"] is not None
+    if not already:
+        with store.transaction():
+            running = store.conn.execute(
+                "SELECT 1 FROM job WHERE asset_id = ? AND type = 'publish' AND idempotency_key = ? "
+                "AND status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at >= ?",
+                (row["asset_id"], f"publish:{row['span_id']}:{row['kind']}", _stamp())).fetchone()
+            if running:
+                raise UnpublishError(409, "publish_busy", "a writer is rendering this version; try again shortly")
+            # One conditional write: it does not land if an item using the span is on air.
+            cur = store.conn.execute(
+                """UPDATE version SET status = 'withdrawn', withdrawn_at = ?
+                   WHERE id = ? AND withdrawn_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM item WHERE item.span_id = version.span_id
+                                     AND item.status = 'on air')""", (_now(), version_id))
+            if cur.rowcount != 1:
+                live = _on_air_with(store, row["span_id"])
+                if live:
+                    raise UnpublishError(
+                        409, "on_air", "an item using this version's span is on air, so this version is live; "
+                        "unpublish it after the item leaves the air",
+                        items=[{"id": r["id"], "show": r["show_id"]} for r in live])
+                # lost a race with another unpublish: fall through, the version is withdrawn now
+            else:
+                _audit(store, row["asset_id"], version_id, "withdrawn",
+                       f"{row['storage_backend']}:{row['storage_key']}" if row["storage_key"] else None,
+                       f"status was {row['status']}")
+    now = store.conn.execute(
+        "SELECT status, withdrawn_at, storage_deleted_at FROM version WHERE id = ?", (version_id,)).fetchone()
+    out = Unpublished(version_id, row["kind"], row["span_id"], str(now["withdrawn_at"]), already, "none")
+    key, backend_id, asset_id = row["storage_key"], row["storage_backend"], row["asset_id"]
+    if not key or not backend_id:
+        return out                                    # a placeholder (volt://) or pre-seam version: nothing stored
+    out.location = f"{backend_id}:{key}"
+    if now["storage_deleted_at"] is not None:
+        out.storage = "already_deleted"
+        return out
+    if not key.startswith(f"{asset_id}/"):
+        out.storage = "not_owned"                     # not a key Volt's publish wrote for this asset: never delete it
+        _audit(store, asset_id, version_id, "left_in_place", out.location, "not named for this asset")
+        store.conn.commit()
+        return out
+    shared = store.conn.execute(
+        "SELECT COUNT(*) FROM version WHERE storage_backend = ? AND storage_key = ? AND id <> ? "
+        "AND withdrawn_at IS NULL", (backend_id, key, version_id)).fetchone()[0]
+    if shared:
+        out.storage = "kept_shared"
+        _audit(store, asset_id, version_id, "left_in_place", out.location, f"{shared} other version(s) use this object")
+        store.conn.commit()
+        return out
+    if _on_air_with(store, row["span_id"]):
+        out.storage = "pending_on_air"                # went on air after the withdraw; the object stays until a retry
+        return out
+    try:
+        backend = backend if backend is not None else storage.from_env(local_root=local_root)
+        if backend.id != backend_id:
+            raise StorageError(f"this version is stored in {backend_id} but the configured storage is {backend.id}")
+        backend.delete(key)
+    except Exception as exc:  # noqa: BLE001 - StorageError text is secret-free; anything else is reported as is
+        store.conn.rollback()
+        _audit(store, asset_id, version_id, "failed", out.location, str(exc)[:300])
+        store.conn.commit()
+        raise UnpublishError(502, "storage_failed",
+                             f"the version is withdrawn but its stored object could not be removed: "
+                             f"{str(exc)[:300] or type(exc).__name__}; call unpublish again to retry",
+                             withdrawn=True, version=version_id) from None
+    with store.transaction():
+        store.conn.execute("UPDATE version SET storage_deleted_at = ? WHERE id = ? AND storage_deleted_at IS NULL",
+                           (_now(), version_id))
+        _audit(store, asset_id, version_id, "deleted", out.location)
+    out.storage = "deleted"
+    return out
 
 
 def refresh_url(store: Store, version_id: str, backend: Optional[Backend] = None,

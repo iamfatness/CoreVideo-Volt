@@ -6,6 +6,10 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Unpublish a publish version (`POST /api/versions/{id}/unpublish`, migration 14): withdrawn versions are kept as history and no longer block deleting the asset.
+- Delete a show that has not played (`POST /api/shows/{id}/delete`).
+- Attach is now one transaction under the show lock with a conditional write, so it cannot land on an item that went on air.
+
 ## [0.1.0] - 2026-10-16
 
 The first numbered build. It adds the operations layer (everything under "Running Volt") on top of the

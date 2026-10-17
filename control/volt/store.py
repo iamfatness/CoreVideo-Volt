@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS version (
   storage_backend TEXT,
   storage_key TEXT,
   storage_sha256 TEXT,
+  withdrawn_at TEXT,
+  storage_deleted_at TEXT,
   UNIQUE (asset_id, span_id, kind)
 );
 

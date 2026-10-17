@@ -83,9 +83,20 @@ def blockers(store: Store, asset_id: str, purge: bool = False, allow_versions: b
     if attached:
         why.append(f"attached to {attached} rundown item(s)")
     if not allow_versions:
-        versions = store.conn.execute("SELECT COUNT(*) FROM version WHERE asset_id = ?", (asset_id,)).fetchone()[0]
+        # A withdrawn (unpublished) version is history, not a publication: it does not block a delete.
+        versions = store.conn.execute(
+            "SELECT COUNT(*) FROM version WHERE asset_id = ? AND withdrawn_at IS NULL", (asset_id,)).fetchone()[0]
         if versions:
-            why.append(f"has {versions} publish version(s)")
+            why.append(f"has {versions} active publish version(s); unpublish them first")
+    if purge and not allow_versions:
+        # Purging removes the version rows. A withdrawn one whose stored object was never removed (the delete failed,
+        # or the item was on air) would leave that object behind with nothing pointing at it: finish the unpublish first.
+        pending = [r for r in store.conn.execute(
+            "SELECT storage_key FROM version WHERE asset_id = ? AND withdrawn_at IS NOT NULL "
+            "AND storage_key IS NOT NULL AND storage_deleted_at IS NULL", (asset_id,)).fetchall()
+            if str(r["storage_key"]).startswith(f"{asset_id}/")]
+        if pending:
+            why.append(f"{len(pending)} withdrawn version(s) still have a stored object; call unpublish again to remove it")
     if purge:
         running = store.conn.execute(
             "SELECT COUNT(*) FROM job WHERE asset_id = ? AND status = 'running' AND type <> 'delete'",
@@ -264,7 +275,7 @@ def purge_asset(store: Store, asset_id: str, roots: OwnedRoots, allow_versions: 
 
     if allow_versions:
         versions = store.conn.execute(
-            "SELECT id, storage_backend, storage_key FROM version WHERE asset_id = ? ORDER BY id",
+            "SELECT id, storage_backend, storage_key FROM version WHERE asset_id = ? AND storage_deleted_at IS NULL ORDER BY id",
             (asset_id,)).fetchall()
         for row in versions:
             if not row["storage_key"]:
