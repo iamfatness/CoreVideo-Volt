@@ -128,9 +128,10 @@ class VersionSkew(Tmp):
         conn.close()
         with mock.patch.object(serve, "DB_PATH", path), mock.patch.object(serve, "TOKEN", None), \
                 mock.patch.dict(os.environ, {"VOLT_PORT": "0"}):
-            with self.assertRaises(SystemExit) as ctx:
-                serve.main()
-        self.assertIn("version 99", str(ctx.exception))
+            with self.assertRaises(SystemExit) as ctx, mock.patch("sys.stderr") as err:
+                serve.main([])
+        self.assertEqual(ctx.exception.code, serve.EX_CONFIG)  # 78: `volt run` does not retry it
+        self.assertIn("version 99", "".join(c.args[0] for c in err.write.call_args_list))
 
     def test_the_runner_refuses_to_start(self):
         path = str(self.dir / "volt.db")
@@ -141,7 +142,7 @@ class VersionSkew(Tmp):
         conn.close()
         with mock.patch("sys.stderr") as err:
             code = runner_mod.main([path, "--once"])
-        self.assertEqual(code, 3)
+        self.assertEqual(code, 78)
         self.assertIn("version 99", "".join(c.args[0] for c in err.write.call_args_list))
 
 
@@ -272,7 +273,7 @@ class BackupRestore(Tmp):
         manifest = backup.backup(str(self.dir / "volt.db"), str(self.dir / "bk"))
         self.assertEqual(manifest["schema_version"], 10)
         report = backup.restore(self.dir / "bk", str(self.dir / "new.db"))
-        self.assertEqual(report["migrated"], [11])
+        self.assertEqual(report["migrated"], list(range(11, backup.migrations.LATEST + 1)))
         store = Store(str(self.dir / "new.db"))
         cols = {r[1] for r in store.conn.execute("PRAGMA table_info(asset)")}
         self.assertIn("deleted_at", cols)

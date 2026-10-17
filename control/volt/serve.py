@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import argparse
 import json
+import logging
 import os
 import re
+import signal
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, media, nle, operator_state, retention, shots
+from volt import building, health, logs, media, nle, operator_state, retention, shots
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
@@ -32,6 +36,11 @@ from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
 from volt.store import NotClearedError, Store
 from volt.take import take_item
+
+log = logging.getLogger("volt.serve")
+access = logging.getLogger("volt.access")
+EX_CONFIG = 78  # exit code for "the configuration is wrong; restarting will not help" (volt run stops on it)
+ACCESS_LOG = False  # one line per request when on (VOLT_ACCESS_LOG=1 or --access-log); errors are always logged
 
 ROOT = Path(__file__).resolve().parents[1] / "session"
 # The operator UI: three same-origin static files, no build step. Open without a token
@@ -122,7 +131,7 @@ def rundown_payload(store: Store, show_id: str) -> dict:
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
-         # Millisecond as-run (migration 12). Rows stamped before it, or by a test clock, have none: the second.
+         # Millisecond as-run (migration 13). Rows stamped before it, or by a test clock, have none: the second.
          "asRunInPrecise": row.as_run_in_precise or row.as_run_in,
          "asRunOutPrecise": row.as_run_out_precise or row.as_run_out}
         for row in rundown(store, show_id)
@@ -699,6 +708,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in STATIC:
             self._static(path)
             return
+        if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
+            self._json(200, health.liveness())
+            return
         if path != "/" and not self._gate():
             return
         # One connection per request. Postgres schema is applied once in main().
@@ -710,8 +722,7 @@ class Handler(BaseHTTPRequestHandler):
         except media.MediaError as err:
             self._error(ApiError(err.status, err.code, err.reason, headers=err.headers))
         except Exception:  # same rule as POST: no leaked internals, and the client always gets a response
-            import traceback
-            traceback.print_exc()
+            log.exception("unhandled error on GET %s", urlparse(self.path).path)
             self._error(ApiError(500, "internal", "internal error"))
         finally:
             store.close()
@@ -733,9 +744,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, fn(store, m.group(1), body))
         except ApiError as err:
             self._error(err)
-        except Exception:  # never leak internals; the cause is in the server's stderr
-            import traceback
-            traceback.print_exc()
+        except Exception:  # never leak internals; the cause is in the server's log
+            log.exception("unhandled error on POST %s", urlparse(self.path).path)
             self._error(ApiError(500, "internal", "internal error; nothing further was changed by this handler"))
         finally:
             if store is not None:
@@ -773,6 +783,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             body = (ROOT / "index.html").read_bytes()
             self._send(200, "text/html", body)
+            return
+        if parsed.path in ("/api/health", "/metrics"):  # behind the same gate as every data route
+            report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
+            if parsed.path == "/metrics":
+                self._send(200 if report["status"] != "down" else 503, "text/plain; version=0.0.4; charset=utf-8",
+                           health.prometheus(report).encode())
+            else:
+                self._json(200 if report["status"] != "down" else 503, report)
             return
         if parsed.path == "/api/state":
             self._json(200, self._operator_state(STORE, parse_qs(parsed.query).get("show", [""])[0]))
@@ -917,6 +935,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, "application/json", json.dumps(payload).encode())
 
     def _error(self, err: ApiError):
+        if err.status >= 500:
+            log.error("request failed status=%d code=%s path=%s", err.status, err.code, urlparse(self.path).path)
+        elif err.status in (401, 403):
+            log.warning("request refused status=%d code=%s path=%s client=%s", err.status, err.code,
+                        urlparse(self.path).path, self.client_address[0])
         payload = {"ok": False, "error": {"code": err.code, "reason": err.reason}}
         payload.update(err.extra)
         self.send_response(err.status)
@@ -940,36 +963,79 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        return
+        if ACCESS_LOG:  # opt in: one line per request, redacted like every log line
+            access.info("request client=%s %s", self.client_address[0], fmt % args)
 
 
-def main():
-    host = os.environ.get("VOLT_HOST") or "127.0.0.1"
-    port = int(os.environ.get("VOLT_PORT") or 8765)
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="volt serve", description="The Volt operator API and session shell.")
+    ap.add_argument("--host", default=os.environ.get("VOLT_HOST") or "127.0.0.1",
+                    help="address to bind (default 127.0.0.1; or VOLT_HOST). Beyond loopback needs VOLT_TOKEN.")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("VOLT_PORT") or 8765),
+                    help="port (default 8765; or VOLT_PORT; 0 picks a free one)")
+    ap.add_argument("--db", default=None, help="SQLite path or postgres:// DSN (default: VOLT_DB, else control/volt.db)")
+    ap.add_argument("--out-dir", default=None, help="thumbnail cache and publish output root (or VOLT_OUT)")
+    ap.add_argument("--log-dir", default=None, help="write a rotating serve.log here (or VOLT_LOG_DIR)")
+    ap.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING or ERROR (or VOLT_LOG_LEVEL)")
+    ap.add_argument("--access-log", action="store_true", help="log every request (or VOLT_ACCESS_LOG=1)")
+    return ap
+
+
+def _config_exit(message: str):
+    print(f"volt: {message}", file=sys.stderr)
+    raise SystemExit(EX_CONFIG)
+
+
+def _on_stop(signum, frame):
+    raise KeyboardInterrupt
+
+
+def main(argv=None):
+    global DB_PATH, OUT_DIR, ACCESS_LOG
+    args = build_parser().parse_args(argv)
+    if args.db:
+        DB_PATH = args.db
+    if args.out_dir:
+        OUT_DIR = Path(args.out_dir)
+    ACCESS_LOG = args.access_log or logs.access_log_enabled()
+    try:
+        logs.setup("serve", log_dir=args.log_dir, level=args.log_level)
+    except (ValueError, OSError) as exc:
+        _config_exit(str(exc))
+    host, port = args.host, args.port
     try:
         check_bind(host, TOKEN)
     except ConfigError as exc:
-        raise SystemExit(f"volt: {exc}")
+        _config_exit(str(exc))
+    for name in ("SIGTERM", "SIGBREAK"):  # a supervisor's stop request ends the loop like Ctrl-C does
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _on_stop)
     # Optional Postgres pool (VOLT_PG_POOL_MAX > 0; see volt/pg.py). Opened before the bootstrap so it fails
     # at startup if the database is unreachable, and so requests borrow instead of connecting.
     try:
         pool = pg.configure_pool_from_env(DB_PATH)
     except Exception as exc:  # noqa: BLE001 - bad option, missing psycopg_pool, unreachable database
-        raise SystemExit(f"volt: postgres pool: {exc}")
+        _config_exit(f"postgres pool: {logs.redact(str(exc))}")
     try:
         try:
             Store(DB_PATH).close()  # bootstrap the schema once
+            server = ThreadingHTTPServer((host, port), Handler)
         except SchemaTooNewError as exc:  # version-skew guard: never serve a database newer than this code
-            raise SystemExit(f"volt: {exc}")
-        server = ThreadingHTTPServer((host, port), Handler)
+            _config_exit(str(exc))
+        except OSError as exc:
+            _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
+        port = server.server_address[1]
         print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN else "")
-              + (f" (postgres pool of up to {pool.max_size})" if pool else ""))
+              + (f" (postgres pool of up to {pool.max_size})" if pool else ""), flush=True)
+        log.info("serve started version=%s host=%s port=%d db=%s auth=%s access_log=%s", health.__version__, host,
+                 port, logs.redact_dsn(DB_PATH), "required" if TOKEN else "none", ACCESS_LOG)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
             server.server_close()
+            log.info("serve stopped")
     finally:
         pg.close_pools()
 

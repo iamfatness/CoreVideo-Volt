@@ -4,6 +4,8 @@ Date 2026-10-16, against `origin/main` at b3554ff. Question: what does the repo 
 
 Short answer: the control plane is well tested and honest about its limits. It is not yet a product. There is no installer, no service definition, no backup story, no health endpoint, no license, and no way to know which person did what. Those are operations gaps, not design gaps; most are small to medium.
 
+**Update, same day (branch `ops-run-as-a-product`):** gaps 2 (start command, service files), 3 (health), 4 (logs), 5 (packaging, `volt` command, extras), 6 (disk floor and thumbnail cache cap, not the quarantine or publish folders), 10 (operator doc) and 12 (version, changelog) are addressed; the `--help` trap in gap 14 is fixed. Gaps 1, 7 and 9 were addressed by the backup, retention and version-skew work merged separately. Open: 8 (auth), 11 (license, not chosen), 13 (CI), TLS. See [operations](operations.md).
+
 ## How to read this
 
 - **Ran** means I executed it on this Windows 11 box (Python 3.12.10, ffmpeg present, no psycopg, boto3 or faster-whisper installed).

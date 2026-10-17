@@ -417,6 +417,17 @@ class Thumbs(Behaviour):
         self.assertEqual(self.leftovers(), [])
         self.refused(422, "bad_input", f"/api/spans/{self.s1}/thumb?w=9999")
 
+    def test_disk_under_the_floor_refuses_with_507_and_runs_no_ffmpeg(self):
+        import os
+        from unittest import mock
+        self.proxy_path.write_bytes(b"not a video")
+        self.spy()
+        with mock.patch.dict(os.environ, {"VOLT_MIN_FREE_MB": "999999999"}):
+            p = self.refused(507, "disk_low", f"/api/spans/{self.s1}/thumb")
+        self.assertIn("VOLT_MIN_FREE_MB", p["error"]["reason"])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.leftovers(), [])
+
     def test_ffmpeg_failure_surfaces_and_leaves_no_file(self):
         self.proxy_path.write_bytes(b"not a video")
 
