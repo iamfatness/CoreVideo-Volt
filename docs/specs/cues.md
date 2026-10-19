@@ -10,6 +10,8 @@ A take arms the cue. Dispatch sends it to that room's adapter and waits for the 
 
 See [rooms](../rooms.md).
 
+This cue track is parallel to the MAM layer in [foundation](foundation.md#room-track-parallel). Foundation keeps the `show-input.take` evidence on this page; a CoreVideo Pro route action (#861) only changes `show_input_actions`, in a later plan, not the handler. `record.arm` and `audio.snapshot` stay unsupported. Until a live Program take is recorded in rooms, the Unproven list below stays.
+
 ## show-input.take
 
 Put a source on Program and fire only when the core shows it there.
