@@ -32,7 +32,8 @@ volt = "volt.cli:main"
 packages = ["volt", "volt.session"]
 
 [tool.setuptools.package-data]
-volt = ["session/**", "schema.sql"]
+volt = ["schema.sql"]
+"volt.session" = ["operator/**"]
 
 [tool.setuptools.dynamic]
 version = { attr = "volt.__version__" }

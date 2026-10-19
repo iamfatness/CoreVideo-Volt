@@ -57,9 +57,45 @@ class Version(unittest.TestCase):
         self.assertTrue({"speech", "s3", "azure", "gcs", "postgres"} <= set(project["optional-dependencies"]))
         self.assertEqual(project["scripts"]["volt"], "volt.cli:main")
         self.assertEqual(data["tool"]["setuptools"]["dynamic"]["version"], {"attr": "volt.__version__"})
-        data_files = data["tool"]["setuptools"]["package-data"]["volt"]
-        self.assertIn("session/**", data_files)
-        self.assertIn("schema.sql", data_files)
+
+    def test_wheel_package_data_includes_operator_pages_and_schema(self):
+        import fnmatch
+        import tomllib
+
+        data = tomllib.loads((CONTROL / "pyproject.toml").read_text(encoding="utf-8"))
+        packages = list(data["tool"]["setuptools"]["packages"])
+        pkg_data = data["tool"]["setuptools"]["package-data"]
+        required = [
+            CONTROL / "volt" / "schema.sql",
+            CONTROL / "volt" / "session" / "operator" / "index.html",
+            CONTROL / "volt" / "session" / "operator" / "operator.css",
+            CONTROL / "volt" / "session" / "operator" / "operator.js",
+        ]
+
+        def owner(rel_posix: str) -> str:
+            best = ""
+            for pkg in packages:
+                prefix = pkg.replace(".", "/")
+                if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
+                    if len(prefix) >= len(best.replace(".", "/")):
+                        best = pkg
+            return best
+
+        def matches(pattern: str, rel: str) -> bool:
+            if pattern.endswith("/**"):
+                prefix = pattern[:-3]
+                return rel == prefix or rel.startswith(prefix + "/")
+            return fnmatch.fnmatch(rel, pattern)
+
+        for path in required:
+            self.assertTrue(path.is_file(), path)
+            rel_pkg = path.relative_to(CONTROL).as_posix()
+            pkg = owner(rel_pkg)
+            self.assertTrue(pkg, f"no listed package owns {rel_pkg}")
+            rel = path.relative_to(CONTROL / pkg.replace(".", "/")).as_posix()
+            patterns = list(pkg_data.get(pkg, [])) + list(pkg_data.get("*", []))
+            self.assertTrue(any(matches(pat, rel) for pat in patterns),
+                            f"{rel_pkg} is owned by {pkg!r} (rel {rel}) but package-data is {patterns}")
 
 
 class Commands(unittest.TestCase):
