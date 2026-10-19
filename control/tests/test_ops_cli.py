@@ -270,9 +270,10 @@ class Check(unittest.TestCase):
 
     def test_missing_ingest_root_warns_and_fails_when_watch_is_on(self):
         missing = str(self.dir / "no-such-inbox")
+        shown = str(Path(missing).resolve())  # Windows runners resolve 8.3 TEMP (RUNNER~1) to the long name
         r = self.checks(env={"VOLT_INGEST_ROOTS": missing}, db=str(self.dir / "v.db"), port=0)
         self.assertEqual(r["ingest roots"].status, preflight.WARN)
-        self.assertIn(missing, r["ingest roots"].detail)
+        self.assertIn(shown, r["ingest roots"].detail)
         r = self.checks(
             env={"VOLT_INGEST_ROOTS": missing, "VOLT_WATCH": "1"},
             db=str(self.dir / "v.db"), port=0)
