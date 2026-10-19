@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS job (
   claimed_by TEXT,
   lease_expires_at TEXT,
   run_after TEXT,
+  payload TEXT,
   UNIQUE (asset_id, type, idempotency_key)
 );
 
@@ -274,6 +276,7 @@ class Job:
     idempotency_key: str
     status: str
     attempt: int
+    payload: Optional[str]
 
 
 class Store:
@@ -497,20 +500,21 @@ class Store:
         self.conn.commit()
         return span_id
 
-    def enqueue(self, asset_id: str, job_type: str, idempotency_key: str) -> Job:
+    def enqueue(self, asset_id: str, job_type: str, idempotency_key: str, payload: Optional[dict] = None) -> Job:
         """Queue a job once per (asset, type, key). A failed one is re-queued with its attempt counted.
 
         Safe to race: the insert and the re-queue are each one conditional statement, so two callers
-        end with one row and a single attempt increment."""
+        end with one row and a single attempt increment. Conflict does not overwrite payload."""
         self.get_asset(asset_id)
         now = _now()
+        payload_text = json.dumps(payload) if payload is not None else None
         with self.transaction():
             self.conn.execute(
                 """INSERT INTO job
-                   (id, asset_id, type, idempotency_key, status, attempt, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 'queued', 1, ?, ?)
+                   (id, asset_id, type, idempotency_key, status, attempt, created_at, updated_at, payload)
+                   VALUES (?, ?, ?, ?, 'queued', 1, ?, ?, ?)
                    ON CONFLICT (asset_id, type, idempotency_key) DO NOTHING""",
-                (_id(), asset_id, job_type, idempotency_key, now, now),
+                (_id(), asset_id, job_type, idempotency_key, now, now, payload_text),
             )
             self.conn.execute(
                 """UPDATE job
@@ -566,4 +570,5 @@ def _job(row) -> Job:
         idempotency_key=row["idempotency_key"],
         status=row["status"],
         attempt=row["attempt"],
+        payload=row["payload"],
     )

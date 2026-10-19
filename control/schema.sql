@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS job (
   claimed_by TEXT,
   lease_expires_at TIMESTAMPTZ,
   run_after TIMESTAMPTZ,
+  payload TEXT,
   UNIQUE (asset_id, type, idempotency_key)
 );
 

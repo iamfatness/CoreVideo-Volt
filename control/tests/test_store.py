@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from volt.store import HoldError, NotClearedError, Store
@@ -33,6 +34,14 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(again.status, "queued")
         self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
         self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM job").fetchone()[0], 1)
+
+    def test_enqueue_writes_payload_once(self):
+        store = Store()
+        asset = store.mint_asset(owner="desk")
+        job = store.enqueue(asset.id, "ingest", "ingest:k", payload={"path": "/a"})
+        again = store.enqueue(asset.id, "ingest", "ingest:k", payload={"path": "/b"})
+        self.assertEqual(job.id, again.id)
+        self.assertEqual(json.loads(again.payload)["path"], "/a")
 
     def test_hold_blocks_delete_and_uncleared_blocks_publish(self):
         store = Store()
