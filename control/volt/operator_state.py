@@ -171,10 +171,14 @@ def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: d
     """`rundown` is the already-built /rundown payload, so the shape lives in one place (serve.py)."""
     listing = shows(store)
     title = next((s["title"] for s in listing if s["id"] == show_id), None)
+    taking = None
+    if rundown:
+        taking = next((i["id"] for i in rundown.get("items") or [] if i.get("status") == "taking"), None)
     return {
         "shows": listing,
         "show": None if show_id is None else {"id": show_id, "title": title},
         "rundown": rundown,
+        "taking": taking,
         "cues": {} if show_id is None else item_cues(store, show_id),
         "media": {} if show_id is None else item_media(store, show_id),
         "assets": assets(store),

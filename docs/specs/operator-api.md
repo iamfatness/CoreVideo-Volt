@@ -5,7 +5,7 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 ## Contract
 
 - JSON in, JSON out. `Content-Type: application/json` is required on every POST. A body is optional; an empty body is `{}`. Unknown fields are refused.
-- Success: HTTP 200, `{"ok": true, ...}`, always including the changed state (`rundown` in the `/rundown` shape for show and item actions, `asset` for rights and record actions, `versions` for publish).
+- Success: HTTP 200, `{"ok": true, ...}`, always including the changed state (`rundown` in the `/rundown` shape for show and item actions, `asset` for rights and record actions, `versions` for publish). `POST /api/ingest` is `202` with `status: queued` (the runner copies).
 - Refusal: `{"ok": false, "error": {"code": "<stable code>", "reason": "<human text>"}, ...}`. A refusal changes nothing. Clients switch on `code`; `reason` is for display.
 - One store connection per request. Sequencing writes (go, take, skip, kill, reorder, record start/stop) run one at a time in the server process. Hold, release, rights and publish do not wait on them, so HOLD lands while a take is waiting on the room.
 - No CORS headers are ever sent. JSON-only POSTs mean a browser page on another origin cannot send one without a preflight, which is never answered.
@@ -20,9 +20,11 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 | anything else | unset or under 16 chars | The server refuses to start. |
 | anything else | `VOLT_TOKEN`, 16+ chars | Bearer token required. |
 
-`Authorization: Bearer <VOLT_TOKEN>`, compared in constant time (`hmac.compare_digest`). Missing or wrong: `401 unauthorized` with `WWW-Authenticate: Bearer`, checked before routing. When a token is set it also guards the GET data routes (`/assets`, `/rundown`, `/seek`); only the static shell at `/` stays open.
+`Authorization: Bearer <VOLT_TOKEN>`, compared in constant time (`hmac.compare_digest`). Missing or wrong: `401 unauthorized` with `WWW-Authenticate: Bearer`, checked before routing. When a token is set it also guards the GET data routes (`/assets`, `/rundown`, `/seek`, `/api/audit`, `/api/media-ticket`); only the static shell at `/` stays open.
 
-Environment: `VOLT_HOST` (default `127.0.0.1`), `VOLT_PORT` (default 8765), `VOLT_TOKEN`, `VOLT_DB`, `VOLT_INGEST_ROOTS` and `VOLT_QUARANTINE` (ingest, see Show building), `VOLT_OUT` (publish output directory, default `control/out`), `VOLT_ROOM_URL` and `VOLT_ROOM_TOKEN` (the CoreVideoPro room; unset means room-backed routes answer `503 no_room`).
+`X-Volt-Actor` on any POST, 1–100 characters matching `[A-Za-z0-9._:-]`, default `desk`. If the header is absent, body `owner` (take, record, ingest) is used. Invalid: `422 bad_actor` before the action. A 2xx that changed or confirmed state writes one `audit` row (`actor`, `action`, `target_id`). A 401/404/409 writes none. `GET /api/audit?target=<id>` returns the last 200 rows for that target (newest first).
+
+Environment: `VOLT_HOST` (default `127.0.0.1`), `VOLT_PORT` (default 8765), `VOLT_TOKEN`, `VOLT_MEDIA_KEY` (optional HMAC key for media tickets; otherwise `VOLT_TOKEN`), `VOLT_DB`, `VOLT_INGEST_ROOTS` and `VOLT_QUARANTINE` (ingest, see Show building), `VOLT_OUT` (publish output directory, default `control/out`), `VOLT_ROOM_URL` and `VOLT_ROOM_TOKEN` (the CoreVideoPro room; unset means room-backed routes answer `503 no_room`).
 
 ## Endpoints
 
@@ -30,13 +32,13 @@ IDs are path segments. All are `POST`.
 
 | Path | Body | Does | Refusals |
 | --- | --- | --- | --- |
-| `/api/shows/{show}/go` | none | Advance the rundown (`advance`). Returns `target`, `previous`, `passed`, `over`, `rundown`. No room, no cues. | 404 `not_found`; 409 `held`; 409 `not_cleared`; 409 `no_media` (next item has no span) |
-| `/api/shows/{show}/take` | `owner?` | Advance and dispatch the new item's cues to the room (`take_item`). Returns `advanced`, `item`, `results`, `rundown`. | 404; 409 `held`; 409 `not_cleared`; 409 `no_media`; 503 `no_room`; 409 `cue_failed` or `cue_unsupported` (see below); 422 |
+| `/api/shows/{show}/go` | none | Advance the rundown (`advance`). Returns `target`, `previous`, `passed`, `over`, `rundown`. No room, no cues. | 404 `not_found`; 409 `held`; 409 `taking` (another item of the show is taking; body `item`); 409 `not_cleared`; 409 `no_media` (next item has no span) |
+| `/api/shows/{show}/take` | `owner?` | Set the next item `taking`, dispatch cues with no process lock, then `on air` or rewind. Returns `advanced`, `item`, `results`, `rundown`. | 404; 409 `held`; 409 `taking`; 409 `not_cleared`; 409 `no_media`; 503 `no_room`; 409 `cue_failed` or `cue_unsupported` (see below); 422 |
 | `/api/shows/{show}/hold` | `reason?` (string, 500 max) | Hold the rundown. Holding twice keeps the first hold (`alreadyHeld: true`). | 404; 422 |
 | `/api/shows/{show}/release` | none | Release the hold. Releasing a show that is not held is a 200 with `wasHeld: false`. | 404 |
 | `/api/shows/{show}/reorder` | `items`: every item id of the show, once each; `version?` | Set the order, atomically (one transaction under the show's lock). With `version` (the `orderVersion` the page last saw) it is conditional: see [Show building](#show-building). Returns `rundown`, `orderVersion`. | 404; 422 `bad_input` (missing, duplicate or foreign ids); 409 `stale_order`; 409 `order_locked` |
-| `/api/items/{item}/skip` | none | Mark a ready item skipped. | 404; 409 `not_skippable` (on air or already past) |
-| `/api/items/{item}/kill` | none | Kill a ready item. The asset stays. | 404; 409 `not_killable` |
+| `/api/items/{item}/skip` | none | Mark a ready item skipped. | 404; 409 `taking`; 409 `not_skippable` (on air or already past) |
+| `/api/items/{item}/kill` | none | Kill a ready item. The asset stays. | 404; 409 `taking`; 409 `not_killable` |
 | `/api/items/{item}/attach` | `span` | Attach a span to a ready item. One transaction under the show's lock ending in `UPDATE ... WHERE status = 'ready'`, so an attach racing a take is either applied before the item airs or refused; it never changes the media of an item that is on air. | 404 (item or span); 409 `not_attachable`; 422 |
 | `/api/record/start` | `owner?`, `camera?`, `show?` | Ask the room to record; mint only once output is observed (`start_recording`). Returns `asset`, `minted`, `essence`. | 503 `no_room`; 502 `room_refused` (nothing minted); 422 |
 | `/api/record/stop` | `asset` | Stop and wrap only on completed + finalized (`finish_recording`). Returns `checksum`, `asset`. | 404; 503; 502 `not_wrapped` (nothing wrapped); 422 |
@@ -82,7 +84,7 @@ Each edit is one transaction under the show's lock (the lock `go`, `take`, `skip
 | `POST /api/cues/{cue}/remove` | none | Remove a cue that has not fired, from a ready item. Returns `removed`, `item`. | 404; 409 `not_editable`, `cue_fired` |
 | `GET /api/items/{item}/cues` | none | The item's cues in order, plus `commands`. | 404 |
 | `GET /api/cue-commands` | none | `commands: [{room, command, verified}]`. `verified` is true when `dispatch.HANDLERS` has an adapter (today `show-input.take`, `overlay.take`, `record.start`, `stream.start`). A cue for an unverified command (`audio.snapshot`, `record.arm`) can be stored and armed, but a take stops at it with `cue_unsupported`, so the UI warns when it is added. | |
-| `POST /api/ingest` | `path`, `owner?`, `show?`, `camera?` | Ingest one local file through `ingest_file`: mint, quarantine copy, ffprobe, checksum, frame rate, and the follow-on proxy and transcript jobs. Returns `asset`, `essence`, `minted`, `status` (`done` or `quarantine`), `quarantined`, `jobs: [{id, type, status, error}]`, `assetState`. Runs inside the request. A file that does not parse is a 200 with `quarantined: true` (the asset and a failed job exist; nothing airs). A replay of the same file (same path, size and modification time) is the same asset with `minted: false`. Ingest never sets `cleared`. | 403 `path_not_allowed`; 404 `not_found` (missing file or a folder); 507 `disk_low` (quarantine disk too full); 503 `ingest_disabled`, `engine_missing` (no ffprobe); 422 |
+| `POST /api/ingest` | `path`, `owner?`, `show?`, `camera?` | Enqueue ingest of one local file (`ingest.request`): mint or reuse the asset, queue `type=ingest`. Returns `202` with `asset`, `essence` (empty until the runner copies), `minted`, `status: queued`, `job`, `jobs`, `assetState`. The runner copies, probes, checksums, and chains proxy and transcript. A replay of the same file (same path, size and modification time) is the same asset and job with `minted: false`. Disk low does not refuse the POST: the job waits (`Defer`) and no quarantine copy is made. Ingest never sets `cleared`. | 403 `path_not_allowed`; 404 `not_found` (missing file or a folder); 503 `ingest_disabled`, `engine_missing` (no ffprobe); 422 |
 
 **Ids and retries.** `id` on create is optional and caller-chosen (letters, digits, `_ . : -`, up to 128). The same id with the same content is a 200 with `existed: true` and changes nothing, so a retry after a lost response is safe; the same id with other content is `409 id_conflict`. Without `id` the server mints one.
 
@@ -124,15 +126,19 @@ All are `GET`, behind the same auth and host rules as every other data route (be
 | --- | --- |
 | `/api/assets/{asset}/spans?kind=&from=&to=&limit=&after=` | `{ok, assetId, rate, start, durationFrames, open, cleared, legalHold, hasProxy, pendingFrames, lastRun, spans, next}`. `kind` is a comma list of `shot`, `clip`, `transcript` (default `shot,clip`, so words never flood the panel). `from` and `to` are timecode labels on the essence's timebase (drop-frame `;` honoured); a span is returned when it overlaps `[from, to)`. Order is `frame_in, id`. `limit` 1 to 500 (default 200). `next` is an opaque cursor for `after`, or `null` on the last page. `422 bad_timecode` for a label that does not exist; `from` and `to` need an asset with a hi-res essence that has a frame rate. |
 | `/api/assets/{asset}/transcript?from=&to=&limit=&after=` | `{ok, assetId, words, next, pendingFrames}`: transcript spans in a window, same ordering, window rule and cursor. `limit` 1 to 1000 (default 500). |
-| `/api/assets/{asset}/proxy` | The proxy file, streamed. Honours one `Range` (`206` with `Content-Range`; `bytes=a-b`, `a-`, `-n`). A range past the end, malformed, or on an empty file is `416 bad_range` with `Content-Range: bytes */<size>`. Several ranges, a non-`bytes` unit and any request with `If-Range` get the whole file (`200`), which the spec allows. `404 no_proxy` when there is no proxy row or its file is gone. |
+| `/api/assets/{asset}/proxy` | The proxy file, streamed. Honours one `Range` (`206` with `Content-Range`; `bytes=a-b`, `a-`, `-n`). A range past the end, malformed, or on an empty file is `416 bad_range` with `Content-Range: bytes */<size>`. Several ranges, a non-`bytes` unit and any request with `If-Range` get the whole file (`200`), which the spec allows. `404 no_proxy` when there is no proxy row or its file is gone. Accepts `?ticket=`. |
 | `/media?path=<location>` | The old shell's player. `path` must equal, as a string, the `location` of a registered proxy essence; anything else (an unregistered file, a hi-res, `..`, a missing parameter's value) is `404 not_found`. The string is only compared, never opened. Same `Range` behaviour. |
-| `/api/spans/{span}/thumb` | `image/jpeg`, 320 px wide, `Cache-Control: private, max-age=3600`. Cached at `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`; made on first request with one ffmpeg seek on the proxy (frame is `frame_in + max(2, 10% of length)`, kept inside the span). `404 no_proxy`; `502 thumb_failed` (ffmpeg missing, non-zero exit, or no image); `504 thumb_timeout` (15 s limit). A failure or timeout leaves no file behind, so the next request tries again. |
+| `/api/spans/{span}/thumb` | `image/jpeg`, 320 px wide, `Cache-Control: private, max-age=3600`. Cached at `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`; made on first request with one ffmpeg seek on the proxy (frame is `frame_in + max(2, 10% of length)`, kept inside the span). `404 no_proxy`; `502 thumb_failed` (ffmpeg missing, non-zero exit, or no image); `504 thumb_timeout` (15 s limit). A failure or timeout leaves no file behind, so the next request tries again. Accepts `?ticket=`. |
+| `/api/media-ticket?asset=&kind=proxy\|thumb&ttl?` | `{ok, url, expires}`. HMAC ticket on the existing media path (`?ticket=`). Default TTL 120 s, max 3600. Signing key is `VOLT_MEDIA_KEY` or `VOLT_TOKEN`. Loopback with no token does not need a ticket. `503 no_media_key` when neither key is set. |
+| `/api/audit?target=` | Last 200 audit rows for that `target_id` (newest first): `id, at, actor, action, target_kind, target_id, detail`. |
 
 Span JSON: `id, assetId, kind, origin, label, tcIn, tcOut, frameIn, frameOut, text, runId, blockedBy, usedBy: {items, versions}`. `blockedBy` is `null`, `"not cleared"` or `"legal hold"`, same words as `/api/state`. `lastRun` is the newest `shot_run` row (`job, essence, engine, engineVersion, threshold, minFrames, shotCount, createdAt`) or `null`.
 
 `pendingFrames` counts spans whose `frame_in`/`frame_out` are not yet backfilled (migration 9 leaves old rows NULL until the `span-frames` job runs). Such spans cannot be ordered or windowed, so these routes leave them out and say how many.
 
-Limits of these routes: a browser `<video src>` or `<img src>` cannot send a bearer header, so with `VOLT_TOKEN` set a page has to fetch the bytes itself. The operator UI does exactly that (see operator-ui.md: thumbnails always, the proxy as a blob when a token is set); a short-lived signed URL would let `<video>` stream under a token, and is not built. The proxy route reads the file as registered; a proxy still being written (open) is served as far as it has been written. Thumbnails assume the proxy starts at the hi-res's timecode and rate, as the spec does; that is not checked.
+The proxy and thumb GETs accept `?ticket=` in place of `Authorization`. The ticket is compared in constant time, is not enough for POST, and Range requests keep working. A stolen or expired ticket, or a ticket for another asset or kind, is `401`.
+
+Limits of these routes: a browser `<video src>` or `<img src>` cannot send a bearer header. The operator page uses the ticket URL for video and thumbs; the blob-download path remains as a fallback if the ticket route 404s. The proxy route reads the file as registered; a proxy still being written (open) is served as far as it has been written. Thumbnails assume the proxy starts at the hi-res's timecode and rate, as the spec does; that is not checked.
 
 ## Write endpoints (shot spans, slice 4)
 
@@ -168,7 +174,7 @@ The client sends word IDs and never a time; the server loads both words and buil
 
 Same rights as slice 4: marking is allowed on any asset and the response says `blockedBy`. Tests: `control/tests/test_shot_words.py` (SQLite and live Postgres).
 
-`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress.
+`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress. `taking` is the id of the rundown item with status `taking`, or `null`.
 
 ### Detect, split, merge, indexing (slice 4b)
 
@@ -185,10 +191,10 @@ Same contract and auth as above; rights are never consulted (a legal hold or an 
 
 ## Other codes
 
-`401 unauthorized`, `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized` (also `ticket_invalid` / expired media ticket), `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 taking` (go, take, skip, kill, clock while an item of the show is taking), `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `503 no_media_key`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`, `bad_actor`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 
 - Atomicity is per underlying function. `take_item` commits the advance, then the cues, then a rewind on failure, so a crash of the server process mid-take can leave the rundown advanced with cues unsent. The rewind-on-failure path is covered; crash-mid-take is not.
-- The in-process lock serialises one server process only. Two servers on one SQLite file can both advance.
-- A take holds the sequencing lock while it waits on the room (up to about 10 seconds), so a second take or go waits. Hold and release do not.
+- Two `serve` processes and the clock serialise on item status `taking`, not on a thread lock. `_SEQ` only orders requests inside one process.
+- Dispatch waits on the room with no show lock. Hold, release, attach to a *different* ready item, rights and publish do not wait. A second take or go is `409 taking`.

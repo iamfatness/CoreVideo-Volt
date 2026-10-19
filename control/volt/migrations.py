@@ -92,7 +92,16 @@ MIGRATIONS = (
     # object Volt stored for it was removed through the storage seam (NULL while that is still to do or was never owned).
     Migration(14, "version withdrawal columns",
               columns=(("version", "withdrawn_at", "TIMESTAMP"), ("version", "storage_deleted_at", "TIMESTAMP"))),
-    # Next: Migration(15, "...", columns=(...)). Do not add a gap or reuse a number.
+    Migration(15, "job payload", columns=(("job", "payload", "TEXT"),)),
+    # audit is a new table (base-table creation makes it). The statements also create it on an older file
+    # whose SCHEMA snapshot did not include it yet; IF NOT EXISTS keeps a fresh database a no-op.
+    Migration(16, "audit table",
+              sqlite=("CREATE TABLE IF NOT EXISTS audit ("
+                      "id TEXT PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, "
+                      "target_kind TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT)",),
+              postgres=("CREATE TABLE IF NOT EXISTS audit ("
+                        "id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, "
+                        "target_kind TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT)",)),
 )
 
 LATEST = MIGRATIONS[-1].version

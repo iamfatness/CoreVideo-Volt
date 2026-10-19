@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_FILE = Path(__file__).resolve().parents[1] / "schema.sql"
+SCHEMA_FILE = Path(__file__).resolve().parent / "schema.sql"
 # Arbitrary constant. Serializes schema bootstrap across concurrent connections.
 _SCHEMA_LOCK = 0x566F6C74
 

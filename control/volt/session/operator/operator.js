@@ -62,8 +62,17 @@
   const lengthTc = (frames, r) => framesToTc(frames, r, false);
   const fmtRate = (r) => (r.d === 1 ? String(r.n) : (r.n / r.d).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')) + ' fps';
 
+  function deriveShow(rundown) {
+    const items = rundown && rundown.items ? rundown.items : [];
+    const taking = items.find((i) => i.status === 'taking') || null;
+    const air = taking || items.find((i) => i.status === 'on air') || null;
+    const floor = air ? items.indexOf(air) : -1;
+    const next = taking ? null : (items.find((i, idx) => idx > floor && i.status === 'ready') || null);
+    return { items, air, next, hold: rundown ? rundown.hold : null, taking };
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -86,6 +95,7 @@
     transcript:  ['GET',  '/api/assets/{id}/transcript'],
     proxy:       ['GET',  '/api/assets/{id}/proxy'],
     thumb:       ['GET',  '/api/spans/{id}/thumb'],
+    mediaTicket: ['GET',  '/api/media-ticket'],
     spanCreate:  ['POST', '/api/assets/{id}/spans'],
     spanTrim:    ['POST', '/api/spans/{id}/trim'],
     spanLabel:   ['POST', '/api/spans/{id}/label'],
@@ -128,6 +138,7 @@
     stale_order: 'The list changed', order_locked: 'Order is locked', not_removable: 'Cannot remove',
     id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
+    taking: 'Taking',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -145,8 +156,8 @@
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
   };
   const ITEM_CHIP = {
-    'on air': ['air', '●', 'On air'], ready: ['ready', '○', 'Ready'], aired: ['aired', '✓', 'Aired'],
-    skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
+    'on air': ['air', '●', 'On air'], taking: ['taking', '…', 'Taking'], ready: ['ready', '○', 'Ready'],
+    aired: ['aired', '✓', 'Aired'], skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
   };
   const CUE_CHIP = {
     fired: ['fired', '✓', 'Fired'], failed: ['failed', '✕', 'Failed'], armed: ['armed', '▶', 'Armed'],
@@ -228,6 +239,20 @@
     let data = null;
     try { data = await res.json(); } catch (e) { /* not JSON */ }
     return { status: res.status, data };
+  }
+
+  function ticketFrom(url) {
+    try { return new URL(url, location.origin).searchParams.get('ticket') || ''; } catch (e) { return ''; }
+  }
+
+  async function fetchMediaTicket(asset, kind) {
+    const { status, data } = await call('mediaTicket', null, null, { asset, kind });
+    if (status === 404) return { missing: true };
+    if (status !== 200 || !data || !data.url) {
+      const e = codeOf(data, status);
+      throw failure(e.code, e.reason);
+    }
+    return { url: data.url, expires: data.expires, ticket: ticketFrom(data.url) };
   }
 
   // Bytes (a thumbnail, the proxy) with the bearer header, for <img> and <video> which cannot send one.
@@ -387,20 +412,16 @@
 
   // ---- derived show state --------------------------------------------------
   function showInfo() {
-    const r = S.data && S.data.rundown;
-    const items = r ? r.items : [];
-    const air = items.find((i) => i.status === 'on air') || null;
-    const floor = air ? items.indexOf(air) : -1;
-    const next = items.find((i, idx) => idx > floor && i.status === 'ready') || null;
-    return { items, air, next, hold: r ? r.hold : null };
+    return deriveShow(S.data && S.data.rundown);
   }
   function cuesOf(id) { return (S.data && S.data.cues && S.data.cues[id]) || []; }
   function mediaOf(id) { return (S.data && S.data.media && S.data.media[id]) || {}; }
 
   function takeBlock() {
-    const { next, hold } = showInfo();
+    const { next, hold, taking } = showInfo();
     if (!S.data || !S.data.show) return 'No show is open.';
     if (S.conn !== 'ok') return 'No live connection to the server.';
+    if (taking) return 'An item is taking. Wait until it is on air.';
     if (hold) return 'Rundown is held. Release it to take.';
     if (!next) return 'End of show. Nothing left to take.';
     return null;
@@ -547,13 +568,13 @@
 
   // ---- Show screen ---------------------------------------------------------
   function renderShow() {
-    const { items, air, next, hold } = showInfo();
+    const { items, air, next, hold, taking } = showInfo();
     const block = takeBlock();
     const takeCues = next ? cuesOf(next.id).length : 0;
     const takeBusy = S.pending.has('take');
-    paint('transport', [air, next, hold, block, S.seq, [...S.pending], takeCues, S.data.show], () => [
-      el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: 'On air' }),
-        el('span', { class: 'val', text: air ? '● ' + air.slug : 'Nothing on air' })),
+    paint('transport', [air, next, hold, taking, block, S.seq, [...S.pending], takeCues, S.data.show], () => [
+      el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: taking ? 'Taking' : 'On air' }),
+        el('span', { class: 'val', text: taking ? '… ' + taking.slug : (air ? '● ' + air.slug : 'Nothing on air') })),
       el('div', { class: 'nowline next' }, el('span', { class: 'lbl', text: 'Next' }),
         el('span', { class: 'val', text: next ? '▶ ' + next.slug : 'End of show' })),
       el('span', { class: 'spacer' }),
@@ -721,7 +742,7 @@
     if (it.asRunIn) meta.push('as-run ' + fmtTime(it.asRunIn) + ' to ' + (it.asRunOut ? fmtTime(it.asRunOut) : 'now'));
     const blocked = (it.status === 'ready' || it.status === 'on air') && m.blockedBy && m.blockedBy !== 'ok' ? m.blockedBy : null;
     const ready = it.status === 'ready';
-    const cls = 'rrow' + (it.status === 'on air' ? ' is-air' : isNext ? ' is-next' : '') + (S.selected === it.id ? ' sel' : '');
+    const cls = 'rrow' + (it.status === 'on air' || it.status === 'taking' ? ' is-air' : isNext ? ' is-next' : '') + (S.selected === it.id ? ' sel' : '');
     const prev = items[idx - 1];
     const canUp = ready && prev && prev.status !== 'on air' && prev.status !== 'aired';
     const canDown = ready && idx < items.length - 1;
@@ -925,12 +946,9 @@
   // docs/specs/shot-spans.md (slice 4) and docs/mockups/shot-spans.html. The page shows what the server last
   // returned. Every write goes to the server and the list is read back; nothing is shown optimistically.
   //
-  // Media and the token: <img> and <video> cannot send an Authorization header. Thumbnails are therefore always
-  // fetched with fetch() (header attached when there is a token) and shown from a blob: URL; that also lets a
-  // trim fetch the new frame instead of a cached one. The proxy plays natively (<video src>, byte ranges) when
-  // the page has no token, which is the loopback case. When a token is set the proxy is fetched with the header
-  // into a blob first (an explicit "Load proxy" button, capped at BLOB_CAP) and then plays from memory.
-  // No server change, no token in a URL or a log. See docs/specs/operator-ui.md for what that costs.
+  // Media and the token: <img> and <video> cannot send an Authorization header. With a token the page asks
+  // /api/media-ticket and puts the returned URL on <video src> / <img src> so Range still works. Loopback with
+  // no token keeps a native proxy src. The blob-download path remains only if the ticket route is 404 (old server).
   const LIB = { PAGE: 500, MAX_PAGES: 10, WORD_PAGES: 4, BLOB_CAP: 512 * 1024 * 1024, THUMB_PARALLEL: 3, SNIPPET: 90 };
   const ORIGIN_CHIP = { detect: ['det', 'Detected'], manual: ['man', 'Marked'], transcript: ['wrd', 'From words'] };
   const L = {
@@ -1151,13 +1169,20 @@
       if (job.asset !== L.assetId) continue;
       T.active++;
       T.inflight.add(job.key);
-      fetchBlob('/api/spans/' + encodeURIComponent(job.id) + '/thumb', { cache: 'reload' })
-        .then((blob) => {
-          if (job.asset !== L.assetId) return;
-          const url = URL.createObjectURL(blob);
-          T.urls.set(job.key, url);
-          for (const n of document.querySelectorAll('img[data-tk="' + CSS.escape(job.key) + '"]')) { n.src = url; n.classList.remove('wait'); }
-        })
+      const path = '/api/spans/' + encodeURIComponent(job.id) + '/thumb';
+      const show = (url) => {
+        if (job.asset !== L.assetId) return;
+        T.urls.set(job.key, url);
+        for (const n of document.querySelectorAll('img[data-tk="' + CSS.escape(job.key) + '"]')) { n.src = url; n.classList.remove('wait'); }
+      };
+      const blobThumb = () => fetchBlob(path, { cache: 'reload' }).then((blob) => show(URL.createObjectURL(blob)));
+      const start = getToken()
+        ? fetchMediaTicket(job.asset, 'thumb').then((t) => {
+            if (t.missing) return blobThumb();
+            show(path + '?ticket=' + encodeURIComponent(t.ticket));
+          })
+        : blobThumb();
+      start
         .catch((err) => {
           const why = (err.code ? err.code + ': ' : '') + err.message;
           T.failed.set(job.key, why);
@@ -1182,23 +1207,42 @@
     v.removeAttribute('src');
     v.load();
     if (P.url) { URL.revokeObjectURL(P.url); P.url = null; }
-    P.for = null; P.state = 'none'; P.msg = ''; P.pct = 0;
+    P.for = null; P.state = 'none'; P.msg = ''; P.pct = 0; P.fallbackBlob = false;
     L.pos = null;
     cancelAnimationFrame(L.raf);
   }
 
-  // Native: let <video> stream and seek by range. Token: fetch with the header, then play from memory.
+  // Native: let <video> stream and seek by range. Token: a media ticket on the same URL, unless the
+  // ticket route is 404 (old server) — then fetch with the header and play from memory.
   async function proxyLoad() {
     const id = L.assetId, P = L.proxy, v = $('lib-video');
     if (!id) return;
+    const wantBlob = P.fallbackBlob;
     proxyRelease();
-    P.for = id; P.msg = '';
+    P.for = id; P.msg = ''; P.fallbackBlob = wantBlob;
     const path = '/api/assets/' + encodeURIComponent(id) + '/proxy';
     if (!getToken()) {
       P.mode = 'native'; P.state = 'loading';
       v.src = path;
       v.load();
       renderVmsg();
+      return;
+    }
+    if (!wantBlob) {
+      P.mode = 'native'; P.state = 'loading';
+      renderVmsg();
+      try {
+        const t = await fetchMediaTicket(id, 'proxy');
+        if (L.assetId !== id) return;
+        if (t.missing) { P.fallbackBlob = true; P.mode = 'blob'; P.state = 'idle'; renderVmsg(); return; }
+        v.src = t.url;
+        v.load();
+      } catch (err) {
+        if (L.assetId !== id) return;
+        P.state = 'error';
+        P.msg = (err.code ? err.code + ': ' : '') + err.message;
+        renderVmsg();
+      }
       return;
     }
     P.mode = 'blob'; P.state = 'loading'; P.pct = 0;
@@ -1289,7 +1333,6 @@
     if (P.for === L.assetId && !(P.state === 'none' && view.d.hasProxy)) { renderVmsg(); return; }
     P.for = L.assetId;
     if (!view.d.hasProxy) { P.state = 'none'; renderVmsg(); return; }
-    if (getToken()) { P.mode = 'blob'; P.state = 'idle'; renderVmsg(); return; }   // not loaded until asked: it is a whole-file download
     proxyLoad();
   }
 

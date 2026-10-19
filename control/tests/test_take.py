@@ -1,11 +1,16 @@
+import threading
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from tests.test_dispatch import _statuses
 from tests.test_playout import Clock, _row
 from tests.test_rooms import _no_sleep, obs
+from unittest import mock
+
 from volt.cues import add_cue, cues
 from volt.library import index_words
-from volt.playout import PlayoutError, go, hold, on_air, release
+from volt.playout import PlayoutError, TakingError, go, hold, on_air, release
 from volt.rooms import FakeRoom
 from volt.rundown import add_item, attach, kill, open_show
 from volt.store import Store
@@ -28,6 +33,72 @@ def _show(store, cues_per_item):
 
 
 class TakeWithCues(unittest.TestCase):
+    def test_take_item_is_taking_during_dispatch(self):
+        # Production change that would fail this: take_item going on air before the room, or leaving on_air() true.
+        with TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "volt.db")
+            setup = Store(path)
+            show, (a,) = _show(setup, [[("overlay.take", "on")]])
+            setup.close()
+            entered, gate = threading.Event(), threading.Event()
+
+            class SlowRoom(FakeRoom):
+                def invoke(self, action, args):
+                    entered.set()
+                    gate.wait(10)
+                    super().invoke(action, args)
+
+            room = SlowRoom([obs("idle")], states=[{"lowerThirdOnAir": True}])
+            out = {}
+
+            def run():
+                writer = Store(path)
+                try:
+                    out["result"] = take_item(writer, room, show, clock=Clock(), sleep=_no_sleep)
+                finally:
+                    writer.close()
+
+            t = threading.Thread(target=run)
+            t.start()
+            self.assertTrue(entered.wait(10))
+            other = Store(path)
+            try:
+                self.assertEqual(_row(other, a)["status"], "taking")
+                self.assertIsNone(_row(other, a)["as_run_in"])
+                self.assertIsNone(on_air(other, show))
+                with self.assertRaises(TakingError) as ctx:
+                    go(other, show, Clock())
+                self.assertEqual(ctx.exception.item_id, a)
+                gate.set()
+                t.join(10)
+                self.assertFalse(t.is_alive())
+                self.assertTrue(out["result"].advanced)
+                self.assertEqual(_row(other, a)["status"], "on air")
+            finally:
+                gate.set()
+                t.join(10)
+                other.close()
+
+    def test_failed_cue_rewinds_from_taking(self):
+        # Production change that would fail this: dispatch seeing on air, or rewind leaving taking/on air.
+        store = Store()
+        show, (a,) = _show(store, [[("audio.snapshot", "walk-in")]])
+        during = []
+
+        def during_dispatch(st, room, item_id, **kw):
+            during.append(_row(st, item_id)["status"])
+            from volt.dispatch import dispatch_item
+            return dispatch_item(st, room, item_id, **kw)
+
+        with mock.patch("volt.take.dispatch_item", during_dispatch):
+            result = take_item(store, FakeRoom([obs("idle")]), show, clock=Clock(), sleep=_no_sleep)
+        self.assertEqual(during, ["taking"])
+        self.assertFalse(result.advanced)
+        self.assertEqual(_row(store, a)["status"], "ready")
+        self.assertIsNone(on_air(store, show))
+        self.assertIsNone(_row(store, a)["as_run_in"])
+        self.assertEqual(_statuses(store, a), ["armed"])
+
     def test_success_puts_the_item_on_air_and_fires_its_cues(self):
         store = Store()
         show, (a,) = _show(store, [[("overlay.take", "on")]])

@@ -1,10 +1,13 @@
+import json
 import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
-from volt import shots
+from volt import disk, ingest, shots
 from volt.ingest import ingest_file
+from volt.runner import Claimed, Defer, Permanent
 from volt.store import Store
 
 
@@ -20,6 +23,75 @@ def _clip(path: Path) -> None:
 
 
 class IngestContract(unittest.TestCase):
+    def test_request_does_not_copy(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "A001.mp4"
+            src.write_bytes(b"not copied yet")
+            q = root / "quarantine"
+            store = Store()
+            result = ingest.request(store, src, owner="desk", quarantine=q)
+            self.assertEqual(result.status, "queued")
+            self.assertEqual(result.essence_id, "")
+            self.assertTrue(result.job_id)
+            self.assertFalse((q / f"{result.asset_id}-{src.name}").exists())
+
+    def test_handler_copies_and_chains(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "A002.mp4"
+            _clip(src)
+            q = root / "quarantine"
+            store = Store()
+            result = ingest.request(store, src, owner="desk", quarantine=q, source_key="card:A002")
+            job = store.get_job(result.job_id)
+            ingest.run_ingest(store, Claimed(
+                job.id, job.asset_id, job.type, job.idempotency_key, job.attempt,
+                payload=json.loads(job.payload)))
+            essence = store.conn.execute(
+                "SELECT id FROM essence WHERE asset_id = ? AND role = 'hi-res'", (result.asset_id,)).fetchone()
+            self.assertTrue(essence)
+            self.assertTrue((q / f"{result.asset_id}-{src.name}").exists())
+            types = {row["type"] for row in store.conn.execute(
+                "SELECT type FROM job WHERE asset_id = ?", (result.asset_id,))}
+            self.assertIn("proxy", types)
+
+    def test_handler_disk_low_defers(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "big.mp4"
+            src.write_bytes(b"x")
+            q = root / "quarantine"
+            store = Store()
+            result = ingest.request(store, src, owner="desk", quarantine=q)
+            job = store.get_job(result.job_id)
+            claimed = Claimed(
+                job.id, job.asset_id, job.type, job.idempotency_key, job.attempt,
+                payload=json.loads(job.payload))
+            with mock.patch("volt.ingest.disk.require_space",
+                            side_effect=disk.DiskLowError("only 1 GB free, need 4 GB")):
+                with self.assertRaises(Defer) as ctx:
+                    ingest.run_ingest(store, claimed)
+            self.assertIn("1 GB", str(ctx.exception))
+            self.assertFalse((q / f"{result.asset_id}-{src.name}").exists())
+
+    def test_handler_missing_source_is_permanent(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "gone.mp4"
+            src.write_bytes(b"x")
+            q = root / "quarantine"
+            store = Store()
+            result = ingest.request(store, src, owner="desk", quarantine=q)
+            src.unlink()
+            job = store.get_job(result.job_id)
+            with self.assertRaises(Permanent):
+                ingest.run_ingest(store, Claimed(
+                    job.id, job.asset_id, job.type, job.idempotency_key, job.attempt,
+                    payload=json.loads(job.payload)))
+            self.assertEqual(store.conn.execute(
+                "SELECT COUNT(*) FROM essence WHERE asset_id = ?", (result.asset_id,)).fetchone()[0], 0)
+
     # Found by the dress rehearsal (docs/dress-rehearsal.md): ingest recorded no frame rate and queued no
     # proxy or transcript, so a freshly ingested asset could not be marked, detected or exported.
     def test_ingest_records_the_frame_rate_and_queues_the_follow_on_jobs(self):

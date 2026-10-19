@@ -4,11 +4,13 @@
 
 ## What a backup is
 
-A directory with the data file and `manifest.json`, written last: no manifest, not a backup. A backup never writes into a directory that already has files.
+A directory with the data file, `media.json`, and `manifest.json`, written last: no manifest, not a backup. A backup never writes into a directory that already has files.
 
 Manifest: `format`, `kind` (`sqlite` or `postgres`), `file`, `created_at`, `source` (path or DSN without the password), `schema_version` (what the database held), `code_schema_version` (what the code writing it knows), `row_counts` (every table), `sha256` and `size` of the data file, and for SQLite `integrity_check: ok`.
 
-It covers the database only. Media files (hi-res essences, proxies, the publish folder) and object storage need their own copy; `verify-storage` tells you what the database expects to find there. Thumbnails under `VOLT_OUT` are a rebuildable cache.
+`media.json` names every closed essence (`id`, `role`, `location`, `checksum`) and every `done` version (`id`, `backend`, `key`, `sha256`). That is the inventory of bytes the restore will need; restore does not invent files.
+
+`volt backup --with-media` copies local hi-res, proxy and published files whose paths sit under `VOLT_PROXY_DIR`, `VOLT_QUARANTINE_DIR` or `VOLT_PUBLISH_DIR` into `<dest>/media/<asset_id>/`. Object storage is listed, not copied. A source that should have been copied but is not there is listed in `media.json` `missing: []` and is not a backup failure. Files outside those three directories are listed only. Thumbnails under `VOLT_OUT` are a rebuildable cache. `verify-storage` after restore is the check that the bytes are back where the database points.
 
 ## SQLite
 
@@ -31,7 +33,7 @@ It covers the database only. Media files (hi-res essences, proxies, the publish 
 - SQLite is restored to a temporary file beside the target, migrated forward there (an older schema runs the missing migrations), integrity-checked and row-count-checked, and only then renamed into place, so a failure leaves the target as it was. Postgres is restored in one transaction, then migrated and counted;
 - stop `serve` and the runner first. Restoring under a running process is not detected.
 
-A restore of an older backup reports which migrations ran (`migrated`).
+A restore of an older backup reports which migrations ran (`migrated`). Restore does not move media files back; put them where `media.json` `location` / `key` say, then `volt verify-storage`. If `media.json` is absent or unreadable (an old backup), restore ignores it and still restores the database.
 
 ## Verify storage (read only)
 

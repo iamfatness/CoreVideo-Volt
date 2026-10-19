@@ -58,6 +58,45 @@ class Version(unittest.TestCase):
         self.assertEqual(project["scripts"]["volt"], "volt.cli:main")
         self.assertEqual(data["tool"]["setuptools"]["dynamic"]["version"], {"attr": "volt.__version__"})
 
+    def test_wheel_package_data_includes_operator_pages_and_schema(self):
+        import fnmatch
+        import tomllib
+
+        data = tomllib.loads((CONTROL / "pyproject.toml").read_text(encoding="utf-8"))
+        packages = list(data["tool"]["setuptools"]["packages"])
+        pkg_data = data["tool"]["setuptools"]["package-data"]
+        required = [
+            CONTROL / "volt" / "schema.sql",
+            CONTROL / "volt" / "session" / "operator" / "index.html",
+            CONTROL / "volt" / "session" / "operator" / "operator.css",
+            CONTROL / "volt" / "session" / "operator" / "operator.js",
+        ]
+
+        def owner(rel_posix: str) -> str:
+            best = ""
+            for pkg in packages:
+                prefix = pkg.replace(".", "/")
+                if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
+                    if len(prefix) >= len(best.replace(".", "/")):
+                        best = pkg
+            return best
+
+        def matches(pattern: str, rel: str) -> bool:
+            if pattern.endswith("/**"):
+                prefix = pattern[:-3]
+                return rel == prefix or rel.startswith(prefix + "/")
+            return fnmatch.fnmatch(rel, pattern)
+
+        for path in required:
+            self.assertTrue(path.is_file(), path)
+            rel_pkg = path.relative_to(CONTROL).as_posix()
+            pkg = owner(rel_pkg)
+            self.assertTrue(pkg, f"no listed package owns {rel_pkg}")
+            rel = path.relative_to(CONTROL / pkg.replace(".", "/")).as_posix()
+            patterns = list(pkg_data.get(pkg, [])) + list(pkg_data.get("*", []))
+            self.assertTrue(any(matches(pat, rel) for pat in patterns),
+                            f"{rel_pkg} is owned by {pkg!r} (rel {rel}) but package-data is {patterns}")
+
 
 class Commands(unittest.TestCase):
     def run_cmd(self, *args, timeout=60, env=None):
@@ -82,7 +121,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(self.run_cmd("volt", "bogus").returncode, 2)
         out = self.run_cmd("volt", "--help")
         self.assertEqual(out.returncode, 0)
-        for word in ("serve", "runner", "clock", "run", "check", "version"):
+        for word in ("serve", "runner", "clock", "run", "check", "version", "watch"):
             self.assertIn(word, out.stdout)
 
     def test_refusing_a_public_bind_without_a_token_is_a_config_error(self):
@@ -228,6 +267,76 @@ class Check(unittest.TestCase):
         names = [r["name"] for r in json.loads(out.stdout)]
         self.assertIn("database", names)
         self.assertEqual(out.returncode, 1 if any(r["status"] == "fail" for r in json.loads(out.stdout)) else 0)
+
+    def test_missing_ingest_root_warns_and_fails_when_watch_is_on(self):
+        missing = str(self.dir / "no-such-inbox")
+        shown = str(Path(missing).resolve())  # Windows runners resolve 8.3 TEMP (RUNNER~1) to the long name
+        r = self.checks(env={"VOLT_INGEST_ROOTS": missing}, db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.WARN)
+        self.assertIn(shown, r["ingest roots"].detail)
+        r = self.checks(
+            env={"VOLT_INGEST_ROOTS": missing, "VOLT_WATCH": "1"},
+            db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.FAIL)
+        present = self.dir / "inbox"
+        present.mkdir()
+        r = self.checks(env={"VOLT_INGEST_ROOTS": str(present)}, db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.OK)
+        r = self.checks(db=str(self.dir / "v.db"), port=0)
+        self.assertNotIn("ingest roots", r)
+
+    def test_package_root_is_the_volt_package_dir(self):
+        self.assertEqual(preflight.PACKAGE_ROOT, Path(volt.__file__).resolve().parent)
+        from volt.paths import package_root
+        self.assertEqual(package_root(), Path(volt.__file__).resolve().parent)
+        self.assertEqual(preflight.PACKAGE_ROOT, package_root())
+
+    def test_install_layout_ok_when_pages_sit_beside_init(self):
+        pkg = self.dir / "volt"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "schema.sql").write_text("CREATE TABLE x (id text);\n")
+        operator = pkg / "session" / "operator"
+        operator.mkdir(parents=True)
+        (operator / "index.html").write_text("<!DOCTYPE html><title>Volt</title>\n")
+        with mock.patch.object(preflight, "PACKAGE_ROOT", pkg):
+            result = preflight._layout()
+        self.assertEqual(result.status, preflight.OK, result.detail)
+        self.assertEqual(result.detail, str(pkg))
+
+    def test_sqlite_with_a_room_url_warns_sqlite_on_air(self):
+        db = str(self.dir / "v.db")
+        r = self.checks(env={"VOLT_ROOM_URL": "http://127.0.0.1:1"}, db=db, port=0)
+        self.assertEqual(r["sqlite_on_air"].status, preflight.WARN)
+        self.assertIn("Postgres is the store for a live show", r["sqlite_on_air"].detail)
+        quiet = self.checks(db=db, port=0)
+        self.assertNotIn("sqlite_on_air", quiet)
+        pg = self.checks(
+            env={"VOLT_ROOM_URL": "http://127.0.0.1:1", "VOLT_DB": "postgres://volt@127.0.0.1:1/volt"},
+            db="postgres://volt@127.0.0.1:1/volt", port=0)
+        self.assertNotIn("sqlite_on_air", pg)
+
+
+class WatchCommand(unittest.TestCase):
+    def test_volt_watch_once_scans_and_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            clip = inbox / "card.mov"
+            clip.write_bytes(b"clip")
+            db = str(root / "v.db")
+            Store(db).close()
+            env = dict(os.environ, VOLT_INGEST_ROOTS=str(inbox), VOLT_QUARANTINE=str(root / "q"),
+                       VOLT_WATCH_STABLE_SECONDS="0")
+            out = subprocess.run(
+                [sys.executable, "-m", "volt", "watch", "--once", db],
+                cwd=CONTROL, capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            store = Store(db, init=False)
+            jobs = store.conn.execute("SELECT COUNT(*) FROM job WHERE type = 'ingest'").fetchone()[0]
+            store.close()
+            self.assertEqual(jobs, 1)
 
 
 class SupervisorUnit(unittest.TestCase):

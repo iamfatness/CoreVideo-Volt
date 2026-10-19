@@ -50,6 +50,8 @@ Lower third, live: `graphics.lowerThird.set [true]` was accepted; `GET /state` `
 
 `show-input.take` reads Program through `CoreVideoProRoom.program_observed()` (`GET /snapshot`, `programFrame`). `input.assign` alone does not put anything on Program, and no control action routes a slot into a scene yet ([CoreVideoPro #861](https://github.com/iamfatness/CoreVideoPro/issues/861)), so the steps before `transport.take` are configuration. Rules, failure details and the list of unproven live assumptions are in [cues](specs/cues.md#show-inputtake).
 
+The room track stays parallel to MAM. [Foundation](specs/foundation.md#room-track-parallel) does not need a live Program take to call that layer done. Until CoreVideo Pro ships a route action (#861), `show-input.take` keeps its handler and evidence; the default `show_input_actions` stay configuration and change only in a later plan. `record.arm` and `audio.snapshot` stay `unsupported` — no handler without evidence. No live Program take is recorded here (the 2026-10-16 stream run is the pattern when one lands). The unverified list in cues stays.
+
 ### Live run through the dispatcher (2026-10-13)
 
 `control/bench/live_cue_check.py` takes three rundown items against a real core (engine on, throwaway database, no stream). Take 1 (`record.start` then `overlay.take on`) fired both cues; the core showed producing/healthy and `lowerThirdOnAir` true. Take 2 (`overlay.take off`) fired and the core showed it off. Take 3 (`record.arm`, no adapter) came back `unsupported`, the rundown rewound to item 2 and the cue stayed armed. The recording was then wrapped and its sha256 matched the file on disk. One run, one rig, 1080p60 H.264. Still not run: `stream.start` and the `outputSenders` key.

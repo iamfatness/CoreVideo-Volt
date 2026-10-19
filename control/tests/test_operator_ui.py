@@ -9,7 +9,9 @@ from pathlib import Path
 
 from tests.operator_harness import seed
 from tests.test_operator_api import TOKEN, Api
+from tests.test_playout import Clock, _show
 from volt import serve, shots, timecode
+from volt.playout import advance, go
 
 SESSION = Path(serve.ROOT) / "operator"
 FILES = {name: (SESSION / name).read_text(encoding="utf-8") for name in ("index.html", "operator.css", "operator.js")}
@@ -25,6 +27,15 @@ class Static(Api):
             return resp.status, resp.read(), resp
         finally:
             conn.close()
+
+    def test_root_serves_the_same_operator_html_as_operator(self):
+        status_root, body_root, resp_root = self.get("/")
+        status_op, body_op, resp_op = self.get("/operator")
+        self.assertEqual(status_root, 200)
+        self.assertEqual(status_op, 200)
+        self.assertEqual(body_root, body_op)
+        self.assertTrue(resp_root.getheader("Content-Type").startswith("text/html"))
+        self.assertIn("script-src 'self'", resp_root.getheader("Content-Security-Policy"))
 
     def test_page_and_assets_are_served_with_a_locked_down_policy(self):
         for path, ctype in (("/operator", "text/html"), ("/operator/operator.css", "text/css"),
@@ -85,6 +96,10 @@ class Endpoints(Api):
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
+            elif tpl == "/api/media-ticket":
+                status, payload, _ = self.call("GET", path)
+                self.assertIn(status, (401, 422, 503), tpl)
+                self.assertFalse(payload["ok"], tpl)
             else:  # the library's reads: a route that exists answers an unknown id with a stable 404, not "no such route"
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["error"]["code"]), (404, "not_found"), tpl)
@@ -168,7 +183,7 @@ class Library(Api):
         self.assertIn("const FORMAT_VERIFIED = false;", body)
         self.assertIn("Not checked in an NLE yet.", body)
         self.assertIn("Manual import check", body)
-        self.assertIn("Result: not yet recorded.", (Path(serve.ROOT).parents[1] / "docs" / "specs" / "shot-spans.md").read_text(encoding="utf-8"))
+        self.assertIn("Result: not yet recorded.", (Path(__file__).resolve().parents[2] / "docs" / "specs" / "shot-spans.md").read_text(encoding="utf-8"))
         # no key handler of its own, nothing of the Show keys, and the shot list's keys stand down on the tab
         for forbidden in ("keydown", "takeNow", "toggleHold", "skipItem", "killItem", "location.hash", "e.key"):
             self.assertNotIn(forbidden, body)
@@ -185,7 +200,7 @@ class Library(Api):
         self.assertIn("onclick: xOpen", tray)
         self.assertNotIn("disabled: true", tray)
         # every refusal code the server can send has words
-        server_codes = set(re.findall(r'NleError\(\d+,\s*"(\w+)"', (Path(serve.ROOT).parent / "volt" / "nle.py").read_text(encoding="utf-8")))
+        server_codes = set(re.findall(r'NleError\(\d+,\s*"(\w+)"', (Path(serve.ROOT).parent / "nle.py").read_text(encoding="utf-8")))
         server_codes |= {"bad_input", "not_found"}
         for code in sorted(server_codes):
             self.assertRegex(body, rf"\b{code}: \[", code)
@@ -223,6 +238,21 @@ class Library(Api):
         for line in ("if (k === 't') { if (!e.repeat) takeNow(true); return; }", "if (k === 'h') { if (!e.repeat) toggleHold(); return; }",
                      "if (e.key === ' ' || e.code === 'Space') {"):
             self.assertIn(line, js)
+
+    def test_a_token_uses_media_tickets_and_blobs_only_on_404(self):
+        js = FILES["operator.js"]
+        self.assertIn("mediaTicket:", js)
+        self.assertIn("'/api/media-ticket'", js)
+        self.assertIn("status === 404", js)
+        load = js[js.index("async function proxyLoad"):js.index("function onVideoReady")]
+        self.assertIn("fetchMediaTicket", load)
+        self.assertIn("v.src = ", load)
+        self.assertIn("t.missing", load)
+        self.assertIn("fetchBlob", load)
+        thumbs = js[js.index("function pumpThumbs"):js.index("function thumbsPrune")]
+        self.assertIn("fetchMediaTicket", thumbs)
+        self.assertIn("n.src", thumbs)
+        self.assertIn("t.missing", thumbs)
 
 
 NODE = shutil.which("node")
@@ -506,6 +536,68 @@ class State(Api):
     def test_held_take_is_refused_with_the_stable_code_the_page_switches_on(self):
         p = self.refused(409, "held", f"/api/shows/{self.show}/take")
         self.assertTrue(p["error"]["reason"])
+
+    def test_state_surfaces_taking_as_the_current_item(self):
+        # Production change that would fail this: omitting taking from /api/state, or leaving
+        # the taking row as a generic ready/on-air status so the poll looks idle.
+        show, ids = _show(self.store)  # this store already has the harness spans; take the new show's first three
+        a, b = ids[0], ids[1]
+        go(self.store, show, Clock())
+        advance(self.store, show, Clock(), pending=True)
+        s = self.state(show)
+        self.assertEqual(s["taking"], b)
+        self.assertEqual([i["id"] for i in s["rundown"]["items"] if i["status"] == "taking"], [b])
+        self.assertNotIn("on air", {i["status"] for i in s["rundown"]["items"]})
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's showInfo twin")
+class TakingDesk(unittest.TestCase):
+    """The poll must treat a taking row as the current item, not a blank on-air and not the next ready."""
+
+    def derive(self, rundown):
+        script = ("const m = require(process.argv[1]);"
+                  "console.log(JSON.stringify(m.deriveShow(JSON.parse(process.argv[2]))));")
+        out = subprocess.run(
+            [NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(rundown)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_taking_item_is_current_and_next_is_not_the_following_ready(self):
+        # Production change that would fail this: showInfo only matching status === 'on air'.
+        got = self.derive({
+            "hold": None,
+            "items": [
+                {"id": "a", "slug": "Open", "status": "aired"},
+                {"id": "b", "slug": "Game", "status": "taking"},
+                {"id": "c", "slug": "Break", "status": "ready"},
+            ],
+        })
+        self.assertEqual(got["taking"]["id"], "b")
+        self.assertEqual(got["air"]["id"], "b")
+        self.assertIsNone(got["next"])
+
+    def test_on_air_still_picks_the_following_ready_as_next(self):
+        got = self.derive({
+            "hold": None,
+            "items": [
+                {"id": "a", "slug": "Open", "status": "aired"},
+                {"id": "b", "slug": "Game", "status": "on air"},
+                {"id": "c", "slug": "Break", "status": "ready"},
+            ],
+        })
+        self.assertIsNone(got["taking"])
+        self.assertEqual(got["air"]["id"], "b")
+        self.assertEqual(got["next"]["id"], "c")
+
+
+class TakingCopy(unittest.TestCase):
+    def test_desk_words_taking_and_blocks_take(self):
+        js = FILES["operator.js"]
+        self.assertIn("taking: ['taking'", js)
+        self.assertIn("taking: 'Taking'", js)
+        block = js[js.index("function takeBlock"):js.index("function takeNow")]
+        self.assertIn("taking", block)
 
 
 if __name__ == "__main__":

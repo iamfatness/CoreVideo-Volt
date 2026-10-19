@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 from volt.library import index_words
-from volt.playout import PlayoutError, go, hold, hold_state, on_air, release, skip
-from volt.rundown import add_item, attach, items, kill, open_show
+from volt.playout import PlayoutError, TakingError, advance, commit_take, go, hold, hold_state, on_air, release, rewind, skip
+from volt.rundown import add_item, attach, items, kill, open_show, ItemNotReady
 from volt.store import NotClearedError, Store
 
 
@@ -130,6 +130,63 @@ class Migration(unittest.TestCase):
             row = store.conn.execute("SELECT as_run_in, as_run_out FROM item").fetchone()
             self.assertEqual((row[0], row[1]), (None, None))
             store.close()
+
+
+class Taking(unittest.TestCase):
+    def test_pending_airs_the_previous_item_without_stamping_as_run_in(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        clock = Clock()
+        go(store, show, clock)
+        adv = advance(store, show, clock, pending=True)
+        self.assertEqual(adv.target, b)
+        self.assertEqual(_row(store, a)["status"], "aired")
+        self.assertIsNotNone(_row(store, a)["as_run_out"])
+        self.assertEqual(_row(store, b)["status"], "taking")
+        self.assertIsNone(_row(store, b)["as_run_in"])
+        self.assertIsNone(on_air(store, show))
+        commit_take(store, adv, clock)
+        self.assertEqual(_row(store, b)["status"], "on air")
+        self.assertEqual(on_air(store, show), b)
+        self.assertIsNotNone(_row(store, b)["as_run_in"])
+
+    def test_rewind_from_taking_restores_ready_and_previous_on_air(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        clock = Clock()
+        go(store, show, clock)
+        adv = advance(store, show, clock, pending=True)
+        rewind(store, adv)
+        self.assertEqual(_row(store, b)["status"], "ready")
+        self.assertIsNone(_row(store, b)["as_run_in"])
+        self.assertEqual(_row(store, a)["status"], "on air")
+        self.assertEqual(on_air(store, show), a)
+
+    def test_skip_and_kill_of_a_ready_item_refuse_while_taking(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        advance(store, show, Clock(), pending=True)
+        with self.assertRaises(TakingError) as ctx:
+            skip(store, b)
+        self.assertEqual(ctx.exception.item_id, a)
+        self.assertEqual(_row(store, b)["status"], "ready")
+        with self.assertRaises(TakingError) as kill_ctx:
+            kill(store, b)
+        self.assertEqual(kill_ctx.exception.item_id, a)
+        self.assertEqual(_row(store, b)["status"], "ready")
+
+    def test_hold_and_attach_to_another_ready_item_still_work(self):
+        store = Store()
+        show, (a, b, c) = _show(store)
+        advance(store, show, Clock(), pending=True)
+        hold(store, show, "tech")
+        self.assertIsNotNone(hold_state(store, show))
+        release(store, show)
+        span = store.conn.execute("SELECT span_id FROM item WHERE id = ?", (b,)).fetchone()["span_id"]
+        attach(store, b, span)
+        with self.assertRaises(ItemNotReady) as ctx:
+            attach(store, a, span)
+        self.assertEqual(ctx.exception.status, "taking")
 
 
 class Hold(unittest.TestCase):

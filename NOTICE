@@ -1,0 +1,33 @@
+Third-party software used by Volt
+=================================
+
+This NOTICE lists other software Volt may invoke, or that an installer may
+add with optional extras. It is not a license for Volt.
+
+Volt has no LICENSE file until the owner names an SPDX identifier. Nothing
+in this file, in the extras, or in the documentation grants a right to copy,
+modify, or redistribute Volt.
+
+ffmpeg and ffprobe
+------------------
+Required on PATH for ingest probe, proxies, thumbnails, shot detection, and
+publishing. ffmpeg is typically LGPL or GPL depending on how the binary was
+built. Obtain ffmpeg from its distributors and honour the license of the
+build you install. Volt does not ship ffmpeg.
+
+faster-whisper (optional extra `speech`)
+----------------------------------------
+Used when VOLT_ASR_ENGINE=faster-whisper. The Python package and the speech
+models it downloads carry their own terms. Install with
+`pip install volt-control[speech]`.
+
+Optional storage and database SDKs
+----------------------------------
+The Volt control plane has no required Python dependencies. These packages
+are installed only with extras; honour each project's license when you
+install the extra.
+
+- boto3 (`s3` extra)
+- azure-storage-blob and azure-identity (`azure` extra)
+- google-cloud-storage (`gcs` extra)
+- psycopg and psycopg_pool (`postgres` extra)

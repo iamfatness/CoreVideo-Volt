@@ -22,7 +22,7 @@ from typing import Optional
 from volt import cues as cue_mod
 from volt.dispatch import HANDLERS
 from volt.disk import DiskLowError
-from volt.ingest import IngestError, ingest_file
+from volt.ingest import IngestError, request as ingest_request
 from volt.rundown import show_lock
 from volt.store import Store, _id, _now
 
@@ -272,9 +272,9 @@ def _inside(path: Path, root: Path) -> bool:
 
 def ingest_allowed(store: Store, path: str, quarantine: Path, owner: str,
                    show_name: Optional[str], camera: Optional[str]) -> dict:
-    """Ingest one file from an allowed folder through ingest.ingest_file (mint, quarantine copy, probe, checksum,
-    follow-on jobs). `path` is only ever opened after it is resolved (symlinks and `..` followed) and found inside
-    an allowed root. A path outside every root is refused the same way whether or not it exists."""
+    """Enqueue ingest of one file from an allowed folder (mint, job; the runner copies). `path` is only ever
+    opened after it is resolved (symlinks and `..` followed) and found inside an allowed root. A path outside
+    every root is refused the same way whether or not it exists."""
     roots = ingest_roots()
     if not roots:
         raise BuildError(503, "ingest_disabled", "no ingest folder is configured (set VOLT_INGEST_ROOTS)")
@@ -290,7 +290,9 @@ def ingest_allowed(store: Store, path: str, quarantine: Path, owner: str,
     st = resolved.stat()
     key = f"file:{os.path.normcase(str(resolved))}:{st.st_size}:{st.st_mtime_ns}"
     try:
-        result = ingest_file(store, resolved, quarantine, owner, source_key=key, show_name=show_name, camera=camera)
+        result = ingest_request(
+            store, resolved, owner=owner, quarantine=quarantine, source_key=key,
+            show_name=show_name, camera=camera)
     except IngestError as exc:
         if isinstance(exc.__cause__, DiskLowError):  # not a missing file: the disk is too full to take the copy
             raise BuildError(507, "disk_low", str(exc)) from None
@@ -298,5 +300,5 @@ def ingest_allowed(store: Store, path: str, quarantine: Path, owner: str,
     jobs = store.conn.execute(
         "SELECT id, type, status, error FROM job WHERE asset_id = ? ORDER BY created_at, id", (result.asset_id,)).fetchall()
     return {"asset": result.asset_id, "essence": result.essence_id or None, "minted": result.minted,
-            "status": result.status, "quarantined": result.status == "quarantine",
+            "status": result.status, "job": result.job_id, "quarantined": result.status == "quarantine",
             "jobs": [{"id": j["id"], "type": j["type"], "status": j["status"], "error": j["error"]} for j in jobs]}

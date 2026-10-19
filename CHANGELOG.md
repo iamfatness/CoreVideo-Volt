@@ -6,6 +6,9 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- The operator desk treats a `taking` item as the current row (`GET /api/state` names it; TAKE/GO wait). `volt watch --once` persists fingerprints so a later scan can enqueue; a brand-new file still waits for `VOLT_WATCH_STABLE_SECONDS`.
+- Docs list the finished foundation work as in the tree. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not a Volt license.
+- `volt check` warns `sqlite_on_air` when `VOLT_ROOM_URL` is set and `VOLT_DB` is SQLite.
 - Unpublish a publish version (`POST /api/versions/{id}/unpublish`, migration 14): withdrawn versions are kept as history and no longer block deleting the asset.
 - Delete a show that has not played (`POST /api/shows/{id}/delete`).
 - Attach is now one transaction under the show lock with a conditional write, so it cannot land on an item that went on air.

@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from volt import playout, serve
-from volt.playout import advance, go
+from volt.playout import TakingError, advance, go
 from volt.rundown import add_item, attach, items, kill, open_show
 
 from tests.racekit import Bg, PgBase, SqliteBase, _cleared_span
@@ -47,9 +47,9 @@ class KillRaceTests:
         outcome = {"bg": self.in_thread(lambda st: kill(st, self.second))}
         real_take = playout.take
 
-        def kill_arrives(store, item_id):
+        def kill_arrives(store, item_id, **kw):
             outcome["bg"].wait(1.0)               # blocked behind go's lock, or already committed
-            return real_take(store, item_id)
+            return real_take(store, item_id, **kw)
 
         with mock.patch.object(playout, "take", kill_arrives):
             adv = advance(self.a, self.show)
@@ -71,11 +71,47 @@ class KillRaceTests:
         self.assertEqual([i.status for i in items(self.a, self.show)], ["on air", "killed"])
 
 
+class TakingRaceTests:
+    def _show(self):
+        self.a, self.b = self.new_store(), self.new_store()
+        asset, span = _cleared_span(self.a)
+        self.show = open_show(self.a, "Final Four")
+        self.first = add_item(self.a, self.show, "first")
+        self.second = add_item(self.a, self.show, "second")
+        for item in (self.first, self.second):
+            attach(self.a, item, span)
+
+    def test_two_processes_cannot_both_pending(self):
+        # Production change that would fail this: a second connection starting another pending take.
+        self._show()
+        adv = advance(self.a, self.show, pending=True)
+        self.assertEqual(adv.target, self.first)
+        self.assertEqual(
+            self.a.conn.execute("SELECT status FROM item WHERE id = ?", (self.first,)).fetchone()["status"],
+            "taking",
+        )
+        with self.assertRaises(TakingError) as ctx:
+            advance(self.b, self.show, pending=True)
+        self.assertEqual(ctx.exception.item_id, self.first)
+        self.assertEqual(
+            self.b.conn.execute("SELECT status FROM item WHERE id = ?", (self.second,)).fetchone()["status"],
+            "ready",
+        )
+
+
 class KillRaceSqlite(KillRaceTests, SqliteBase):
     pass
 
 
 class KillRacePg(KillRaceTests, PgBase):
+    pass
+
+
+class TakingRaceSqlite(TakingRaceTests, SqliteBase):
+    pass
+
+
+class TakingRacePg(TakingRaceTests, PgBase):
     pass
 
 

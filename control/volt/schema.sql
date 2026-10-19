@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS job (
   claimed_by TEXT,
   lease_expires_at TIMESTAMPTZ,
   run_after TIMESTAMPTZ,
+  payload TEXT,
   UNIQUE (asset_id, type, idempotency_key)
 );
 
@@ -178,4 +179,14 @@ CREATE TABLE IF NOT EXISTS runner_heartbeat (
   host TEXT,
   started_at TIMESTAMPTZ NOT NULL,
   beat_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit (
+  id TEXT PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  detail TEXT
 );

@@ -11,9 +11,9 @@ refuses, with a message, when those tools are not installed. The password never 
 passed in PGPASSWORD.
 
 This module exposes plain functions (`backup`, `verify_backup`, `restore`, `verify_storage`) and a small `main()` so
-a `volt` umbrella command can call them. It does not copy media files: essences and published objects live in
-directories and object storage that need their own copy (docs/specs/backup.md); `verify_storage` tells you which
-ones the database references and whether they are there.
+a `volt` umbrella command can call them. Every backup writes `media.json` naming closed essences and done versions.
+`--with-media` copies local files under the proxy, quarantine and publish directories into `<dest>/media/`; object
+storage is listed, not copied. `verify_storage` tells you whether those bytes are still where the database points.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from volt import migrations, pg
 
 FORMAT = 1
 MANIFEST = "manifest.json"
+MEDIA = "media.json"
 SQLITE_FILE = "volt.db"
 PG_FILE = "volt.dump"
 
@@ -172,10 +173,14 @@ def _pg_state(dsn: str) -> dict:
 
 # ---- backup ---------------------------------------------------------------------------------------
 
-def backup(source: str, dest: str) -> dict:
+def backup(source: str, dest: str, with_media: bool = False, proxy_dir=None, quarantine_dir=None,
+           publish_dir=None) -> dict:
     """Back up the database at `source` (SQLite path or postgres:// DSN) into the new or empty directory `dest`.
 
-    Returns the manifest. Raises BackupError (nothing usable is left behind on failure: no manifest is written)."""
+    Always writes `media.json` (closed essences and done versions). With `with_media`, copies local files whose
+    paths sit under the proxy, quarantine or publish directories into `<dest>/media/`; a missing source is listed
+    in `media.json` `missing` and is not a failure. Returns the manifest. Raises BackupError (nothing usable is
+    left behind on failure: no manifest is written)."""
     dest = Path(dest)
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         raise BackupError(f"{dest} already exists and is not an empty directory; a backup never overwrites anything")
@@ -183,17 +188,121 @@ def backup(source: str, dest: str) -> dict:
     try:
         if pg.is_dsn(source):
             manifest = _backup_pg(source, dest)
+            plan = _media_plan_from_dsn(source)
         else:
             manifest = _backup_sqlite(source, dest)
+            plan = _media_plan_from_sqlite(dest / SQLITE_FILE)
+        media_doc = {"essences": plan["essences"], "versions": plan["versions"]}
+        if with_media:
+            media_doc["missing"] = _copy_owned_media(
+                dest, plan,
+                proxy_dir if proxy_dir is not None else os.environ.get("VOLT_PROXY_DIR"),
+                quarantine_dir if quarantine_dir is not None else os.environ.get("VOLT_QUARANTINE_DIR"),
+                publish_dir if publish_dir is not None else os.environ.get("VOLT_PUBLISH_DIR"),
+            )
+        (dest / MEDIA).write_text(json.dumps(media_doc, indent=2, sort_keys=True), encoding="utf-8")
     except BaseException:
-        for leftover in dest.iterdir():  # a failed backup must not look like a partial one
-            try:
-                leftover.unlink()
-            except OSError:
-                pass
+        _wipe_backup_dir(dest)  # a failed backup must not look like a partial one
         raise
     (dest / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return manifest
+
+
+def _wipe_backup_dir(dest: Path) -> None:
+    for leftover in dest.iterdir():
+        try:
+            if leftover.is_dir():
+                shutil.rmtree(leftover)
+            else:
+                leftover.unlink()
+        except OSError:
+            pass
+
+
+def _under(path: Path, root: Path) -> bool:
+    p = os.path.normcase(os.path.abspath(path))
+    r = os.path.normcase(os.path.abspath(root))
+    if p == r:
+        return True
+    prefix = r if r.endswith(os.sep) else r + os.sep
+    return p.startswith(prefix)
+
+
+def _media_from_conn(conn) -> dict:
+    essences, essence_files = [], []
+    for row in conn.execute(
+            "SELECT id, asset_id, role, location, checksum FROM essence WHERE NOT open ORDER BY id"):
+        eid, asset_id, role, location, checksum = row[0], row[1], row[2], row[3], row[4]
+        essences.append({"id": eid, "role": role, "location": location, "checksum": checksum})
+        essence_files.append((asset_id, location))
+    versions, version_files = [], []
+    for row in conn.execute(
+            "SELECT id, asset_id, storage_backend, storage_key, storage_sha256 FROM version "
+            "WHERE status = 'done' ORDER BY id"):
+        vid, asset_id, backend, key, digest = row[0], row[1], row[2], row[3], row[4]
+        versions.append({"id": vid, "backend": backend, "key": key, "sha256": digest})
+        version_files.append((asset_id, backend, key))
+    return {"essences": essences, "versions": versions,
+            "essence_files": essence_files, "version_files": version_files}
+
+
+def _media_plan_from_sqlite(path: Path) -> dict:
+    conn = sqlite3.connect(str(path))
+    try:
+        return _media_from_conn(conn)
+    finally:
+        conn.close()
+
+
+def _media_plan_from_dsn(dsn: str) -> dict:
+    from volt.store import Store
+    store = Store(dsn, init=False)
+    try:
+        return _media_from_conn(store.conn)
+    finally:
+        store.close()
+
+
+def _copy_owned_media(dest: Path, plan: dict, proxy_dir, quarantine_dir, publish_dir) -> list:
+    roots = [Path(p) for p in (proxy_dir, quarantine_dir, publish_dir) if p]
+    missing = []
+    media_root = dest / "media"
+    for asset_id, location in plan["essence_files"]:
+        src = Path(location)
+        if not any(_under(src, r) for r in roots):
+            continue
+        if not src.is_file():
+            missing.append(location)
+            continue
+        out = media_root / asset_id / src.name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, out)
+    publish = Path(publish_dir) if publish_dir else None
+    for asset_id, backend, key in plan["version_files"]:
+        if backend != "local" or publish is None or not key:
+            continue
+        src = publish / key
+        if not _under(src, publish):
+            continue
+        if not src.is_file():
+            missing.append(f"{backend}:{key}")
+            continue
+        out = media_root / asset_id / Path(key).name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, out)
+    return missing
+
+
+def _peek_media_json(directory) -> Optional[dict]:
+    """Read media.json when present. Old or unreadable backups are ignored."""
+    path = Path(directory) / MEDIA
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _backup_sqlite(source: str, dest: Path) -> dict:
@@ -318,6 +427,7 @@ def restore(backup_dir, target: str, overwrite: bool = False) -> dict:
     Refuses a corrupt backup, a backup newer than this code, and a target that already holds data unless
     `overwrite` is true (SQLite: the old file is moved aside, never deleted). Returns a report."""
     manifest = verify_backup(backup_dir)
+    _peek_media_json(backup_dir)  # optional; old backups have none
     if manifest["schema_version"] > migrations.known_version():
         raise migrations.SchemaTooNewError(manifest["schema_version"], migrations.known_version())
     if (manifest["kind"] == "postgres") != pg.is_dsn(target):
@@ -526,6 +636,8 @@ def main(argv: Optional[list] = None) -> int:
     b = sub.add_parser("backup", help="back up a database into a new directory")
     b.add_argument("db", nargs="?", default=os.environ.get("VOLT_DB"), help="SQLite path or postgres:// DSN (or VOLT_DB)")
     b.add_argument("dest")
+    b.add_argument("--with-media", action="store_true",
+                   help="copy local files under VOLT_PROXY_DIR, VOLT_QUARANTINE_DIR and VOLT_PUBLISH_DIR into dest/media/")
     v = sub.add_parser("verify", help="check a backup directory without restoring it")
     v.add_argument("dir")
     r = sub.add_parser("restore", help="restore a backup into a database (stop serve and the runner first)")
@@ -543,7 +655,10 @@ def main(argv: Optional[list] = None) -> int:
         if args.cmd == "backup":
             if not args.db:
                 ap.error("a database path or DSN is required")
-            m = backup(args.db, args.dest)
+            m = backup(args.db, args.dest, with_media=args.with_media,
+                       proxy_dir=os.environ.get("VOLT_PROXY_DIR"),
+                       quarantine_dir=os.environ.get("VOLT_QUARANTINE_DIR"),
+                       publish_dir=os.environ.get("VOLT_PUBLISH_DIR"))
             print(f"backed up {m['kind']} schema v{m['schema_version']}, {sum(m['row_counts'].values())} rows, "
                   f"{m['size']} bytes, sha256 {m['sha256'][:16]}... to {args.dest}")
         elif args.cmd == "verify":

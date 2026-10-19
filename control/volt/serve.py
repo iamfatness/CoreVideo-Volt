@@ -1,6 +1,6 @@
 """Local session and operator API. python3 -m volt.serve from control/.
 
-GET routes serve the session shell. POST /api/... routes are the operator's hands:
+GET `/` and `/operator` serve the operator UI. POST /api/... routes are the operator's hands:
 JSON in, JSON out, one store connection per request. See docs/specs/operator-api.md.
 """
 
@@ -21,13 +21,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, health, logs, media, nle, operator_state, retention, shots
+from volt import building, health, logs, media, nle, operator_state, retention, shots, tickets
+from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
-from volt.playout import HeldError, PlayoutError, advance, hold, hold_state, release, skip
+from volt.playout import HeldError, PlayoutError, TakingError, advance, hold, hold_state, release, skip
 from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
@@ -43,21 +44,23 @@ access = logging.getLogger("volt.access")
 EX_CONFIG = 78  # exit code for "the configuration is wrong; restarting will not help" (volt run stops on it)
 ACCESS_LOG = False  # one line per request when on (VOLT_ACCESS_LOG=1 or --access-log); errors are always logged
 
-ROOT = Path(__file__).resolve().parents[1] / "session"
+ROOT = package_root() / "session"
 # The operator UI: three same-origin static files, no build step. Open without a token
 # (like "/"), so a page can ask for the token; every data route stays gated.
 STATIC = {
+    "/": ("operator/index.html", "text/html; charset=utf-8"),
     "/operator": ("operator/index.html", "text/html; charset=utf-8"),
     "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
     "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
 }
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
-DB_PATH = os.environ.get("VOLT_DB") or str(Path(__file__).resolve().parents[1] / "volt.db")
-OUT_DIR = Path(os.environ.get("VOLT_OUT") or Path(__file__).resolve().parents[1] / "out")
+DB_PATH = os.environ.get("VOLT_DB") or str(package_root().parent / "volt.db")
+OUT_DIR = Path(os.environ.get("VOLT_OUT") or package_root().parent / "out")
 
 # Bearer token. When set, every non-static request must carry it. main() refuses to
 # bind off loopback without one.
 TOKEN = os.environ.get("VOLT_TOKEN") or None
+MEDIA_KEY = os.environ.get("VOLT_MEDIA_KEY") or None
 MIN_REMOTE_TOKEN = 16
 MAX_BODY = 64 * 1024
 
@@ -78,6 +81,18 @@ _SEQ = threading.Lock()
 _REC = threading.Lock()
 
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
+_ACTOR = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+_AUDIT_KIND = {
+    "shows": "show",
+    "items": "item",
+    "assets": "asset",
+    "spans": "span",
+    "versions": "version",
+    "cues": "cue",
+    "record": "asset",
+    "ingest": "asset",
+    "exports": "export",
+}
 
 
 class ConfigError(Exception):
@@ -89,6 +104,10 @@ class ApiError(Exception):
         super().__init__(reason)
         self.status, self.code, self.reason, self.extra = status, code, reason, extra
         self.headers = headers or {}
+
+
+class TicketDenied(Exception):
+    """Wrong or expired media ticket: 401 with an empty body, so a <video> Range gets no bytes."""
 
 
 def _is_loopback(host: str) -> bool:
@@ -196,12 +215,46 @@ def _unknown_keys(body: dict, allowed: set) -> None:
         raise ApiError(422, "bad_input", f"unknown field(s): {', '.join(extra)}")
 
 
+def _actor(headers, body: dict) -> str:
+    """X-Volt-Actor, else body owner, else desk. Invalid is 422 before the mutation runs."""
+    given = headers.get("X-Volt-Actor")
+    if given is None:
+        given = body["owner"] if "owner" in body else "desk"
+    if not isinstance(given, str) or not _ACTOR.fullmatch(given):
+        raise ApiError(422, "bad_actor", "actor must be 1-100 characters matching [A-Za-z0-9._:-]")
+    return given
+
+
+def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str, str, str]:
+    parts = [p for p in path.split("/") if p]
+    action = parts[-1].replace("-", "_") if parts else path
+    if len(parts) >= 3 and parts[1] == "assets" and action == "delete":
+        action = "delete_asset"
+    if len(parts) >= 2 and parts[1] == "record":
+        action = "record_" + parts[-1]
+    kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
+    target = captured or ""
+    if not target:
+        asset = out.get("asset")
+        if isinstance(asset, str):
+            target = asset
+        elif isinstance(out.get("show"), dict):
+            target = out["show"].get("id") or ""
+        elif isinstance(body.get("asset"), str):
+            target = body["asset"]
+    if not target:
+        target = path
+    return action, kind, target
+
+
 def _advance_errors(fn):
     """Run an advance, mapping the playout refusals to API errors. Nothing has changed when these fire."""
     try:
         return fn()
     except HeldError as exc:
         raise ApiError(409, "held", str(exc)) from None
+    except TakingError as exc:
+        raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
     except NotClearedError:
         raise ApiError(409, "not_cleared", "the next item's media is not cleared for air (or is on legal hold)") from None
     except KeyError:
@@ -240,11 +293,11 @@ def act_take(store, show_id, body):
     owner = _str(body, "owner", default="desk", limit=100)
     _show_exists(store, show_id)
     room = get_room()
-    with _SEQ:
-        result = _advance_errors(lambda: take_item(store, room, show_id, owner=owner, **POLL))
-        results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
-                   for r in result.results]
-        state = rundown_payload(store, show_id)
+    # Dispatch waits on the room with no _SEQ; the taking row is the contract across processes.
+    result = _advance_errors(lambda: take_item(store, room, show_id, owner=owner, **POLL))
+    results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
+               for r in result.results]
+    state = rundown_payload(store, show_id)
     if not result.advanced:
         bad = next(r for r in results if r["status"] != "fired")
         code = "cue_unsupported" if bad["status"] == "unsupported" else "cue_failed"
@@ -274,6 +327,8 @@ def act_skip(store, item_id, body):
     with _SEQ:
         try:
             skip(store, item_id)
+        except TakingError as exc:
+            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
         except PlayoutError as exc:
             raise ApiError(409, "not_skippable", str(exc)) from None
         return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
@@ -285,7 +340,11 @@ def act_kill(store, item_id, body):
     with _SEQ:
         # _SEQ only orders requests inside this process; kill() decides with one conditional write, so a go
         # or take from another process cannot slip between a read here and the write.
-        if not kill(store, item_id):
+        try:
+            killed = kill(store, item_id)
+        except TakingError as exc:
+            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+        if not killed:
             status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
             raise ApiError(409, "not_killable", f"cannot kill a {status} item")
         return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
@@ -639,15 +698,15 @@ def act_cue_remove(store, cue_id, body):
 
 
 def act_ingest(store, _unused, body):
-    """Ingest one file from an allowed folder (VOLT_INGEST_ROOTS). Runs in the request: probe and checksum of a
-    large file take as long as they take. Replay is safe (same file, same asset)."""
+    """Enqueue ingest of one file from an allowed folder (VOLT_INGEST_ROOTS). The runner copies, probes, and
+    checksums. Replay is safe (same file, same asset)."""
     _unknown_keys(body, {"path", "owner", "show", "camera"})
     path = _str(body, "path", required=True, limit=4096)
     owner = _str(body, "owner", default="desk", limit=100)
     out = _build_errors(lambda: building.ingest_allowed(
         store, path, Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine"), owner,
         _str(body, "show", limit=200), _str(body, "camera", limit=100)))
-    return {"ok": True, **out, "assetState": asset_payload(store, out["asset"])}
+    return {"ok": True, **out, "assetState": asset_payload(store, out["asset"]), "httpStatus": 202}
 
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
@@ -735,6 +794,92 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _bearer_ok(self) -> bool:
+        if not TOKEN:
+            return True
+        header = self.headers.get("Authorization", "")
+        scheme, _, given = header.partition(" ")
+        return scheme.lower() == "bearer" and hmac.compare_digest(
+            given.strip().encode("utf-8"), TOKEN.encode("utf-8"))
+
+    def _ticket_on_media_get(self) -> bool:
+        parsed = urlparse(self.path)
+        m = READ_ROUTES.match(parsed.path)
+        if m and m.group(2) == "proxy":
+            media_get = True
+        else:
+            media_get = bool(THUMB_ROUTE.match(parsed.path))
+        return media_get and "ticket" in parse_qs(parsed.query, keep_blank_values=True)
+
+    def _gate_or_ticket(self) -> bool:
+        """Bearer (or loopback host) as usual, except a media GET may present `ticket` instead of Authorization."""
+        if TOKEN and self._ticket_on_media_get():
+            return True
+        if not TOKEN and self._ticket_on_media_get():
+            host = _host_name(self.headers.get("Host") or "")
+            if not _is_loopback(host):
+                self._error(ApiError(403, "bad_host", "this server answers on loopback only"))
+                return False
+            return True
+        return self._gate()
+
+    def _empty_401(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Bearer")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _accept_media_ticket(self, asset_id: str, kind: str, query: dict) -> None:
+        extra = sorted(set(query) - {"ticket"})
+        if extra:
+            raise ApiError(422, "bad_input",
+                           "the proxy route takes no parameters" if kind == "proxy"
+                           else "the thumb route takes no parameters")
+        given = query.get("ticket")
+        if not given:
+            return
+        if len(given) != 1:
+            raise ApiError(422, "bad_input", "ticket may be given once")
+        if TOKEN and self._bearer_ok():
+            return
+        secret = MEDIA_KEY or TOKEN
+        try:
+            if not secret:
+                raise tickets.TicketError("ticket_invalid")
+            tickets.verify(secret, asset_id, kind, given[0], int(time.time()))
+        except tickets.TicketError:
+            raise TicketDenied() from None
+
+    def _issue_media_ticket(self, query: dict) -> None:
+        secret = MEDIA_KEY or TOKEN
+        if not secret:
+            raise ApiError(503, "no_media_key",
+                           "no media signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
+        extra = sorted(set(query) - {"asset", "kind", "ttl"})
+        if extra:
+            raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+        single = {}
+        for key, values in query.items():
+            if len(values) != 1:
+                raise ApiError(422, "bad_input", f"{key} may be given once")
+            single[key] = values[0]
+        asset_id = single.get("asset") or ""
+        kind = single.get("kind") or ""
+        if not asset_id or kind not in tickets.KINDS:
+            raise ApiError(422, "bad_input", "asset and kind=proxy|thumb are required")
+        ttl = 120
+        if "ttl" in single:
+            raw = single["ttl"]
+            if not raw.isdigit() or int(raw) < 1:
+                raise ApiError(422, "bad_input", "ttl must be a whole number from 1 to 3600")
+            ttl = min(int(raw), 3600)
+        token, exp = tickets.issue(secret, asset_id, kind, ttl, int(time.time()))
+        if kind == "proxy":
+            url = f"/api/assets/{asset_id}/proxy?ticket={token}"
+        else:
+            url = f"?ticket={token}"
+        self._json(200, {"url": url, "expires": exp})
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path in STATIC:
@@ -743,12 +888,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
             self._json(200, health.liveness())
             return
-        if path != "/" and not self._gate():
+        if path != "/" and not self._gate_or_ticket():
             return
         # One connection per request. Postgres schema is applied once in main().
         store = Store(DB_PATH, init=not is_dsn(DB_PATH))
         try:
             self._route(store)
+        except TicketDenied:
+            self._empty_401()
         except ApiError as err:
             self._error(err)
         except media.MediaError as err:
@@ -772,8 +919,18 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(404, "not_found", "no such route")
             body = self._read_json()
+            actor = _actor(self.headers, body)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
-            self._json(200, fn(store, m.group(1), body))
+            out = fn(store, m.group(1), body)
+            status = 200
+            if isinstance(out, dict) and out.get("httpStatus") == 202:
+                out = dict(out)
+                out.pop("httpStatus")
+                status = 202
+            if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300:
+                action, kind, target = _audit_fields(path, m.group(1), body, out)
+                store.append_audit(actor, action, kind, target)
+            self._json(status, out)
         except ApiError as err:
             self._error(err)
         except Exception:  # never leak internals; the cause is in the server's log
@@ -812,10 +969,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route(self, STORE):
         parsed = urlparse(self.path)
-        if parsed.path == "/":
-            body = (ROOT / "index.html").read_bytes()
-            self._send(200, "text/html", body)
-            return
         if parsed.path in ("/api/health", "/metrics"):  # behind the same gate as every data route
             report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
             if parsed.path == "/metrics":
@@ -857,6 +1010,19 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._send(200, "application/json", json.dumps(payload).encode())
             return
+        if parsed.path == "/api/audit":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            extra = sorted(set(query) - {"target"})
+            if extra:
+                raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+            given = query.get("target")
+            if not given or len(given) != 1 or not given[0]:
+                raise ApiError(422, "bad_input", "target is required")
+            self._json(200, {"ok": True, "rows": STORE.list_audit(given[0])})
+            return
+        if parsed.path == "/api/media-ticket":
+            self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))
+            return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         m = READ_ROUTES.match(parsed.path)
@@ -868,15 +1034,16 @@ class Handler(BaseHTTPRequestHandler):
             elif what == "transcript":
                 self._json(200, media.transcript(STORE, asset_id, query))
             else:
-                if query:
-                    raise ApiError(422, "bad_input", "the proxy route takes no parameters")
+                self._accept_media_ticket(asset_id, "proxy", query)
                 self._proxy(media.proxy_for_asset(STORE, asset_id))
             return
         m = THUMB_ROUTE.match(parsed.path)
         if m:
-            if parsed.query:
-                raise ApiError(422, "bad_input", "the thumb route takes no parameters")
-            path = media.ensure_thumb(STORE, m.group(1), OUT_DIR)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            span_id = m.group(1)
+            row = STORE.conn.execute("SELECT asset_id FROM span WHERE id = ?", (span_id,)).fetchone()
+            self._accept_media_ticket(row["asset_id"] if row else "", "thumb", query)
+            path = media.ensure_thumb(STORE, span_id, OUT_DIR)
             self._send_headers(200, "image/jpeg", path.stat().st_size,
                                {"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
             self.wfile.write(path.read_bytes())

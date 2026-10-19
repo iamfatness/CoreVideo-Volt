@@ -16,11 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import volt
 from volt import disk, health, logs, migrations
+from volt.paths import package_root
 
 OK, WARN, FAIL = "ok", "warn", "fail"
-PACKAGE_ROOT = Path(volt.__file__).resolve().parents[1]  # control/ in a checkout
+PACKAGE_ROOT = package_root()
 
 
 @dataclass
@@ -34,7 +34,7 @@ class Result:
 
 
 def default_db() -> str:
-    return str(PACKAGE_ROOT / "volt.db")
+    return str(PACKAGE_ROOT.parent / "volt.db")
 
 
 def _python() -> Result:
@@ -56,7 +56,7 @@ def _tool(name: str) -> Result:
 
 
 def _layout() -> Result:
-    missing = [p for p in ("session/index.html", "schema.sql") if not (PACKAGE_ROOT / p).is_file()]
+    missing = [p for p in ("session/operator/index.html", "schema.sql") if not (PACKAGE_ROOT / p).is_file()]
     if missing:
         return Result("install layout", FAIL,
                       f"{', '.join(missing)} not found beside the volt package at {PACKAGE_ROOT}; "
@@ -160,6 +160,22 @@ def _retention(env) -> list:
     return out
 
 
+def _ingest_roots(env) -> list:
+    """VOLT_INGEST_ROOTS, when set, must name folders that exist. Missing is a warning; with VOLT_WATCH it fails."""
+    raw = env.get("VOLT_INGEST_ROOTS") or ""
+    if not raw.strip():
+        return []
+    from volt.building import ingest_roots
+
+    roots = ingest_roots(raw)
+    missing = [str(r) for r in roots if not r.is_dir()]
+    if missing:
+        watch_on = (env.get("VOLT_WATCH") or "").strip().lower() in ("1", "true", "yes", "on")
+        return [Result("ingest roots", FAIL if watch_on else WARN,
+                       "does not exist: " + ", ".join(missing))]
+    return [Result("ingest roots", OK, f"{len(roots)} folder(s)")]
+
+
 def _backup_tools(db: str) -> Result:
     from volt import backup, pg
 
@@ -199,13 +215,14 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
         results.append(Result("disk floor", FAIL, str(exc)))
         floor = None
     if floor is not None:
-        out_dir = env.get("VOLT_OUT") or str(PACKAGE_ROOT / "out")
+        out_dir = env.get("VOLT_OUT") or str(PACKAGE_ROOT.parent / "out")
         for entry in health.directories(out_dir, env, db):
             free = entry["freeBytes"]
             detail = f"{entry['path']}: {'unknown' if free is None else f'{free // 1048576} MB'} free (floor {floor // 1048576} MB)"
             results.append(Result(f"disk {entry['name']}", WARN if entry["low"] else OK, detail))
 
     results.extend(_retention(env))
+    results.extend(_ingest_roots(env))
     results.append(_backup_tools(db))
 
     if not env.get("VOLT_PROXY_DIR"):
@@ -216,6 +233,12 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
         results.append(Result("clock", WARN, "VOLT_ROOM_URL is not set: `volt run` will not start the clock"))
     else:
         results.append(Result("clock", OK, "room URL set" + (", token set" if env.get("VOLT_ROOM_TOKEN") else "")))
+        from volt import pg
+
+        if not pg.is_dsn(db):
+            results.append(Result(
+                "sqlite_on_air", WARN,
+                "the room is configured; Postgres is the store for a live show"))
     if (env.get("VOLT_ASR_ENGINE") or "").lower() == "faster-whisper":
         try:
             import faster_whisper  # noqa: F401

@@ -152,6 +152,8 @@ class Take(Api):
         self.assertEqual([r["status"] for r in p["results"]], ["fired"])
         self.assertEqual(p["rundown"]["items"][0]["status"], "on air")
         self.assertEqual(on_air(self.store, show), a)
+        self.assertEqual(self.store.list_audit(show)[0]["action"], "take")
+        self.assertEqual(self.store.list_audit(show)[0]["action"], "take")
 
     def test_failing_cue_rewinds_and_names_the_cue(self):
         show, (a, b) = _cue_show(self.store, [[], [("overlay.take", "on"), ("stream.start", "")]])
@@ -207,7 +209,7 @@ class Take(Api):
         self.refused(503, "no_room", f"/api/shows/{show}/take")
         serve.ROOM = FakeRoom([obs("idle")])
         self.refused(404, "not_found", "/api/shows/nope/take")
-        self.refused(422, "bad_input", f"/api/shows/{show}/take", {"owner": 3})
+        self.refused(422, "bad_actor", f"/api/shows/{show}/take", {"owner": 3})
         hold(self.store, show, "tech", Clock())
         self.refused(409, "held", f"/api/shows/{show}/take")
         self.assertEqual(self.statuses(show), [(a, "ready")])
@@ -220,6 +222,31 @@ class Take(Api):
         serve.ROOM = FakeRoom([obs("idle")])
         self.refused(409, "not_cleared", f"/api/shows/{show}/take")
         self.assertEqual(self.statuses(show), [(a, "ready")])
+
+    def test_go_and_state_see_taking_while_dispatch_waits(self):
+        show, (a, b) = _cue_show(self.store, [[("overlay.take", "on")], []])
+        entered, gate = threading.Event(), threading.Event()
+
+        class SlowRoom(FakeRoom):
+            def invoke(self, action, args):
+                entered.set()
+                gate.wait(10)
+                super().invoke(action, args)
+
+        serve.ROOM = SlowRoom([obs("idle")], states=[{"lowerThirdOnAir": True}])
+        with ThreadPoolExecutor(2) as pool:
+            take = pool.submit(self.post, f"/api/shows/{show}/take")
+            self.assertTrue(entered.wait(10))
+            p = self.refused(409, "taking", f"/api/shows/{show}/go")
+            self.assertEqual(p["item"], a)
+            self.refused(409, "taking", f"/api/items/{b}/skip")
+            self.refused(409, "taking", f"/api/items/{b}/kill")
+            s, state, _ = self.call("GET", f"/api/state?show={show}")
+            self.assertEqual(s, 200)
+            self.assertEqual(state["rundown"]["items"][0]["status"], "taking")
+            gate.set()
+            self.assertEqual(take.result(15)[0], 200)
+        self.assertEqual(self.statuses(show), [(a, "on air"), (b, "ready")])
 
 
 class Items(Api):

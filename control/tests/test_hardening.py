@@ -68,7 +68,7 @@ class SchemaParity(unittest.TestCase):
                 out[name] = cols
             return out
 
-        pg = parse((Path(__file__).resolve().parents[1] / "schema.sql").read_text())
+        pg = parse((Path(__file__).resolve().parents[1] / "volt" / "schema.sql").read_text())
         lite = parse(store_module.SCHEMA.replace("\n);", "\n);\n"))
         self.assertEqual(pg, lite)
 

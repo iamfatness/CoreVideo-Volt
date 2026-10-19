@@ -76,7 +76,9 @@ def attach(store: Store, item_id: str, span_id: str) -> None:
             raise ItemNotReady(item_id, now["status"])
 
 
-def take(store: Store, item_id: str) -> None:
+def take(store: Store, item_id: str, status: str = "on air") -> None:
+    if status not in ("on air", "taking"):
+        raise ValueError(f"take status must be 'on air' or 'taking', not {status!r}")
     row = store.conn.execute(
         "SELECT show_id, span_id FROM item WHERE id = ?", (item_id,)
     ).fetchone()
@@ -92,7 +94,7 @@ def take(store: Store, item_id: str) -> None:
             "UPDATE item SET status = 'ready' WHERE status = 'on air' AND id != ? AND show_id = ?",
             (item_id, row["show_id"]),
         )
-        store.conn.execute("UPDATE item SET status = 'on air' WHERE id = ?", (item_id,))
+        store.conn.execute("UPDATE item SET status = ? WHERE id = ?", (status, item_id))
 
 
 def kill(store: Store, item_id: str) -> bool:
@@ -107,6 +109,15 @@ def kill(store: Store, item_id: str) -> bool:
     if row is None:
         return False
     with store.transaction(show_lock(row["show_id"])):
+        busy = store.conn.execute(
+            "SELECT id FROM item WHERE show_id = ? AND status = 'taking' ORDER BY position",
+            (row["show_id"],),
+        ).fetchone()
+        if busy is not None:
+            now = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()
+            if now is not None and now["status"] == "ready":
+                from volt.playout import TakingError
+                raise TakingError(busy["id"])
         cur = store.conn.execute(
             "UPDATE item SET status = 'killed' WHERE id = ? AND status = 'ready'", (item_id,))
     return cur.rowcount == 1
