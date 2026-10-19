@@ -16,6 +16,7 @@ finish work another runner has also started, so handlers must tolerate a repeat.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -67,9 +68,20 @@ class Claimed:
     key: str
     attempt: int
     claimed_by: Optional[str] = None  # the runner holding the lease; a handler's data writes can check it
+    payload: dict = field(default_factory=dict)  # JSON of job.payload, or {}
 
 
 Handler = Callable[[Store, Claimed], None]
+
+
+def _claimed_payload(raw) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def request_publish(store: Store, span_id: str) -> str:
@@ -271,8 +283,12 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
         except KeyError as exc:
             raise Permanent(f"asset {job.asset_id} not found (already purged?)") from exc
 
+    def ingest(store: Store, job: Claimed) -> None:
+        from volt.ingest import run_ingest
+        run_ingest(store, job)
+
     return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames,
-            shots.DETECT_TYPE: detect_shots, "delete": delete}
+            shots.DETECT_TYPE: detect_shots, "delete": delete, "ingest": ingest}
 
 
 def cache_gc_task(config: Config) -> Callable[[Store], dict]:
@@ -444,12 +460,13 @@ class Runner:
                             WHERE status = 'queued' AND ({' OR '.join(clauses)})
                               AND (run_after IS NULL OR run_after <= ?)
                             ORDER BY created_at, id LIMIT 1{lock})
-                RETURNING id, asset_id, type, idempotency_key, attempt""",
+                RETURNING id, asset_id, type, idempotency_key, attempt, payload""",
             [self.name, self._t(self.lease), now, *params, now]).fetchone()
         self.store.conn.commit()
         if row is None:
             return None
-        return Claimed(row["id"], row["asset_id"], row["type"], row["idempotency_key"], row["attempt"], self.name)
+        return Claimed(row["id"], row["asset_id"], row["type"], row["idempotency_key"], row["attempt"],
+                       self.name, _claimed_payload(row["payload"]))
 
     # -- outcome (every write is guarded by the lease, so a runner that lost its lease changes nothing)
     def _settle(self, job: Claimed, sql: str, params: tuple) -> bool:

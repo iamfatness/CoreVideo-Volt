@@ -639,15 +639,15 @@ def act_cue_remove(store, cue_id, body):
 
 
 def act_ingest(store, _unused, body):
-    """Ingest one file from an allowed folder (VOLT_INGEST_ROOTS). Runs in the request: probe and checksum of a
-    large file take as long as they take. Replay is safe (same file, same asset)."""
+    """Enqueue ingest of one file from an allowed folder (VOLT_INGEST_ROOTS). The runner copies, probes, and
+    checksums. Replay is safe (same file, same asset)."""
     _unknown_keys(body, {"path", "owner", "show", "camera"})
     path = _str(body, "path", required=True, limit=4096)
     owner = _str(body, "owner", default="desk", limit=100)
     out = _build_errors(lambda: building.ingest_allowed(
         store, path, Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine"), owner,
         _str(body, "show", limit=200), _str(body, "camera", limit=100)))
-    return {"ok": True, **out, "assetState": asset_payload(store, out["asset"])}
+    return {"ok": True, **out, "assetState": asset_payload(store, out["asset"]), "httpStatus": 202}
 
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
@@ -773,7 +773,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not_found", "no such route")
             body = self._read_json()
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
-            self._json(200, fn(store, m.group(1), body))
+            out = fn(store, m.group(1), body)
+            status = 200
+            if isinstance(out, dict) and out.get("httpStatus") == 202:
+                out = dict(out)
+                out.pop("httpStatus")
+                status = 202
+            self._json(status, out)
         except ApiError as err:
             self._error(err)
         except Exception:  # never leak internals; the cause is in the server's log

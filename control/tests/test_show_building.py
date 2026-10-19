@@ -82,6 +82,11 @@ class Behaviour:
         self.assertEqual((s, p["ok"]), (200, True), p)
         return p
 
+    def accepted(self, path, body=None):
+        s, p = self.post(path, body)
+        self.assertEqual((s, p["ok"]), (202, True), p)
+        return p
+
     def refused(self, status, code, path, body=None, **kw):
         s, p = self.post(path, body, **kw)
         self.assertEqual((s, p["ok"], p["error"]["code"]), (status, False, code), p)
@@ -415,39 +420,51 @@ class Ingest(Behaviour):
     def assets(self):
         return self.store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0]
 
+    @unittest.skipUnless(shutil.which("ffprobe"), "needs ffprobe")
+    def test_http_ingest_returns_before_copy(self):
+        card = self.inbox / "A003.mp4"
+        card.write_bytes(b"queued only")
+        p = self.accepted("/api/ingest", {"path": str(card), "camera": "iso-4", "show": "Friday"})
+        self.assertEqual((p["status"], p["minted"]), ("queued", True))
+        self.assertTrue(p["job"])
+        self.assertFalse(p.get("essence"))
+        q = serve.OUT_DIR / "quarantine"
+        self.assertTrue(not q.exists() or not any(q.iterdir()))
+        job = self.store.conn.execute("SELECT status, type FROM job WHERE id = ?", (p["job"],)).fetchone()
+        self.assertEqual((job["status"], job["type"]), ("queued", "ingest"))
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
     def test_a_file_in_an_allowed_folder_is_minted_quarantined_and_its_jobs_are_returned(self):
         card = self.inbox / "A002.mp4"
         self.clip(card)
-        p = self.ok("/api/ingest", {"path": str(card), "camera": "iso-4", "show": "Friday"})
-        self.assertEqual((p["status"], p["minted"], p["quarantined"]), ("done", True, False))
-        self.assertTrue(p["essence"])
-        self.assertEqual({j["type"] for j in p["jobs"]}, {"ingest", "proxy", "asr"})
+        p = self.accepted("/api/ingest", {"path": str(card), "camera": "iso-4", "show": "Friday"})
+        self.assertEqual((p["status"], p["minted"]), ("queued", True))
+        self.assertFalse(p.get("essence"))
+        self.assertTrue(p["job"])
+        self.assertEqual({j["type"] for j in p["jobs"]}, {"ingest"})
         self.assertEqual(p["assetState"]["camera"], "iso-4")
         self.assertFalse(p["assetState"]["cleared"])                                   # ingest never clears
-        row = self.store.conn.execute("SELECT location, frame_rate FROM essence WHERE asset_id = ?", (p["asset"],)).fetchone()
-        self.assertIn("quarantine", row["location"])                                   # the copy, not the source
-        self.assertTrue(Path(row["location"]).is_file())
-        self.assertEqual(row["frame_rate"], "25")
-        again = self.ok("/api/ingest", {"path": str(card)})                            # replay: same asset, nothing new
+        self.assertIsNone(self.store.conn.execute(
+            "SELECT location FROM essence WHERE asset_id = ?", (p["asset"],)).fetchone())
+        again = self.accepted("/api/ingest", {"path": str(card)})                      # replay: same asset, nothing new
         self.assertEqual((again["asset"], again["minted"], self.assets()), (p["asset"], False, 1))
 
     @unittest.skipUnless(shutil.which("ffprobe"), "needs ffprobe")
     def test_a_file_that_does_not_parse_stays_in_quarantine(self):
         bad = self.inbox / "bad.mp4"
         bad.write_bytes(b"not media")
-        p = self.ok("/api/ingest", {"path": str(bad)})
-        self.assertEqual((p["status"], p["quarantined"], p["essence"]), ("quarantine", True, None))
-        self.assertEqual([j["status"] for j in p["jobs"]], ["failed"])
+        p = self.accepted("/api/ingest", {"path": str(bad)})
+        self.assertEqual((p["status"], p.get("essence")), ("queued", None))
+        self.assertEqual([j["status"] for j in p["jobs"]], ["queued"])
 
-    def test_a_full_disk_is_disk_low_not_a_missing_file(self):
+    def test_a_full_disk_is_enqueued_not_refused(self):
         from volt import disk
         card = self.inbox / "big.mp4"
         card.write_bytes(b"x")
         with mock.patch("volt.ingest.disk.require_space", side_effect=disk.DiskLowError("only 1 GB free, need 4 GB")):
-            p = self.refused(507, "disk_low", "/api/ingest", {"path": str(card)})
-        self.assertIn("1 GB", p["error"]["reason"])
-        self.assertEqual(self.assets(), 0)
+            p = self.accepted("/api/ingest", {"path": str(card)})
+        self.assertEqual(p["status"], "queued")
+        self.assertEqual(self.assets(), 1)
 
     def test_state_lists_the_unfinished_jobs_of_an_asset_and_drops_them_when_done(self):
         a = self.store.mint_asset(owner="desk", camera="iso-9")

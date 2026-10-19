@@ -93,6 +93,17 @@ class ClaimBehaviour:
         r = Runner(store, {"proxy": lambda s, j: None})
         self.assertIsNone(r.claim())
 
+    def test_claim_exposes_payload_dict(self):
+        store = self.open_store()
+        asset = store.mint_asset(owner="desk")
+        store.enqueue(asset.id, "proxy", "k-payload", payload={"path": "/card/A.mp4"})
+        store.conn.commit()
+        claimed = Runner(store, {"proxy": lambda s, j: None}).claim()
+        self.assertEqual(claimed.payload, {"path": "/card/A.mp4"})
+
+    def test_ingest_is_a_default_handler(self):
+        self.assertIn("ingest", default_handlers(Config()))
+
     def test_expired_lease_is_requeued_and_counts_an_attempt(self):
         clock = Clock()
         store = self.open_store()
