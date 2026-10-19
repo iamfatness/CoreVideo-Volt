@@ -329,6 +329,20 @@ def purge_task(config: Config) -> Callable[[Store], retention.PurgeReport]:
     return run
 
 
+def watch_task(config: Config) -> Callable[[Store], object]:
+    """Scan VOLT_INGEST_ROOTS and enqueue ingest for files that have sat still. `seen` lives on this closure."""
+    seen: dict = {}
+    stable = float(os.environ.get("VOLT_WATCH_STABLE_SECONDS") or 5)
+
+    def run(store: Store):
+        from volt import building, watch
+
+        roots = building.ingest_roots()
+        requested = watch.scan(store, roots, watch.env_quarantine(), stable_seconds=stable, seen=seen)
+        return {"requested": len(requested)}
+    return run
+
+
 @dataclass
 class Periodic:
     """Something the runner does every `every` seconds between jobs (first run at start). `fn(store)` may
@@ -645,6 +659,10 @@ def main(argv: list[str]) -> int:
     gc_every = float(os.environ.get("VOLT_CACHE_GC_EVERY") or 600)
     if gc_every > 0 and not args.once:
         runner.periodic.append(Periodic("cache-gc", gc_every, cache_gc_task(config)))
+    from volt import watch as watch_mod
+    watch_every = float(os.environ.get("VOLT_WATCH_EVERY") or 2)
+    if watch_mod.env_on(os.environ.get("VOLT_WATCH")):
+        runner.periodic.append(Periodic("watch", watch_every, watch_task(config)))
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: runner.stop())
     try:

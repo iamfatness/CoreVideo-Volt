@@ -82,7 +82,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(self.run_cmd("volt", "bogus").returncode, 2)
         out = self.run_cmd("volt", "--help")
         self.assertEqual(out.returncode, 0)
-        for word in ("serve", "runner", "clock", "run", "check", "version"):
+        for word in ("serve", "runner", "clock", "run", "check", "version", "watch"):
             self.assertIn(word, out.stdout)
 
     def test_refusing_a_public_bind_without_a_token_is_a_config_error(self):
@@ -228,6 +228,44 @@ class Check(unittest.TestCase):
         names = [r["name"] for r in json.loads(out.stdout)]
         self.assertIn("database", names)
         self.assertEqual(out.returncode, 1 if any(r["status"] == "fail" for r in json.loads(out.stdout)) else 0)
+
+    def test_missing_ingest_root_warns_and_fails_when_watch_is_on(self):
+        missing = str(self.dir / "no-such-inbox")
+        r = self.checks(env={"VOLT_INGEST_ROOTS": missing}, db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.WARN)
+        self.assertIn(missing, r["ingest roots"].detail)
+        r = self.checks(
+            env={"VOLT_INGEST_ROOTS": missing, "VOLT_WATCH": "1"},
+            db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.FAIL)
+        present = self.dir / "inbox"
+        present.mkdir()
+        r = self.checks(env={"VOLT_INGEST_ROOTS": str(present)}, db=str(self.dir / "v.db"), port=0)
+        self.assertEqual(r["ingest roots"].status, preflight.OK)
+        r = self.checks(db=str(self.dir / "v.db"), port=0)
+        self.assertNotIn("ingest roots", r)
+
+
+class WatchCommand(unittest.TestCase):
+    def test_volt_watch_once_scans_and_exits_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            clip = inbox / "card.mov"
+            clip.write_bytes(b"clip")
+            db = str(root / "v.db")
+            Store(db).close()
+            env = dict(os.environ, VOLT_INGEST_ROOTS=str(inbox), VOLT_QUARANTINE=str(root / "q"),
+                       VOLT_WATCH_STABLE_SECONDS="0")
+            out = subprocess.run(
+                [sys.executable, "-m", "volt", "watch", "--once", db],
+                cwd=CONTROL, capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            store = Store(db, init=False)
+            jobs = store.conn.execute("SELECT COUNT(*) FROM job WHERE type = 'ingest'").fetchone()[0]
+            store.close()
+            self.assertEqual(jobs, 1)
 
 
 class SupervisorUnit(unittest.TestCase):

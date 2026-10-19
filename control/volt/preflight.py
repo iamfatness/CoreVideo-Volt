@@ -160,6 +160,22 @@ def _retention(env) -> list:
     return out
 
 
+def _ingest_roots(env) -> list:
+    """VOLT_INGEST_ROOTS, when set, must name folders that exist. Missing is a warning; with VOLT_WATCH it fails."""
+    raw = env.get("VOLT_INGEST_ROOTS") or ""
+    if not raw.strip():
+        return []
+    from volt.building import ingest_roots
+
+    roots = ingest_roots(raw)
+    missing = [str(r) for r in roots if not r.is_dir()]
+    if missing:
+        watch_on = (env.get("VOLT_WATCH") or "").strip().lower() in ("1", "true", "yes", "on")
+        return [Result("ingest roots", FAIL if watch_on else WARN,
+                       "does not exist: " + ", ".join(missing))]
+    return [Result("ingest roots", OK, f"{len(roots)} folder(s)")]
+
+
 def _backup_tools(db: str) -> Result:
     from volt import backup, pg
 
@@ -206,6 +222,7 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
             results.append(Result(f"disk {entry['name']}", WARN if entry["low"] else OK, detail))
 
     results.extend(_retention(env))
+    results.extend(_ingest_roots(env))
     results.append(_backup_tools(db))
 
     if not env.get("VOLT_PROXY_DIR"):

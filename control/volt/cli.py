@@ -7,6 +7,7 @@
     volt restore  restore a backup into a database; volt verify checks one; volt verify-storage checks media
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
+    volt watch    enqueue ingest for files sitting still in VOLT_INGEST_ROOTS
     volt version  the build
 
 `serve`, `runner` and `clock` pass every argument through, so `volt runner --once` and
@@ -162,6 +163,10 @@ def main(argv=None) -> int:
         from volt import clock
         _bridge_break_signal()
         return clock.main(rest)
+    if command == "watch":
+        from volt import watch
+        _bridge_break_signal()
+        return watch.main(rest)
     print(f"volt: unknown command {command!r}\n\n{USAGE.strip()}", file=sys.stderr)
     return 2
 
