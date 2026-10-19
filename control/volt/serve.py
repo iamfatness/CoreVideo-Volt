@@ -79,6 +79,18 @@ _SEQ = threading.Lock()
 _REC = threading.Lock()
 
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
+_ACTOR = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+_AUDIT_KIND = {
+    "shows": "show",
+    "items": "item",
+    "assets": "asset",
+    "spans": "span",
+    "versions": "version",
+    "cues": "cue",
+    "record": "asset",
+    "ingest": "asset",
+    "exports": "export",
+}
 
 
 class ConfigError(Exception):
@@ -199,6 +211,38 @@ def _unknown_keys(body: dict, allowed: set) -> None:
     extra = sorted(set(body) - allowed)
     if extra:
         raise ApiError(422, "bad_input", f"unknown field(s): {', '.join(extra)}")
+
+
+def _actor(headers, body: dict) -> str:
+    """X-Volt-Actor, else body owner, else desk. Invalid is 422 before the mutation runs."""
+    given = headers.get("X-Volt-Actor")
+    if given is None:
+        given = body["owner"] if "owner" in body else "desk"
+    if not isinstance(given, str) or not _ACTOR.fullmatch(given):
+        raise ApiError(422, "bad_actor", "actor must be 1-100 characters matching [A-Za-z0-9._:-]")
+    return given
+
+
+def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str, str, str]:
+    parts = [p for p in path.split("/") if p]
+    action = parts[-1].replace("-", "_") if parts else path
+    if len(parts) >= 3 and parts[1] == "assets" and action == "delete":
+        action = "delete_asset"
+    if len(parts) >= 2 and parts[1] == "record":
+        action = "record_" + parts[-1]
+    kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
+    target = captured or ""
+    if not target:
+        asset = out.get("asset")
+        if isinstance(asset, str):
+            target = asset
+        elif isinstance(out.get("show"), dict):
+            target = out["show"].get("id") or ""
+        elif isinstance(body.get("asset"), str):
+            target = body["asset"]
+    if not target:
+        target = path
+    return action, kind, target
 
 
 def _advance_errors(fn):
@@ -873,6 +917,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(404, "not_found", "no such route")
             body = self._read_json()
+            actor = _actor(self.headers, body)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body)
             status = 200
@@ -880,6 +925,9 @@ class Handler(BaseHTTPRequestHandler):
                 out = dict(out)
                 out.pop("httpStatus")
                 status = 202
+            if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300:
+                action, kind, target = _audit_fields(path, m.group(1), body, out)
+                store.append_audit(actor, action, kind, target)
             self._json(status, out)
         except ApiError as err:
             self._error(err)
@@ -963,6 +1011,16 @@ class Handler(BaseHTTPRequestHandler):
                 "proxy": hit.proxy,
             }
             self._send(200, "application/json", json.dumps(payload).encode())
+            return
+        if parsed.path == "/api/audit":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            extra = sorted(set(query) - {"target"})
+            if extra:
+                raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+            given = query.get("target")
+            if not given or len(given) != 1 or not given[0]:
+                raise ApiError(422, "bad_input", "target is required")
+            self._json(200, {"ok": True, "rows": STORE.list_audit(given[0])})
             return
         if parsed.path == "/api/media-ticket":
             self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))

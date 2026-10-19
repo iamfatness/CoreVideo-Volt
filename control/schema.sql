@@ -180,3 +180,13 @@ CREATE TABLE IF NOT EXISTS runner_heartbeat (
   started_at TIMESTAMPTZ NOT NULL,
   beat_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit (
+  id TEXT PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  detail TEXT
+);

@@ -208,6 +208,16 @@ CREATE TABLE IF NOT EXISTS runner_heartbeat (
   started_at TEXT NOT NULL,
   beat_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit (
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  detail TEXT
+);
 """
 
 
@@ -560,6 +570,48 @@ class Store:
         asset = self.get_asset(asset_id)
         if asset.legal_hold or not asset.cleared or asset.deleted_at:
             raise NotClearedError(asset_id)
+
+    def append_audit(
+        self,
+        actor: str,
+        action: str,
+        target_kind: str,
+        target_id: str,
+        detail: Optional[str] = None,
+    ) -> str:
+        """Append one operator-audit row. The table is insert-only; nothing here updates or deletes."""
+        row_id = _id()
+        self.conn.execute(
+            """INSERT INTO audit (id, at, actor, action, target_kind, target_id, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (row_id, _now_precise(), actor, action, target_kind, target_id, detail),
+        )
+        self.conn.commit()
+        return row_id
+
+    def list_audit(self, target_id: str, limit: int = 200) -> list:
+        """Newest-first rows for one target_id, capped at `limit` (the HTTP route uses 200)."""
+        order = "at DESC, id DESC" if self.postgres else "rowid DESC"
+        rows = self.conn.execute(
+            f"""SELECT id, at, actor, action, target_kind, target_id, detail
+                FROM audit WHERE target_id = ? ORDER BY {order} LIMIT ?""",
+            (target_id, limit),
+        ).fetchall()
+        out = []
+        for row in rows:
+            at = row["at"]
+            if not isinstance(at, str):
+                at = at.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(at, "strftime") else str(at)
+            out.append({
+                "id": row["id"],
+                "at": at,
+                "actor": row["actor"],
+                "action": row["action"],
+                "target_kind": row["target_kind"],
+                "target_id": row["target_id"],
+                "detail": row["detail"],
+            })
+        return out
 
 
 def _job(row) -> Job:

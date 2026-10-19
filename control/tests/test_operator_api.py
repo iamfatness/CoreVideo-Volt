@@ -152,6 +152,8 @@ class Take(Api):
         self.assertEqual([r["status"] for r in p["results"]], ["fired"])
         self.assertEqual(p["rundown"]["items"][0]["status"], "on air")
         self.assertEqual(on_air(self.store, show), a)
+        self.assertEqual(self.store.list_audit(show)[0]["action"], "take")
+        self.assertEqual(self.store.list_audit(show)[0]["action"], "take")
 
     def test_failing_cue_rewinds_and_names_the_cue(self):
         show, (a, b) = _cue_show(self.store, [[], [("overlay.take", "on"), ("stream.start", "")]])
@@ -207,7 +209,7 @@ class Take(Api):
         self.refused(503, "no_room", f"/api/shows/{show}/take")
         serve.ROOM = FakeRoom([obs("idle")])
         self.refused(404, "not_found", "/api/shows/nope/take")
-        self.refused(422, "bad_input", f"/api/shows/{show}/take", {"owner": 3})
+        self.refused(422, "bad_actor", f"/api/shows/{show}/take", {"owner": 3})
         hold(self.store, show, "tech", Clock())
         self.refused(409, "held", f"/api/shows/{show}/take")
         self.assertEqual(self.statuses(show), [(a, "ready")])
