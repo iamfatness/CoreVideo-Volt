@@ -6,7 +6,7 @@ Nothing used to claim queued jobs. `volt/runner.py` does: `python -m volt.runner
 
 One atomic `UPDATE ... RETURNING` takes the oldest due `queued` job of a handled type and marks it `running` with `claimed_by` and `lease_expires_at`. On Postgres the candidate subselect is `FOR UPDATE SKIP LOCKED`; on SQLite the single statement holds the write lock. Two runners never take one job.
 
-Only runner-owned keys are claimable for two types, because the functions behind them write their own short-lived `queued` rows: `publish` jobs need the key prefix `publish-request:<span id>` (use `request_publish`), `asr` jobs the prefix `asr:`. Rows written by `publish()` (`publish:<span>:<kind>`) and by a hand-run `transcribe()` (`asr-v2:...`) are never claimed.
+Only runner-owned keys are claimable for two types, because the functions behind them write their own short-lived `queued` rows: `publish` jobs need the key prefix `publish-request:<span id>` (use `request_publish`), `asr` jobs the prefix `asr:`. Rows written by `publish()` (`publish:<span>:<kind>`) and by a hand-run `transcribe()` (`asr-v2:...`) are never claimed. `ingest` jobs are claimed like proxy: the HTTP path and `volt watch` only enqueue.
 
 ## Lease and crash recovery
 
@@ -17,6 +17,7 @@ The lease is renewed by a heartbeat thread (own connection) every third of `--le
 | Handler | Result |
 |---|---|
 | returns | `done` |
+| `ingest` handler, disk low | `Defer` (copy not made; asset may already be minted) |
 | raises `Defer` | back to `queued` after a delay, no attempt used (error holds the reason) |
 | raises `Permanent` | `failed` now (bad config, missing input) |
 | raises anything else | `queued` again after `5 s * 2^(attempt-1)` (cap 300 s), until `--max-attempts` (default 5); then `failed` |
@@ -33,7 +34,9 @@ The engine comes from `VOLT_ASR_ENGINE=faster-whisper` (plus `VOLT_ASR_MODEL`, `
 
 ## Config
 
-`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, `VOLT_QUARANTINE_DIR`, `VOLT_PURGE_EVERY`, `VOLT_PURGE_AFTER_DAYS[_<CLASS>]`, or the matching flags.
+`VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, `VOLT_QUARANTINE_DIR`, `VOLT_PURGE_EVERY`, `VOLT_PURGE_AFTER_DAYS[_<CLASS>]`, `VOLT_WATCH`, `VOLT_WATCH_EVERY`, `VOLT_WATCH_STABLE_SECONDS`, `VOLT_INGEST_ROOTS`, or the matching flags.
+
+When `VOLT_WATCH=1` the runner runs a periodic scan of `VOLT_INGEST_ROOTS` (same `watch.scan` as `volt watch`). Growing files wait until size and mtime stay still for `VOLT_WATCH_STABLE_SECONDS` (default 5). It is not a fourth process under `volt run`.
 
 At start the runner refuses (exit 3, message on stderr naming both versions) a database whose schema is newer than the code, instead of migrating or claiming jobs.
 

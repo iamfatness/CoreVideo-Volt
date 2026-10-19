@@ -1,15 +1,15 @@
 # Operations
 
 For the person who installs and runs Volt. Developer docs are in [architecture](architecture.md) and
-[start-here](start-here.md); what is still missing before a team can rely on Volt is in
-[product-readiness](product-readiness.md).
+[start-here](start-here.md); what is still missing before more MAM work is in
+[foundation](specs/foundation.md). [product-readiness](product-readiness.md) is a dated audit (2026-10-16), not the current gap list.
 
 ## What runs
 
 | Process | Command | Needs | What it does |
 |---|---|---|---|
-| serve | `volt serve` | database | Operator API, `/operator` page, session shell, health. Run exactly one per database: the take/go sequencing lock is in-process. |
-| runner | `volt runner` | database, ffmpeg | Claims queued jobs (proxy, transcript, publish, shot detection) and retries them. Several are safe. A crashed runner loses no work: its leases lapse and the jobs are re-queued. |
+| serve | `volt serve` | database | Operator API, `/` operator desk, health. Two processes serialise a take on item status `taking`. |
+| runner | `volt runner` | database, ffmpeg | Claims queued jobs (ingest, proxy, transcript, publish, shot detection) and retries them. Several are safe. A crashed runner loses no work: its leases lapse and the jobs are re-queued. With `VOLT_WATCH=1` it also scans ingest folders. |
 | clock | `volt clock` | database, `VOLT_ROOM_URL` | Takes scheduled rundown items on time. Run one. |
 | run | `volt run` | all of the above | Starts the three as child processes, restarts any that crashes, stops them together. The clock is started only when `VOLT_ROOM_URL` is set. |
 
@@ -48,10 +48,15 @@ volt check
 ```
 
 Each line is `ok`, `warn` or `fail`; the exit code is 1 if anything failed. It checks Python, ffmpeg and ffprobe,
-that the checkout has its pages and schema, the database (reachable, schema version against this build; it opens
+that the package has its pages and schema, the database (reachable, schema version against this build; it opens
 SQLite read-only and never creates or migrates anything), the storage configuration, whether the token rule
-allows the bind address, whether the port is free, and free disk against the floor. It never prints a token or a
-database password. `volt check --json` is for scripts; `--env-file` checks the same settings a service will use.
+allows the bind address, whether the port is free, and free disk against the floor. If `VOLT_ROOM_URL` is set and
+`VOLT_DB` is SQLite it warns `sqlite_on_air` ("the room is configured; Postgres is the store for a live show").
+A laptop without a room stays quiet. It never prints a token or a database password. `volt check --json` is for
+scripts; `--env-file` checks the same settings a service will use.
+
+Third-party terms for ffmpeg, faster-whisper, and the optional SDKs are in `NOTICE`. There is no LICENSE for
+Volt until the owner names an SPDX id.
 
 ## Configure
 
@@ -73,7 +78,8 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_PUBLISH_DIR` | none | Local publish directory. Required for `VOLT_STORAGE=local` publishing. |
 | `VOLT_HOST` | `127.0.0.1` | Bind address. Anything but loopback needs `VOLT_TOKEN`. |
 | `VOLT_PORT` | `8765` | Port; `0` picks a free one. |
-| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only. |
+| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only. POSTs may send `X-Volt-Actor` (default `desk`). |
+| `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
 | `VOLT_CLOCK_GRACE` | `30` | Seconds past `scheduled_at` an item may still fire. |
@@ -94,13 +100,17 @@ Defaults below are what applies when the variable is unset.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VOLT_MIN_FREE_MB` | `2048` | Free-space floor. Under it, new ingest, proxy and thumbnail work is refused and health says `degraded`. `0` turns the floor off. |
+| `VOLT_MIN_FREE_MB` | `2048` | Free-space floor. Under it, proxy and thumbnail work is refused, ingest jobs wait, and health says `degraded`. `0` turns the floor off. |
 | `VOLT_THUMB_CACHE_MB` | `1024` | Thumbnail cache cap; the oldest thumbnails go first. `0` = no cap. |
 | `VOLT_CACHE_GC_EVERY` | `600` | Seconds between the runner's cleanup passes (thumbnail cap, stale temp files). `0` = off. |
 | `VOLT_PART_MAX_AGE_HOURS` | `24` | A `*.part.mp4` in the proxy directory untouched this long is a killed encode's leftover and is removed. |
 | `VOLT_RUNNER_STALE_SECONDS` | `120` | A runner with no heartbeat for this long counts as gone. |
 | `VOLT_STUCK_JOB_SECONDS` | `14400` | A running job older than this is reported as stuck (an expired lease always is). |
 | `VOLT_QUARANTINE_DIR` | none | Where watch-folder ingest copies cards. Purge deletes there only when this names the directory; `volt verify-storage` checks it; health and `volt check` report its disk. |
+| `VOLT_INGEST_ROOTS` | none | Folders HTTP ingest and watch may read (OS path separator). Unset: ingest is disabled. |
+| `VOLT_WATCH` | off | `1` scans ingest roots from the runner (not a fourth `volt run` process). |
+| `VOLT_WATCH_STABLE_SECONDS` | `5` | A watch file must sit still this long before it is requested. |
+| `VOLT_WATCH_EVERY` | `2` | Seconds between watch scans. |
 
 ### Deletion and retention
 
@@ -222,12 +232,12 @@ including tracebacks. Redaction is a safety net: still do not put secrets in fre
 
 ## Disk
 
-New ingest, proxy builds and thumbnails are refused while the disk holding their output has less than
-`VOLT_MIN_FREE_MB` free (ingest also needs room for the file itself). The refusal names the directory and the
-setting. A proxy job waits and retries after a minute without using an attempt; an ingest or thumbnail request
-gets an error (`507 disk_low` for a thumbnail). Only rebuildable files are ever deleted automatically: thumbnails
-beyond the cap, oldest first, and stale `*.part.mp4` leftovers. Registered essences (hi-res, proxies, published
-files) are never touched; free that space yourself.
+Proxy builds and thumbnails are refused while the disk holding their output has less than `VOLT_MIN_FREE_MB`
+free (ingest also needs room for the file itself). The refusal names the directory and the setting. A proxy or
+ingest job waits and retries without using an attempt (`Defer`); a thumbnail request gets `507 disk_low`. Only
+rebuildable files are ever deleted automatically: thumbnails beyond the cap, oldest first, and stale
+`*.part.mp4` leftovers. Registered essences (hi-res, proxies, published files) are never touched; free that
+space yourself.
 
 ## Backup and restore
 
@@ -262,8 +272,10 @@ is not blocked from starting.
 ## Not done yet (decisions and work outside this page)
 
 - **License.** There is no LICENSE file: the owner has not chosen one. Until then nobody outside the owner has a
-  right to install or redistribute Volt. Third-party notices (ffmpeg, models, optional SDKs) are also absent.
-- **Auth.** One shared bearer token, no users, roles or audit trail. Behaviour unchanged by this page.
+  right to install or redistribute Volt. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not
+  a grant for Volt.
+- **Auth.** One shared bearer token, no users or roles. Operator writes take `X-Volt-Actor` (default `desk`) and
+  append to `audit`; `GET /api/audit?target=` is the read.
 - **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
 - **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.

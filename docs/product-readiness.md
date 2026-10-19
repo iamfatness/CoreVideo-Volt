@@ -1,5 +1,7 @@
 # Product readiness audit
 
+> Dated 2026-10-16 against `origin/main` at b3554ff. This page is that day's snapshot, not the current gap list. What is left before more MAM work is [foundation](specs/foundation.md).
+
 Date 2026-10-16, against `origin/main` at b3554ff. Question: what does the repo have and lack to be installed and run every day by a small broadcast team?
 
 Short answer: the control plane is well tested and honest about its limits. It is not yet a product. There is no installer, no service definition, no backup story, no health endpoint, no license, and no way to know which person did what. Those are operations gaps, not design gaps; most are small to medium.

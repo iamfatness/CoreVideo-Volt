@@ -233,6 +233,12 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
         results.append(Result("clock", WARN, "VOLT_ROOM_URL is not set: `volt run` will not start the clock"))
     else:
         results.append(Result("clock", OK, "room URL set" + (", token set" if env.get("VOLT_ROOM_TOKEN") else "")))
+        from volt import pg
+
+        if not pg.is_dsn(db):
+            results.append(Result(
+                "sqlite_on_air", WARN,
+                "the room is configured; Postgres is the store for a live show"))
     if (env.get("VOLT_ASR_ENGINE") or "").lower() == "faster-whisper":
         try:
             import faster_whisper  # noqa: F401

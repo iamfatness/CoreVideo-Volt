@@ -303,6 +303,18 @@ class Check(unittest.TestCase):
         self.assertEqual(result.status, preflight.OK, result.detail)
         self.assertEqual(result.detail, str(pkg))
 
+    def test_sqlite_with_a_room_url_warns_sqlite_on_air(self):
+        db = str(self.dir / "v.db")
+        r = self.checks(env={"VOLT_ROOM_URL": "http://127.0.0.1:1"}, db=db, port=0)
+        self.assertEqual(r["sqlite_on_air"].status, preflight.WARN)
+        self.assertIn("Postgres is the store for a live show", r["sqlite_on_air"].detail)
+        quiet = self.checks(db=db, port=0)
+        self.assertNotIn("sqlite_on_air", quiet)
+        pg = self.checks(
+            env={"VOLT_ROOM_URL": "http://127.0.0.1:1", "VOLT_DB": "postgres://volt@127.0.0.1:1/volt"},
+            db="postgres://volt@127.0.0.1:1/volt", port=0)
+        self.assertNotIn("sqlite_on_air", pg)
+
 
 class WatchCommand(unittest.TestCase):
     def test_volt_watch_once_scans_and_exits_zero(self):

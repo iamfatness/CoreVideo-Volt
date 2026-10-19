@@ -48,17 +48,30 @@ class Floor(unittest.TestCase):
     def test_default_floor(self):
         self.assertEqual(disk.min_free_bytes({}), 2048 * 1024 * 1024)
 
-    def test_ingest_refuses_before_minting_anything(self):
+    def test_ingest_disk_low_defers_after_mint_and_does_not_copy(self):
+        from volt.runner import Claimed, Defer
+
         with tempfile.TemporaryDirectory() as tmp:
             source = _write(Path(tmp) / "clip.mp4", 100)
+            quarantine = Path(tmp) / "q"
             store = Store(str(Path(tmp) / "v.db"))
             try:
+                result = ingest.request(store, source, owner="desk", quarantine=quarantine)
+                self.assertEqual(result.status, "queued")
+                self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+                job = store.get_job(result.job_id)
+                claimed = Claimed(
+                    job.id, job.asset_id, job.type, job.idempotency_key, job.attempt,
+                    payload={"path": str(source), "quarantine": str(quarantine)})
                 with mock.patch.dict(os.environ, {"VOLT_MIN_FREE_MB": "99999999"}):
-                    with self.assertRaises(ingest.IngestError) as ctx:
-                        ingest.ingest_file(store, source, Path(tmp) / "q", owner="desk")
-                self.assertIn("refusing ingest", str(ctx.exception))
-                self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 0)
-                self.assertFalse((Path(tmp) / "q").exists())
+                    with self.assertRaises(Defer) as ctx:
+                        ingest.run_ingest(store, claimed)
+                self.assertIn("VOLT_MIN_FREE_MB", str(ctx.exception))
+                dest = quarantine / f"{result.asset_id}-{source.name}"
+                self.assertFalse(dest.exists())
+                row = store.conn.execute(
+                    "SELECT status FROM job WHERE id = ?", (result.job_id,)).fetchone()
+                self.assertEqual(row["status"], "queued")
             finally:
                 store.close()
 
