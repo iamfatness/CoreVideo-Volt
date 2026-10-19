@@ -85,6 +85,10 @@ class Endpoints(Api):
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
+            elif tpl == "/api/media-ticket":
+                status, payload, _ = self.call("GET", path)
+                self.assertIn(status, (401, 422, 503), tpl)
+                self.assertFalse(payload["ok"], tpl)
             else:  # the library's reads: a route that exists answers an unknown id with a stable 404, not "no such route"
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["error"]["code"]), (404, "not_found"), tpl)
@@ -223,6 +227,21 @@ class Library(Api):
         for line in ("if (k === 't') { if (!e.repeat) takeNow(true); return; }", "if (k === 'h') { if (!e.repeat) toggleHold(); return; }",
                      "if (e.key === ' ' || e.code === 'Space') {"):
             self.assertIn(line, js)
+
+    def test_a_token_uses_media_tickets_and_blobs_only_on_404(self):
+        js = FILES["operator.js"]
+        self.assertIn("mediaTicket:", js)
+        self.assertIn("'/api/media-ticket'", js)
+        self.assertIn("status === 404", js)
+        load = js[js.index("async function proxyLoad"):js.index("function onVideoReady")]
+        self.assertIn("fetchMediaTicket", load)
+        self.assertIn("v.src = ", load)
+        self.assertIn("t.missing", load)
+        self.assertIn("fetchBlob", load)
+        thumbs = js[js.index("function pumpThumbs"):js.index("function thumbsPrune")]
+        self.assertIn("fetchMediaTicket", thumbs)
+        self.assertIn("n.src", thumbs)
+        self.assertIn("t.missing", thumbs)
 
 
 NODE = shutil.which("node")

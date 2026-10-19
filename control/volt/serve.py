@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, health, logs, media, nle, operator_state, retention, shots
+from volt import building, health, logs, media, nle, operator_state, retention, shots, tickets
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
@@ -58,6 +58,7 @@ OUT_DIR = Path(os.environ.get("VOLT_OUT") or Path(__file__).resolve().parents[1]
 # Bearer token. When set, every non-static request must carry it. main() refuses to
 # bind off loopback without one.
 TOKEN = os.environ.get("VOLT_TOKEN") or None
+MEDIA_KEY = os.environ.get("VOLT_MEDIA_KEY") or None
 MIN_REMOTE_TOKEN = 16
 MAX_BODY = 64 * 1024
 
@@ -89,6 +90,10 @@ class ApiError(Exception):
         super().__init__(reason)
         self.status, self.code, self.reason, self.extra = status, code, reason, extra
         self.headers = headers or {}
+
+
+class TicketDenied(Exception):
+    """Wrong or expired media ticket: 401 with an empty body, so a <video> Range gets no bytes."""
 
 
 def _is_loopback(host: str) -> bool:
@@ -743,6 +748,92 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _bearer_ok(self) -> bool:
+        if not TOKEN:
+            return True
+        header = self.headers.get("Authorization", "")
+        scheme, _, given = header.partition(" ")
+        return scheme.lower() == "bearer" and hmac.compare_digest(
+            given.strip().encode("utf-8"), TOKEN.encode("utf-8"))
+
+    def _ticket_on_media_get(self) -> bool:
+        parsed = urlparse(self.path)
+        m = READ_ROUTES.match(parsed.path)
+        if m and m.group(2) == "proxy":
+            media_get = True
+        else:
+            media_get = bool(THUMB_ROUTE.match(parsed.path))
+        return media_get and "ticket" in parse_qs(parsed.query, keep_blank_values=True)
+
+    def _gate_or_ticket(self) -> bool:
+        """Bearer (or loopback host) as usual, except a media GET may present `ticket` instead of Authorization."""
+        if TOKEN and self._ticket_on_media_get():
+            return True
+        if not TOKEN and self._ticket_on_media_get():
+            host = _host_name(self.headers.get("Host") or "")
+            if not _is_loopback(host):
+                self._error(ApiError(403, "bad_host", "this server answers on loopback only"))
+                return False
+            return True
+        return self._gate()
+
+    def _empty_401(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Bearer")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _accept_media_ticket(self, asset_id: str, kind: str, query: dict) -> None:
+        extra = sorted(set(query) - {"ticket"})
+        if extra:
+            raise ApiError(422, "bad_input",
+                           "the proxy route takes no parameters" if kind == "proxy"
+                           else "the thumb route takes no parameters")
+        given = query.get("ticket")
+        if not given:
+            return
+        if len(given) != 1:
+            raise ApiError(422, "bad_input", "ticket may be given once")
+        if TOKEN and self._bearer_ok():
+            return
+        secret = MEDIA_KEY or TOKEN
+        try:
+            if not secret:
+                raise tickets.TicketError("ticket_invalid")
+            tickets.verify(secret, asset_id, kind, given[0], int(time.time()))
+        except tickets.TicketError:
+            raise TicketDenied() from None
+
+    def _issue_media_ticket(self, query: dict) -> None:
+        secret = MEDIA_KEY or TOKEN
+        if not secret:
+            raise ApiError(503, "no_media_key",
+                           "no media signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
+        extra = sorted(set(query) - {"asset", "kind", "ttl"})
+        if extra:
+            raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+        single = {}
+        for key, values in query.items():
+            if len(values) != 1:
+                raise ApiError(422, "bad_input", f"{key} may be given once")
+            single[key] = values[0]
+        asset_id = single.get("asset") or ""
+        kind = single.get("kind") or ""
+        if not asset_id or kind not in tickets.KINDS:
+            raise ApiError(422, "bad_input", "asset and kind=proxy|thumb are required")
+        ttl = 120
+        if "ttl" in single:
+            raw = single["ttl"]
+            if not raw.isdigit() or int(raw) < 1:
+                raise ApiError(422, "bad_input", "ttl must be a whole number from 1 to 3600")
+            ttl = min(int(raw), 3600)
+        token, exp = tickets.issue(secret, asset_id, kind, ttl, int(time.time()))
+        if kind == "proxy":
+            url = f"/api/assets/{asset_id}/proxy?ticket={token}"
+        else:
+            url = f"?ticket={token}"
+        self._json(200, {"url": url, "expires": exp})
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path in STATIC:
@@ -751,12 +842,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
             self._json(200, health.liveness())
             return
-        if path != "/" and not self._gate():
+        if path != "/" and not self._gate_or_ticket():
             return
         # One connection per request. Postgres schema is applied once in main().
         store = Store(DB_PATH, init=not is_dsn(DB_PATH))
         try:
             self._route(store)
+        except TicketDenied:
+            self._empty_401()
         except ApiError as err:
             self._error(err)
         except media.MediaError as err:
@@ -871,6 +964,9 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._send(200, "application/json", json.dumps(payload).encode())
             return
+        if parsed.path == "/api/media-ticket":
+            self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))
+            return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         m = READ_ROUTES.match(parsed.path)
@@ -882,15 +978,16 @@ class Handler(BaseHTTPRequestHandler):
             elif what == "transcript":
                 self._json(200, media.transcript(STORE, asset_id, query))
             else:
-                if query:
-                    raise ApiError(422, "bad_input", "the proxy route takes no parameters")
+                self._accept_media_ticket(asset_id, "proxy", query)
                 self._proxy(media.proxy_for_asset(STORE, asset_id))
             return
         m = THUMB_ROUTE.match(parsed.path)
         if m:
-            if parsed.query:
-                raise ApiError(422, "bad_input", "the thumb route takes no parameters")
-            path = media.ensure_thumb(STORE, m.group(1), OUT_DIR)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            span_id = m.group(1)
+            row = STORE.conn.execute("SELECT asset_id FROM span WHERE id = ?", (span_id,)).fetchone()
+            self._accept_media_ticket(row["asset_id"] if row else "", "thumb", query)
+            path = media.ensure_thumb(STORE, span_id, OUT_DIR)
             self._send_headers(200, "image/jpeg", path.stat().st_size,
                                {"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
             self.wfile.write(path.read_bytes())

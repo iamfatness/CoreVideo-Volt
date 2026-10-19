@@ -86,6 +86,7 @@
     transcript:  ['GET',  '/api/assets/{id}/transcript'],
     proxy:       ['GET',  '/api/assets/{id}/proxy'],
     thumb:       ['GET',  '/api/spans/{id}/thumb'],
+    mediaTicket: ['GET',  '/api/media-ticket'],
     spanCreate:  ['POST', '/api/assets/{id}/spans'],
     spanTrim:    ['POST', '/api/spans/{id}/trim'],
     spanLabel:   ['POST', '/api/spans/{id}/label'],
@@ -228,6 +229,20 @@
     let data = null;
     try { data = await res.json(); } catch (e) { /* not JSON */ }
     return { status: res.status, data };
+  }
+
+  function ticketFrom(url) {
+    try { return new URL(url, location.origin).searchParams.get('ticket') || ''; } catch (e) { return ''; }
+  }
+
+  async function fetchMediaTicket(asset, kind) {
+    const { status, data } = await call('mediaTicket', null, null, { asset, kind });
+    if (status === 404) return { missing: true };
+    if (status !== 200 || !data || !data.url) {
+      const e = codeOf(data, status);
+      throw failure(e.code, e.reason);
+    }
+    return { url: data.url, expires: data.expires, ticket: ticketFrom(data.url) };
   }
 
   // Bytes (a thumbnail, the proxy) with the bearer header, for <img> and <video> which cannot send one.
@@ -925,12 +940,9 @@
   // docs/specs/shot-spans.md (slice 4) and docs/mockups/shot-spans.html. The page shows what the server last
   // returned. Every write goes to the server and the list is read back; nothing is shown optimistically.
   //
-  // Media and the token: <img> and <video> cannot send an Authorization header. Thumbnails are therefore always
-  // fetched with fetch() (header attached when there is a token) and shown from a blob: URL; that also lets a
-  // trim fetch the new frame instead of a cached one. The proxy plays natively (<video src>, byte ranges) when
-  // the page has no token, which is the loopback case. When a token is set the proxy is fetched with the header
-  // into a blob first (an explicit "Load proxy" button, capped at BLOB_CAP) and then plays from memory.
-  // No server change, no token in a URL or a log. See docs/specs/operator-ui.md for what that costs.
+  // Media and the token: <img> and <video> cannot send an Authorization header. With a token the page asks
+  // /api/media-ticket and puts the returned URL on <video src> / <img src> so Range still works. Loopback with
+  // no token keeps a native proxy src. The blob-download path remains only if the ticket route is 404 (old server).
   const LIB = { PAGE: 500, MAX_PAGES: 10, WORD_PAGES: 4, BLOB_CAP: 512 * 1024 * 1024, THUMB_PARALLEL: 3, SNIPPET: 90 };
   const ORIGIN_CHIP = { detect: ['det', 'Detected'], manual: ['man', 'Marked'], transcript: ['wrd', 'From words'] };
   const L = {
@@ -1151,13 +1163,20 @@
       if (job.asset !== L.assetId) continue;
       T.active++;
       T.inflight.add(job.key);
-      fetchBlob('/api/spans/' + encodeURIComponent(job.id) + '/thumb', { cache: 'reload' })
-        .then((blob) => {
-          if (job.asset !== L.assetId) return;
-          const url = URL.createObjectURL(blob);
-          T.urls.set(job.key, url);
-          for (const n of document.querySelectorAll('img[data-tk="' + CSS.escape(job.key) + '"]')) { n.src = url; n.classList.remove('wait'); }
-        })
+      const path = '/api/spans/' + encodeURIComponent(job.id) + '/thumb';
+      const show = (url) => {
+        if (job.asset !== L.assetId) return;
+        T.urls.set(job.key, url);
+        for (const n of document.querySelectorAll('img[data-tk="' + CSS.escape(job.key) + '"]')) { n.src = url; n.classList.remove('wait'); }
+      };
+      const blobThumb = () => fetchBlob(path, { cache: 'reload' }).then((blob) => show(URL.createObjectURL(blob)));
+      const start = getToken()
+        ? fetchMediaTicket(job.asset, 'thumb').then((t) => {
+            if (t.missing) return blobThumb();
+            show(path + '?ticket=' + encodeURIComponent(t.ticket));
+          })
+        : blobThumb();
+      start
         .catch((err) => {
           const why = (err.code ? err.code + ': ' : '') + err.message;
           T.failed.set(job.key, why);
@@ -1182,23 +1201,42 @@
     v.removeAttribute('src');
     v.load();
     if (P.url) { URL.revokeObjectURL(P.url); P.url = null; }
-    P.for = null; P.state = 'none'; P.msg = ''; P.pct = 0;
+    P.for = null; P.state = 'none'; P.msg = ''; P.pct = 0; P.fallbackBlob = false;
     L.pos = null;
     cancelAnimationFrame(L.raf);
   }
 
-  // Native: let <video> stream and seek by range. Token: fetch with the header, then play from memory.
+  // Native: let <video> stream and seek by range. Token: a media ticket on the same URL, unless the
+  // ticket route is 404 (old server) — then fetch with the header and play from memory.
   async function proxyLoad() {
     const id = L.assetId, P = L.proxy, v = $('lib-video');
     if (!id) return;
+    const wantBlob = P.fallbackBlob;
     proxyRelease();
-    P.for = id; P.msg = '';
+    P.for = id; P.msg = ''; P.fallbackBlob = wantBlob;
     const path = '/api/assets/' + encodeURIComponent(id) + '/proxy';
     if (!getToken()) {
       P.mode = 'native'; P.state = 'loading';
       v.src = path;
       v.load();
       renderVmsg();
+      return;
+    }
+    if (!wantBlob) {
+      P.mode = 'native'; P.state = 'loading';
+      renderVmsg();
+      try {
+        const t = await fetchMediaTicket(id, 'proxy');
+        if (L.assetId !== id) return;
+        if (t.missing) { P.fallbackBlob = true; P.mode = 'blob'; P.state = 'idle'; renderVmsg(); return; }
+        v.src = t.url;
+        v.load();
+      } catch (err) {
+        if (L.assetId !== id) return;
+        P.state = 'error';
+        P.msg = (err.code ? err.code + ': ' : '') + err.message;
+        renderVmsg();
+      }
       return;
     }
     P.mode = 'blob'; P.state = 'loading'; P.pct = 0;
@@ -1289,7 +1327,6 @@
     if (P.for === L.assetId && !(P.state === 'none' && view.d.hasProxy)) { renderVmsg(); return; }
     P.for = L.assetId;
     if (!view.d.hasProxy) { P.state = 'none'; renderVmsg(); return; }
-    if (getToken()) { P.mode = 'blob'; P.state = 'idle'; renderVmsg(); return; }   // not loaded until asked: it is a whole-file download
     proxyLoad();
   }
 
