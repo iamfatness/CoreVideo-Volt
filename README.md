@@ -12,7 +12,7 @@ Next: a speech worker that writes the word spans, and a Premiere panel that impo
 
 A card stays in quarantine until it parses and the checksum matches. A CoreVideo ISO is an open essence until wrap. Hi-res and proxy are two essences of the same asset.
 
-Postgres runs the same store: pass a `postgres://` DSN (`VOLT_DB` for the session server; needs `psycopg`). Tables are in `control/schema.sql`. Next: an object store for the bytes.
+Postgres runs the same store: pass a `postgres://` DSN (`VOLT_DB` for the session server; needs `psycopg`). Tables are in `control/volt/schema.sql`. Next: an object store for the bytes.
 
 ## Transcoding
 
@@ -41,7 +41,7 @@ python3 -m unittest discover -s tests -v
 python3 -m volt.serve
 ```
 
-The session is at http://127.0.0.1:8765. Open a show with `?show=<id>`.
+The session is at http://127.0.0.1:8765 (`GET /` is the operator UI).
 
 ## Code
 
@@ -54,8 +54,7 @@ The session is at http://127.0.0.1:8765. Open a show with `?show=<id>`.
 | `control/volt/rundown.py` | Show, item, attach, take, kill |
 | `control/volt/cues.py` | Cues on the item |
 | `control/volt/publish.py` | Versions and URLs |
-| `control/volt/session.py` | List, seek, attach, publish |
-| `control/session/index.html` | Session shell |
+| `control/volt/session/` | List, seek, attach, publish; operator pages |
 
 Running it day to day (install, every setting, services, health, logs, upgrades): [docs/operations.md](docs/operations.md).
 

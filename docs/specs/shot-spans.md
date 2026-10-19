@@ -15,7 +15,7 @@ Read from the tree on 2026-10-12, not assumed.
 - Timecode arithmetic is `volt/timecode.py`: exact rational rates, drop-frame when the essence start has a `;`. Spans are written with the same label style as their essence.
 - The essence row has `timecode_start` and `frame_rate` but no length. There is no thumbnail anywhere.
 - The old shell calls `/media?path=...` to play a proxy. I found no `/media` route in `serve.py`. Playing a proxy in the panel needs a real route (below). Not run; this is from reading `serve.py` and grepping it.
-- The operator UI has four screens (Show, Record, Rights, Publish). Library search lives only in the old shell (`control/session/index.html`).
+- The operator UI has four screens (Show, Record, Rights, Publish). Library search lives in the operator Library screen; `GET /assets` and `/seek` remain as JSON APIs.
 
 ## Definitions
 
@@ -175,7 +175,7 @@ CSP already allows `img-src 'self' data:`; no change.
 
 ## Migration 9
 
-Per `migrations.py`: add the columns to `store.SCHEMA` and `control/schema.sql` in the same order (the parity test checks it), and append one `Migration(9, ...)`. Implemented in slice 1 as written below. The index is created only in the migration (not in `store.SCHEMA`), because SCHEMA runs before the columns exist on an older database.
+Per `migrations.py`: add the columns to `store.SCHEMA` and `control/volt/schema.sql` in the same order (the parity test checks it), and append one `Migration(9, ...)`. Implemented in slice 1 as written below. The index is created only in the migration (not in `store.SCHEMA`), because SCHEMA runs before the columns exist on an older database.
 
 ```
 Migration(9, "span shot columns, essence duration, shot_run table",

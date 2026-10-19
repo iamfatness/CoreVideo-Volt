@@ -28,9 +28,9 @@ python -m venv venv
 venv/bin/pip install -e "control[postgres]"          # Windows: venv\Scripts\pip
 ```
 
-Install from a checkout with `-e` (editable). The operator pages (`control/session/`) and `schema.sql` are read
-from the checkout, so a copied wheel would not find them; `volt check` fails with a clear message if they are
-missing. Extras, all optional:
+Install from a checkout with `-e` (editable), or from a wheel: operator pages (`control/volt/session/`) and
+`control/volt/schema.sql` ship inside the package. `volt check` fails with a clear message if they are missing.
+Extras, all optional:
 
 | Extra | Adds | Needed for |
 |---|---|---|

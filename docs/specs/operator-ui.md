@@ -1,6 +1,6 @@
 # Operator UI
 
-Static page at `/operator` (`control/session/operator/`: `index.html`, `operator.css`, `operator.js`). No build, no framework, no CDN. Served by `serve.py` with a same-origin-only Content-Security-Policy. The shell is open without a token so it can ask for one; every data route stays gated.
+Static page at `/` and `/operator` (`control/volt/session/operator/`: `index.html`, `operator.css`, `operator.js`). No build, no framework, no CDN. Served by `serve.py` with a same-origin-only Content-Security-Policy. The shell is open without a token so it can ask for one; every data route stays gated.
 
 Run it against a fake room, no core needed: `cd control && python -m tests.operator_harness held --port 8791`, then open `/operator`.
 

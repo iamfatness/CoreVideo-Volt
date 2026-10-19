@@ -26,6 +26,15 @@ class Static(Api):
         finally:
             conn.close()
 
+    def test_root_serves_the_same_operator_html_as_operator(self):
+        status_root, body_root, resp_root = self.get("/")
+        status_op, body_op, resp_op = self.get("/operator")
+        self.assertEqual(status_root, 200)
+        self.assertEqual(status_op, 200)
+        self.assertEqual(body_root, body_op)
+        self.assertTrue(resp_root.getheader("Content-Type").startswith("text/html"))
+        self.assertIn("script-src 'self'", resp_root.getheader("Content-Security-Policy"))
+
     def test_page_and_assets_are_served_with_a_locked_down_policy(self):
         for path, ctype in (("/operator", "text/html"), ("/operator/operator.css", "text/css"),
                             ("/operator/operator.js", "text/javascript")):
@@ -172,7 +181,7 @@ class Library(Api):
         self.assertIn("const FORMAT_VERIFIED = false;", body)
         self.assertIn("Not checked in an NLE yet.", body)
         self.assertIn("Manual import check", body)
-        self.assertIn("Result: not yet recorded.", (Path(serve.ROOT).parents[1] / "docs" / "specs" / "shot-spans.md").read_text(encoding="utf-8"))
+        self.assertIn("Result: not yet recorded.", (Path(__file__).resolve().parents[2] / "docs" / "specs" / "shot-spans.md").read_text(encoding="utf-8"))
         # no key handler of its own, nothing of the Show keys, and the shot list's keys stand down on the tab
         for forbidden in ("keydown", "takeNow", "toggleHold", "skipItem", "killItem", "location.hash", "e.key"):
             self.assertNotIn(forbidden, body)
@@ -189,7 +198,7 @@ class Library(Api):
         self.assertIn("onclick: xOpen", tray)
         self.assertNotIn("disabled: true", tray)
         # every refusal code the server can send has words
-        server_codes = set(re.findall(r'NleError\(\d+,\s*"(\w+)"', (Path(serve.ROOT).parent / "volt" / "nle.py").read_text(encoding="utf-8")))
+        server_codes = set(re.findall(r'NleError\(\d+,\s*"(\w+)"', (Path(serve.ROOT).parent / "nle.py").read_text(encoding="utf-8")))
         server_codes |= {"bad_input", "not_found"}
         for code in sorted(server_codes):
             self.assertRegex(body, rf"\b{code}: \[", code)

@@ -23,7 +23,7 @@ The control plane is the system of record. Workers can be swapped. CoreVideo is 
 
 An asset ID is minted when a recording starts or a card is quarantined. Premiere, a rundown item, a cue, and a publish version hold that ID.
 
-SQLite is the default and runs the contract tests. Postgres is the same objects: `Store` takes a `postgres://` DSN (or `VOLT_DB` for `volt.serve`) and applies `control/schema.sql` on first connect.
+SQLite is the default and runs the contract tests. Postgres is the same objects: `Store` takes a `postgres://` DSN (or `VOLT_DB` for `volt.serve`) and applies `control/volt/schema.sql` on first connect.
 
 The seam is `control/volt/pg.py`, a connection adapter that gives psycopg 3 the surface the modules already use on a sqlite3 connection: `?` placeholders, rows by name or index, `commit`/`rollback`, and the backend's `IntegrityError` as `store.IntegrityError`. Timestamps are written and read as `YYYY-MM-DDTHH:MM:SSZ` text on both backends (TIMESTAMPTZ on Postgres). Flags are written as Python bools and compared with `TRUE`/`FALSE` in SQL, never `0`/`1`. `psycopg` is imported only when a DSN is used, so SQLite needs no install.
 

@@ -57,6 +57,9 @@ class Version(unittest.TestCase):
         self.assertTrue({"speech", "s3", "azure", "gcs", "postgres"} <= set(project["optional-dependencies"]))
         self.assertEqual(project["scripts"]["volt"], "volt.cli:main")
         self.assertEqual(data["tool"]["setuptools"]["dynamic"]["version"], {"attr": "volt.__version__"})
+        data_files = data["tool"]["setuptools"]["package-data"]["volt"]
+        self.assertIn("session/**", data_files)
+        self.assertIn("schema.sql", data_files)
 
 
 class Commands(unittest.TestCase):
@@ -244,6 +247,25 @@ class Check(unittest.TestCase):
         self.assertEqual(r["ingest roots"].status, preflight.OK)
         r = self.checks(db=str(self.dir / "v.db"), port=0)
         self.assertNotIn("ingest roots", r)
+
+    def test_package_root_is_the_volt_package_dir(self):
+        self.assertEqual(preflight.PACKAGE_ROOT, Path(volt.__file__).resolve().parent)
+        from volt.paths import package_root
+        self.assertEqual(package_root(), Path(volt.__file__).resolve().parent)
+        self.assertEqual(preflight.PACKAGE_ROOT, package_root())
+
+    def test_install_layout_ok_when_pages_sit_beside_init(self):
+        pkg = self.dir / "volt"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "schema.sql").write_text("CREATE TABLE x (id text);\n")
+        operator = pkg / "session" / "operator"
+        operator.mkdir(parents=True)
+        (operator / "index.html").write_text("<!DOCTYPE html><title>Volt</title>\n")
+        with mock.patch.object(preflight, "PACKAGE_ROOT", pkg):
+            result = preflight._layout()
+        self.assertEqual(result.status, preflight.OK, result.detail)
+        self.assertEqual(result.detail, str(pkg))
 
 
 class WatchCommand(unittest.TestCase):

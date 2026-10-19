@@ -1,6 +1,6 @@
 """Local session and operator API. python3 -m volt.serve from control/.
 
-GET routes serve the session shell. POST /api/... routes are the operator's hands:
+GET `/` and `/operator` serve the operator UI. POST /api/... routes are the operator's hands:
 JSON in, JSON out, one store connection per request. See docs/specs/operator-api.md.
 """
 
@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from volt import building, health, logs, media, nle, operator_state, retention, shots, tickets
+from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
@@ -43,17 +44,18 @@ access = logging.getLogger("volt.access")
 EX_CONFIG = 78  # exit code for "the configuration is wrong; restarting will not help" (volt run stops on it)
 ACCESS_LOG = False  # one line per request when on (VOLT_ACCESS_LOG=1 or --access-log); errors are always logged
 
-ROOT = Path(__file__).resolve().parents[1] / "session"
+ROOT = package_root() / "session"
 # The operator UI: three same-origin static files, no build step. Open without a token
 # (like "/"), so a page can ask for the token; every data route stays gated.
 STATIC = {
+    "/": ("operator/index.html", "text/html; charset=utf-8"),
     "/operator": ("operator/index.html", "text/html; charset=utf-8"),
     "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
     "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
 }
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
-DB_PATH = os.environ.get("VOLT_DB") or str(Path(__file__).resolve().parents[1] / "volt.db")
-OUT_DIR = Path(os.environ.get("VOLT_OUT") or Path(__file__).resolve().parents[1] / "out")
+DB_PATH = os.environ.get("VOLT_DB") or str(package_root().parent / "volt.db")
+OUT_DIR = Path(os.environ.get("VOLT_OUT") or package_root().parent / "out")
 
 # Bearer token. When set, every non-static request must carry it. main() refuses to
 # bind off loopback without one.
@@ -967,10 +969,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route(self, STORE):
         parsed = urlparse(self.path)
-        if parsed.path == "/":
-            body = (ROOT / "index.html").read_bytes()
-            self._send(200, "text/html", body)
-            return
         if parsed.path in ("/api/health", "/metrics"):  # behind the same gate as every data route
             report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
             if parsed.path == "/metrics":

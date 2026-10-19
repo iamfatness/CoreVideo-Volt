@@ -16,11 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import volt
 from volt import disk, health, logs, migrations
+from volt.paths import package_root
 
 OK, WARN, FAIL = "ok", "warn", "fail"
-PACKAGE_ROOT = Path(volt.__file__).resolve().parents[1]  # control/ in a checkout
+PACKAGE_ROOT = package_root()
 
 
 @dataclass
@@ -34,7 +34,7 @@ class Result:
 
 
 def default_db() -> str:
-    return str(PACKAGE_ROOT / "volt.db")
+    return str(PACKAGE_ROOT.parent / "volt.db")
 
 
 def _python() -> Result:
@@ -56,7 +56,7 @@ def _tool(name: str) -> Result:
 
 
 def _layout() -> Result:
-    missing = [p for p in ("session/index.html", "schema.sql") if not (PACKAGE_ROOT / p).is_file()]
+    missing = [p for p in ("session/operator/index.html", "schema.sql") if not (PACKAGE_ROOT / p).is_file()]
     if missing:
         return Result("install layout", FAIL,
                       f"{', '.join(missing)} not found beside the volt package at {PACKAGE_ROOT}; "
@@ -215,7 +215,7 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
         results.append(Result("disk floor", FAIL, str(exc)))
         floor = None
     if floor is not None:
-        out_dir = env.get("VOLT_OUT") or str(PACKAGE_ROOT / "out")
+        out_dir = env.get("VOLT_OUT") or str(PACKAGE_ROOT.parent / "out")
         for entry in health.directories(out_dir, env, db):
             free = entry["freeBytes"]
             detail = f"{entry['path']}: {'unknown' if free is None else f'{free // 1048576} MB'} free (floor {floor // 1048576} MB)"
