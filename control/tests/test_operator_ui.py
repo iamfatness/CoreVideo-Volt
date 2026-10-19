@@ -9,7 +9,9 @@ from pathlib import Path
 
 from tests.operator_harness import seed
 from tests.test_operator_api import TOKEN, Api
+from tests.test_playout import Clock, _show
 from volt import serve, shots, timecode
+from volt.playout import advance, go
 
 SESSION = Path(serve.ROOT) / "operator"
 FILES = {name: (SESSION / name).read_text(encoding="utf-8") for name in ("index.html", "operator.css", "operator.js")}
@@ -534,6 +536,68 @@ class State(Api):
     def test_held_take_is_refused_with_the_stable_code_the_page_switches_on(self):
         p = self.refused(409, "held", f"/api/shows/{self.show}/take")
         self.assertTrue(p["error"]["reason"])
+
+    def test_state_surfaces_taking_as_the_current_item(self):
+        # Production change that would fail this: omitting taking from /api/state, or leaving
+        # the taking row as a generic ready/on-air status so the poll looks idle.
+        show, ids = _show(self.store)  # this store already has the harness spans; take the new show's first three
+        a, b = ids[0], ids[1]
+        go(self.store, show, Clock())
+        advance(self.store, show, Clock(), pending=True)
+        s = self.state(show)
+        self.assertEqual(s["taking"], b)
+        self.assertEqual([i["id"] for i in s["rundown"]["items"] if i["status"] == "taking"], [b])
+        self.assertNotIn("on air", {i["status"] for i in s["rundown"]["items"]})
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's showInfo twin")
+class TakingDesk(unittest.TestCase):
+    """The poll must treat a taking row as the current item, not a blank on-air and not the next ready."""
+
+    def derive(self, rundown):
+        script = ("const m = require(process.argv[1]);"
+                  "console.log(JSON.stringify(m.deriveShow(JSON.parse(process.argv[2]))));")
+        out = subprocess.run(
+            [NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(rundown)],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_taking_item_is_current_and_next_is_not_the_following_ready(self):
+        # Production change that would fail this: showInfo only matching status === 'on air'.
+        got = self.derive({
+            "hold": None,
+            "items": [
+                {"id": "a", "slug": "Open", "status": "aired"},
+                {"id": "b", "slug": "Game", "status": "taking"},
+                {"id": "c", "slug": "Break", "status": "ready"},
+            ],
+        })
+        self.assertEqual(got["taking"]["id"], "b")
+        self.assertEqual(got["air"]["id"], "b")
+        self.assertIsNone(got["next"])
+
+    def test_on_air_still_picks_the_following_ready_as_next(self):
+        got = self.derive({
+            "hold": None,
+            "items": [
+                {"id": "a", "slug": "Open", "status": "aired"},
+                {"id": "b", "slug": "Game", "status": "on air"},
+                {"id": "c", "slug": "Break", "status": "ready"},
+            ],
+        })
+        self.assertIsNone(got["taking"])
+        self.assertEqual(got["air"]["id"], "b")
+        self.assertEqual(got["next"]["id"], "c")
+
+
+class TakingCopy(unittest.TestCase):
+    def test_desk_words_taking_and_blocks_take(self):
+        js = FILES["operator.js"]
+        self.assertIn("taking: ['taking'", js)
+        self.assertIn("taking: 'Taking'", js)
+        block = js[js.index("function takeBlock"):js.index("function takeNow")]
+        self.assertIn("taking", block)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 """Watch folder: enqueue ingest for files whose size and mtime have stayed still."""
 
 import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -35,12 +38,12 @@ class WatchScan(unittest.TestCase):
         self.now = Clock()
 
     def scan(self, roots=None, **kw):
+        kw.setdefault("seen", self.seen)
+        kw.setdefault("now", self.now)
         return watch.scan(
             self.store,
             roots if roots is not None else [self.inbox],
             self.quarantine,
-            seen=self.seen,
-            now=self.now,
             **kw,
         )
 
@@ -106,6 +109,22 @@ class WatchScan(unittest.TestCase):
         self.assertFalse(replay.minted)
         self.assertEqual(len(_jobs(self.store)), 1)
 
+    def test_persisted_seen_lets_a_second_scan_enqueue_after_stable_seconds(self):
+        # Production change that would fail this: CLI seen dying with the process (empty dict on --once).
+        clip = self.inbox / "card.mov"
+        clip.write_bytes(b"wait-then-ingest")
+        seen_path = self.root / "watch-seen.json"
+        first = watch.load_seen(seen_path)
+        self.assertEqual(self.scan(seen=first, stable_seconds=5), [])
+        watch.save_seen(seen_path, first)
+        self.assertEqual(_jobs(self.store), [])
+        self.now.t += 5
+        second = watch.load_seen(seen_path)
+        queued = self.scan(seen=second, stable_seconds=5)
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].status, "queued")
+        self.assertEqual(len(_jobs(self.store)), 1)
+
 
 class RunnerWatch(unittest.TestCase):
     def test_runner_appends_watch_periodic_when_volt_watch_is_set(self):
@@ -159,3 +178,42 @@ class RunnerWatch(unittest.TestCase):
                 with mock.patch("volt.runner.Runner", side_effect=wrap):
                     self.assertEqual(runner_mod.main([db, "--once"]), 0)
             self.assertNotIn("watch", [p.name for p in captured[0].periodic])
+
+
+class WatchSeenCli(unittest.TestCase):
+    def test_once_at_default_stable_writes_seen_next_to_the_db_and_does_not_enqueue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "card.mov").write_bytes(b"clip")
+            db = str(root / "v.db")
+            Store(db).close()
+            env = dict(os.environ, VOLT_INGEST_ROOTS=str(inbox), VOLT_QUARANTINE=str(root / "q"))
+            env.pop("VOLT_WATCH_STABLE_SECONDS", None)
+            env.pop("VOLT_WATCH_SEEN", None)
+            out = subprocess.run(
+                [sys.executable, "-m", "volt", "watch", "--once", db],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            store = Store(db, init=False)
+            jobs = store.conn.execute("SELECT COUNT(*) FROM job WHERE type = 'ingest'").fetchone()[0]
+            store.close()
+            self.assertEqual(jobs, 0)
+            seen_path = Path(db + ".watch-seen.json")
+            self.assertTrue(seen_path.exists())
+            past = time.time() - 10
+            data = watch.load_seen(seen_path)
+            for path, (size, mtime_ns, _) in list(data.items()):
+                data[path] = (size, mtime_ns, past)
+            watch.save_seen(seen_path, data)
+            out = subprocess.run(
+                [sys.executable, "-m", "volt", "watch", "--once", db],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            store = Store(db, init=False)
+            jobs = store.conn.execute("SELECT COUNT(*) FROM job WHERE type = 'ingest'").fetchone()[0]
+            store.close()
+            self.assertEqual(jobs, 1)

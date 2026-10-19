@@ -174,7 +174,7 @@ The client sends word IDs and never a time; the server loads both words and buil
 
 Same rights as slice 4: marking is allowed on any asset and the response says `blockedBy`. Tests: `control/tests/test_shot_words.py` (SQLite and live Postgres).
 
-`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress.
+`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress. `taking` is the id of the rundown item with status `taking`, or `null`.
 
 ### Detect, split, merge, indexing (slice 4b)
 

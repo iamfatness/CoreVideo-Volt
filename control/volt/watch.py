@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -31,6 +32,53 @@ def env_quarantine(env=None) -> Path:
 
 def source_key(path: Path, size: int, mtime_ns: int) -> str:
     return f"file:{os.path.normcase(str(path))}:{size}:{mtime_ns}"
+
+
+def seen_path(db: str, env=None) -> Optional[Path]:
+    """Where the CLI stores fingerprints between `volt watch` processes. Runner periodic keeps `seen` in memory."""
+    env = os.environ if env is None else env
+    raw = (env.get("VOLT_WATCH_SEEN") or "").strip()
+    if raw:
+        return Path(raw)
+    if "://" in db:
+        return None
+    return Path(db + ".watch-seen.json")
+
+
+def load_seen(path: Optional[Path]) -> dict:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        log.warning("cannot read watch seen file %s", path)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key, val in raw.items():
+        if not isinstance(val, list) or len(val) != 3:
+            continue
+        size, mtime_ns, first = val
+        try:
+            first_seen = float("inf") if first is None else float(first)
+            out[Path(key)] = (int(size), int(mtime_ns), first_seen)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def save_seen(path: Optional[Path], seen: dict) -> None:
+    if path is None:
+        return
+    payload = {}
+    for key, triple in seen.items():
+        size, mtime_ns, first = triple
+        payload[str(key)] = [size, mtime_ns, None if first == float("inf") else first]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -130,12 +178,14 @@ def main(argv: list[str]) -> int:
     except SchemaTooNewError as exc:
         print(f"volt watch: {exc}", file=sys.stderr)
         return 78
-    seen: dict = {}
+    persist = seen_path(args.db)
+    seen: dict = load_seen(persist)
     every = float(os.environ.get("VOLT_WATCH_EVERY") or 2)
     stable = float(os.environ.get("VOLT_WATCH_STABLE_SECONDS") or 5)
     try:
         if args.once:
             scan(store, roots, quarantine, stable_seconds=stable, seen=seen)
+            save_seen(persist, seen)
             return 0
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -143,6 +193,7 @@ def main(argv: list[str]) -> int:
         log.info("watch started (every %ss, stable %ss)", every, stable)
         while not stop.is_set():
             scan(store, roots, quarantine, stable_seconds=stable, seen=seen)
+            save_seen(persist, seen)
             stop.wait(every)
         return 0
     finally:

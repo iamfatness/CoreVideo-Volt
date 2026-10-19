@@ -62,8 +62,17 @@
   const lengthTc = (frames, r) => framesToTc(frames, r, false);
   const fmtRate = (r) => (r.d === 1 ? String(r.n) : (r.n / r.d).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')) + ' fps';
 
+  function deriveShow(rundown) {
+    const items = rundown && rundown.items ? rundown.items : [];
+    const taking = items.find((i) => i.status === 'taking') || null;
+    const air = taking || items.find((i) => i.status === 'on air') || null;
+    const floor = air ? items.indexOf(air) : -1;
+    const next = taking ? null : (items.find((i, idx) => idx > floor && i.status === 'ready') || null);
+    return { items, air, next, hold: rundown ? rundown.hold : null, taking };
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -129,6 +138,7 @@
     stale_order: 'The list changed', order_locked: 'Order is locked', not_removable: 'Cannot remove',
     id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
+    taking: 'Taking',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -146,8 +156,8 @@
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
   };
   const ITEM_CHIP = {
-    'on air': ['air', '●', 'On air'], ready: ['ready', '○', 'Ready'], aired: ['aired', '✓', 'Aired'],
-    skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
+    'on air': ['air', '●', 'On air'], taking: ['taking', '…', 'Taking'], ready: ['ready', '○', 'Ready'],
+    aired: ['aired', '✓', 'Aired'], skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
   };
   const CUE_CHIP = {
     fired: ['fired', '✓', 'Fired'], failed: ['failed', '✕', 'Failed'], armed: ['armed', '▶', 'Armed'],
@@ -402,20 +412,16 @@
 
   // ---- derived show state --------------------------------------------------
   function showInfo() {
-    const r = S.data && S.data.rundown;
-    const items = r ? r.items : [];
-    const air = items.find((i) => i.status === 'on air') || null;
-    const floor = air ? items.indexOf(air) : -1;
-    const next = items.find((i, idx) => idx > floor && i.status === 'ready') || null;
-    return { items, air, next, hold: r ? r.hold : null };
+    return deriveShow(S.data && S.data.rundown);
   }
   function cuesOf(id) { return (S.data && S.data.cues && S.data.cues[id]) || []; }
   function mediaOf(id) { return (S.data && S.data.media && S.data.media[id]) || {}; }
 
   function takeBlock() {
-    const { next, hold } = showInfo();
+    const { next, hold, taking } = showInfo();
     if (!S.data || !S.data.show) return 'No show is open.';
     if (S.conn !== 'ok') return 'No live connection to the server.';
+    if (taking) return 'An item is taking. Wait until it is on air.';
     if (hold) return 'Rundown is held. Release it to take.';
     if (!next) return 'End of show. Nothing left to take.';
     return null;
@@ -562,13 +568,13 @@
 
   // ---- Show screen ---------------------------------------------------------
   function renderShow() {
-    const { items, air, next, hold } = showInfo();
+    const { items, air, next, hold, taking } = showInfo();
     const block = takeBlock();
     const takeCues = next ? cuesOf(next.id).length : 0;
     const takeBusy = S.pending.has('take');
-    paint('transport', [air, next, hold, block, S.seq, [...S.pending], takeCues, S.data.show], () => [
-      el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: 'On air' }),
-        el('span', { class: 'val', text: air ? '● ' + air.slug : 'Nothing on air' })),
+    paint('transport', [air, next, hold, taking, block, S.seq, [...S.pending], takeCues, S.data.show], () => [
+      el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: taking ? 'Taking' : 'On air' }),
+        el('span', { class: 'val', text: taking ? '… ' + taking.slug : (air ? '● ' + air.slug : 'Nothing on air') })),
       el('div', { class: 'nowline next' }, el('span', { class: 'lbl', text: 'Next' }),
         el('span', { class: 'val', text: next ? '▶ ' + next.slug : 'End of show' })),
       el('span', { class: 'spacer' }),
@@ -736,7 +742,7 @@
     if (it.asRunIn) meta.push('as-run ' + fmtTime(it.asRunIn) + ' to ' + (it.asRunOut ? fmtTime(it.asRunOut) : 'now'));
     const blocked = (it.status === 'ready' || it.status === 'on air') && m.blockedBy && m.blockedBy !== 'ok' ? m.blockedBy : null;
     const ready = it.status === 'ready';
-    const cls = 'rrow' + (it.status === 'on air' ? ' is-air' : isNext ? ' is-next' : '') + (S.selected === it.id ? ' sel' : '');
+    const cls = 'rrow' + (it.status === 'on air' || it.status === 'taking' ? ' is-air' : isNext ? ' is-next' : '') + (S.selected === it.id ? ' sel' : '');
     const prev = items[idx - 1];
     const canUp = ready && prev && prev.status !== 'on air' && prev.status !== 'aired';
     const canDown = ready && idx < items.length - 1;

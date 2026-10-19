@@ -62,7 +62,7 @@ Today `ingest_file` copies, probes, and checksums on the caller, then writes an 
 
 **Handler.** The runner claims `ingest`. The handler is today's `ingest_file` body: space check, copy into quarantine, ffprobe, checksum, essence, `chain_after_wrap`. Parse failure completes as today (`quarantine`, job `failed: parse failed`). Missing file is `Permanent`. Disk low is `Defer`.
 
-**Watch.** `volt watch` (also a runner periodic when `VOLT_WATCH=1`) lists regular files directly in each `VOLT_INGEST_ROOTS` folder (not recursive, ignore `*.part` and names starting with `.`). A file whose size and mtime have been stable for `VOLT_WATCH_STABLE_SECONDS` (default 5) is requested. Growing cards wait. `volt run` starts watch with the runner when the flag is set; it is not a fourth supervised process unless watch is run by hand.
+**Watch.** `volt watch` (also a runner periodic when `VOLT_WATCH=1`) lists regular files directly in each `VOLT_INGEST_ROOTS` folder (not recursive, ignore `*.part` and names starting with `.`). A file whose size and mtime have been stable for `VOLT_WATCH_STABLE_SECONDS` (default 5) is requested. Growing cards wait. The first observation only records the fingerprint; `volt watch --once` on a brand-new file does not ingest until a later scan. The CLI persists `seen` next to the database (or `VOLT_WATCH_SEEN`); the runner periodic keeps it in memory. `volt run` starts watch with the runner when the flag is set; it is not a fourth supervised process unless watch is run by hand.
 
 The operator path field stays for a file that is already stable. It only enqueues.
 

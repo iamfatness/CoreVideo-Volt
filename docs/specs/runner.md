@@ -36,7 +36,7 @@ The engine comes from `VOLT_ASR_ENGINE=faster-whisper` (plus `VOLT_ASR_MODEL`, `
 
 `VOLT_DB`, `VOLT_PROXY_DIR`, `VOLT_PUBLISH_DIR`, `VOLT_ASR_ENGINE`, `VOLT_ASR_MODEL`, `VOLT_ASR_DEVICE`, `VOLT_ASR_CORRECTIONS`, `VOLT_REFRESH_URLS_EVERY`, `VOLT_REFRESH_URLS_WITHIN`, `VOLT_QUARANTINE_DIR`, `VOLT_PURGE_EVERY`, `VOLT_PURGE_AFTER_DAYS[_<CLASS>]`, `VOLT_WATCH`, `VOLT_WATCH_EVERY`, `VOLT_WATCH_STABLE_SECONDS`, `VOLT_INGEST_ROOTS`, or the matching flags.
 
-When `VOLT_WATCH=1` the runner runs a periodic scan of `VOLT_INGEST_ROOTS` (same `watch.scan` as `volt watch`). Growing files wait until size and mtime stay still for `VOLT_WATCH_STABLE_SECONDS` (default 5). It is not a fourth process under `volt run`.
+When `VOLT_WATCH=1` the runner runs a periodic scan of `VOLT_INGEST_ROOTS` (same `watch.scan` as `volt watch`). Growing files wait until size and mtime stay still for `VOLT_WATCH_STABLE_SECONDS` (default 5). The periodic keeps `seen` in memory while the runner process lives; it does not read the CLI's seen file. It is not a fourth process under `volt run`.
 
 At start the runner refuses (exit 3, message on stderr naming both versions) a database whose schema is newer than the code, instead of migrating or claiming jobs.
 

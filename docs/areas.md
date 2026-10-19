@@ -4,9 +4,9 @@
 
 Ingest mints an asset when a card lands or a CoreVideo recording starts. Metadata, checksum, and rights live on that asset. Search returns a span with source timecode. HTTP ingest and the watch folder enqueue; the runner copies, probes, and checksums.
 
-Built: mint, essence, span, transcript index, search, rights gate, speech worker, shot spans, NLE export (xmeml and EDL), ingest as a runner job, watch folder.
+Built: mint, essence, span, transcript index, search, rights gate, speech worker, shot spans, NLE export (xmeml and EDL), ingest as a runner job, watch folder, job payload, media tickets, operator audit.
 
-What is left before more MAM features (a second NLE, MOS) is [foundation](specs/foundation.md).
+A second NLE and MOS export are later. A live Program take is the parallel room track ([roadmap](roadmap.md)).
 
 ## Storage
 

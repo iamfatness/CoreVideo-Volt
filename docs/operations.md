@@ -109,8 +109,9 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_QUARANTINE_DIR` | none | Where watch-folder ingest copies cards. Purge deletes there only when this names the directory; `volt verify-storage` checks it; health and `volt check` report its disk. |
 | `VOLT_INGEST_ROOTS` | none | Folders HTTP ingest and watch may read (OS path separator). Unset: ingest is disabled. |
 | `VOLT_WATCH` | off | `1` scans ingest roots from the runner (not a fourth `volt run` process). |
-| `VOLT_WATCH_STABLE_SECONDS` | `5` | A watch file must sit still this long before it is requested. |
+| `VOLT_WATCH_STABLE_SECONDS` | `5` | A watch file must sit still this long before it is requested. The first observation of a file never ingests; `volt watch --once` on a brand-new file queues nothing until a later scan. |
 | `VOLT_WATCH_EVERY` | `2` | Seconds between watch scans. |
+| `VOLT_WATCH_SEEN` | `<db>.watch-seen.json` | Where `volt watch` stores fingerprints between processes. Unset uses a file next to the SQLite database. A Postgres DSN needs this set, or `--once` cannot remember a first observation. The runner periodic does not use this file. |
 
 ### Deletion and retention
 
