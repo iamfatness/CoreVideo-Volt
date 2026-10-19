@@ -235,13 +235,12 @@ Provided by `volt.backup` (`python -m volt.backup` does the same). Stop serve an
 
 | Command | Does |
 |---|---|
-| `volt backup <db> <dir>` | Writes a new directory: the data file plus `manifest.json` (schema version, row counts, SHA-256), written last. SQLite uses the online backup API, so it is safe while Volt runs; Postgres needs `pg_dump`. `<db>` defaults to `VOLT_DB`. |
+| `volt backup <db> <dir> [--with-media]` | Writes a new directory: the data file, `media.json` (closed essences and done versions), and `manifest.json` (schema version, row counts, SHA-256), written last. `--with-media` copies local files under `VOLT_PROXY_DIR`, `VOLT_QUARANTINE_DIR` and `VOLT_PUBLISH_DIR` into `<dir>/media/<asset_id>/`; a missing source is listed in `media.json` `missing` and is not a failure. Object storage is listed, not copied. SQLite uses the online backup API, so it is safe while Volt runs; Postgres needs `pg_dump`. `<db>` defaults to `VOLT_DB`. |
 | `volt verify <dir>` | Checks a backup against its manifest without restoring. |
-| `volt restore <dir> [db] [--overwrite]` | Restores into `db` (default `VOLT_DB`), migrating forward if the backup is older. Refuses a non-empty target without `--overwrite`; Postgres needs `pg_restore`. |
+| `volt restore <dir> [db] [--overwrite]` | Restores the database into `db` (default `VOLT_DB`), migrating forward if the backup is older. Does not move media files back: copy them from `<dir>/media/` (or object storage) to the paths in `media.json`, then `volt verify-storage`. Old backups without `media.json` still restore. Refuses a non-empty target without `--overwrite`; Postgres needs `pg_restore`. |
 | `volt verify-storage [db] [--deep]` | Read-only check that every file and published object the database references exists. Uses `VOLT_PROXY_DIR`, `VOLT_QUARANTINE_DIR`, `VOLT_PUBLISH_DIR` and `VOLT_STORAGE`. |
 
-Media files and object storage are not copied by `volt backup`; see `docs/specs/backup.md`. `volt check`
-reports whether `pg_dump` and `pg_restore` are available when the database is Postgres.
+See `docs/specs/backup.md`. `volt check` reports whether `pg_dump` and `pg_restore` are available when the database is Postgres.
 
 ## Upgrade
 
@@ -266,7 +265,7 @@ is not blocked from starting.
   right to install or redistribute Volt. Third-party notices (ffmpeg, models, optional SDKs) are also absent.
 - **Auth.** One shared bearer token, no users, roles or audit trail. Behaviour unchanged by this page.
 - **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
-- **Scheduling backups.** `volt backup` exists; nothing runs it on a timer, and copying media files and object
-  storage is yours to arrange (docs/specs/backup.md). Run a restore drill once before relying on it.
+- **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
+  folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.
 - **Not exercised on real systems:** the Task Scheduler registration and the systemd unit were reviewed and the
   installer's plan was tested with `-DryRun`, but neither was installed on a live machine.

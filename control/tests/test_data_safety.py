@@ -317,6 +317,120 @@ class BackupRestore(Tmp):
         self.assertEqual(backup.main(["restore", str(self.dir / "bk"), str(self.dir / "r.db")]), 0)
         self.assertEqual(backup.main(["restore", str(self.dir / "bk"), str(self.dir / "r.db")]), 2)  # now has data
 
+    def test_backup_writes_media_json_listing_the_closed_hi_res(self):
+        store = self.db()
+        a = store.mint_asset(owner="desk")
+        closed = store.add_essence(a.id, "hi-res", "/media/closed.mxf", checksum="abc")
+        store.add_essence(a.id, "hi-res", "/media/open.mxf", open_file=True, checksum="def")
+        dest = self.dir / "bk"
+        backup.backup(str(self.dir / "volt.db"), str(dest))
+        media = json.loads((dest / "media.json").read_text(encoding="utf-8"))
+        self.assertEqual(media["essences"], [
+            {"id": closed, "role": "hi-res", "location": "/media/closed.mxf", "checksum": "abc"},
+        ])
+        self.assertEqual(media["versions"], [])
+
+    def test_backup_media_json_lists_done_versions_not_pending(self):
+        store = self.db()
+        a = store.mint_asset(owner="desk")
+        s = store.add_span(a.id, "clip", "01:00:00:00", "01:00:01:00")
+        store.conn.execute(
+            "INSERT INTO version (id, asset_id, span_id, kind, status, created_at, storage_backend, storage_key,"
+            " storage_sha256) VALUES (?, ?, ?, ?, ?, 'now', ?, ?, ?)",
+            ("v-done", a.id, s, "house", "done", "s3", "a/cut.mp4", "aa" * 32),
+        )
+        store.conn.execute(
+            "INSERT INTO version (id, asset_id, span_id, kind, status, created_at, storage_backend, storage_key,"
+            " storage_sha256) VALUES (?, ?, ?, ?, ?, 'now', ?, ?, ?)",
+            ("v-wait", a.id, s, "ott", "pending", "s3", "a/wait.mp4", "bb" * 32),
+        )
+        store.conn.commit()
+        dest = self.dir / "bk"
+        backup.backup(str(self.dir / "volt.db"), str(dest))
+        media = json.loads((dest / "media.json").read_text(encoding="utf-8"))
+        self.assertEqual(media["essences"], [])
+        self.assertEqual(media["versions"], [
+            {"id": "v-done", "backend": "s3", "key": "a/cut.mp4", "sha256": "aa" * 32},
+        ])
+
+    def test_backup_with_media_copies_local_files_under_owned_dirs(self):
+        store = self.db()
+        proxy, quarantine, publish = (self.dir / n for n in ("proxy", "quarantine", "publish"))
+        for folder in (proxy, quarantine, publish):
+            folder.mkdir()
+        a = store.mint_asset(owner="desk")
+        hi = quarantine / "take.mxf"
+        px = proxy / f"{a.id}.mp4"
+        hi.write_bytes(b"hi-res-bytes")
+        px.write_bytes(b"proxy-bytes")
+        eid_hi = store.add_essence(a.id, "hi-res", str(hi), checksum="c1")
+        eid_px = store.add_essence(a.id, "proxy", str(px), checksum="c2")
+        s = store.add_span(a.id, "clip", "01:00:00:00", "01:00:01:00")
+        pub_file = publish / a.id
+        pub_file.mkdir()
+        local_obj = pub_file / "house.mp4"
+        local_obj.write_bytes(b"published")
+        store.conn.execute(
+            "INSERT INTO version (id, asset_id, span_id, kind, status, created_at, storage_backend, storage_key,"
+            " storage_sha256) VALUES (?, ?, ?, ?, 'done', 'now', 'local', ?, ?)",
+            ("v1", a.id, s, "house", f"{a.id}/house.mp4", "dd" * 32),
+        )
+        store.conn.execute(
+            "INSERT INTO version (id, asset_id, span_id, kind, status, created_at, storage_backend, storage_key,"
+            " storage_sha256) VALUES (?, ?, ?, ?, 'done', 'now', 's3', ?, ?)",
+            ("v2", a.id, s, "ott", "bucket/key.mp4", "ee" * 32),
+        )
+        store.conn.commit()
+        dest = self.dir / "bk"
+        env = {
+            "VOLT_PROXY_DIR": str(proxy),
+            "VOLT_QUARANTINE_DIR": str(quarantine),
+            "VOLT_PUBLISH_DIR": str(publish),
+        }
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(
+                backup.main(["backup", "--with-media", str(self.dir / "volt.db"), str(dest)]), 0)
+        copied_hi = dest / "media" / a.id / hi.name
+        copied_px = dest / "media" / a.id / px.name
+        copied_pub = dest / "media" / a.id / "house.mp4"
+        self.assertEqual(copied_hi.read_bytes(), b"hi-res-bytes")
+        self.assertEqual(copied_px.read_bytes(), b"proxy-bytes")
+        self.assertEqual(copied_pub.read_bytes(), b"published")
+        self.assertFalse(any(dest.rglob("key.mp4")))
+        media = json.loads((dest / "media.json").read_text(encoding="utf-8"))
+        self.assertEqual({e["id"] for e in media["essences"]}, {eid_hi, eid_px})
+        self.assertEqual({v["id"] for v in media["versions"]}, {"v1", "v2"})
+        self.assertEqual(media.get("missing"), [])
+
+    def test_backup_with_media_lists_missing_sources_and_still_succeeds(self):
+        store = self.db()
+        proxy = self.dir / "proxy"
+        proxy.mkdir()
+        a = store.mint_asset(owner="desk")
+        gone = proxy / "gone.mp4"
+        eid = store.add_essence(a.id, "proxy", str(gone), checksum="zz")
+        dest = self.dir / "bk"
+        backup.backup(
+            str(self.dir / "volt.db"), str(dest), with_media=True, proxy_dir=proxy,
+            quarantine_dir=self.dir / "q", publish_dir=self.dir / "p")
+        self.assertTrue((dest / backup.MANIFEST).is_file())
+        media = json.loads((dest / "media.json").read_text(encoding="utf-8"))
+        self.assertEqual(media["essences"][0]["id"], eid)
+        self.assertTrue(any(str(gone) in str(item) or item == str(gone) for item in media["missing"]))
+
+    def test_restore_ignores_missing_or_unreadable_media_json(self):
+        populate(self.db())
+        dest = self.dir / "bk"
+        backup.backup(str(self.dir / "volt.db"), str(dest))
+        if (dest / "media.json").is_file():
+            (dest / "media.json").unlink()
+        report = backup.restore(dest, str(self.dir / "old.db"))
+        self.assertEqual(report["row_counts"]["asset"], 2)
+        backup.backup(str(self.dir / "volt.db"), str(self.dir / "bk2"))
+        (self.dir / "bk2" / "media.json").write_text("not json {", encoding="utf-8")
+        report = backup.restore(self.dir / "bk2", str(self.dir / "old2.db"))
+        self.assertEqual(report["row_counts"]["asset"], 2)
+
 
 class PostgresTools(unittest.TestCase):
     def test_missing_tools_are_a_clear_refusal(self):
