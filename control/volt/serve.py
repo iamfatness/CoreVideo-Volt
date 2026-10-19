@@ -27,7 +27,7 @@ from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
-from volt.playout import HeldError, PlayoutError, advance, hold, hold_state, release, skip
+from volt.playout import HeldError, PlayoutError, TakingError, advance, hold, hold_state, release, skip
 from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
@@ -202,6 +202,8 @@ def _advance_errors(fn):
         return fn()
     except HeldError as exc:
         raise ApiError(409, "held", str(exc)) from None
+    except TakingError as exc:
+        raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
     except NotClearedError:
         raise ApiError(409, "not_cleared", "the next item's media is not cleared for air (or is on legal hold)") from None
     except KeyError:
@@ -240,11 +242,11 @@ def act_take(store, show_id, body):
     owner = _str(body, "owner", default="desk", limit=100)
     _show_exists(store, show_id)
     room = get_room()
-    with _SEQ:
-        result = _advance_errors(lambda: take_item(store, room, show_id, owner=owner, **POLL))
-        results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
-                   for r in result.results]
-        state = rundown_payload(store, show_id)
+    # Dispatch waits on the room with no _SEQ; the taking row is the contract across processes.
+    result = _advance_errors(lambda: take_item(store, room, show_id, owner=owner, **POLL))
+    results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
+               for r in result.results]
+    state = rundown_payload(store, show_id)
     if not result.advanced:
         bad = next(r for r in results if r["status"] != "fired")
         code = "cue_unsupported" if bad["status"] == "unsupported" else "cue_failed"
@@ -274,6 +276,8 @@ def act_skip(store, item_id, body):
     with _SEQ:
         try:
             skip(store, item_id)
+        except TakingError as exc:
+            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
         except PlayoutError as exc:
             raise ApiError(409, "not_skippable", str(exc)) from None
         return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
@@ -285,7 +289,11 @@ def act_kill(store, item_id, body):
     with _SEQ:
         # _SEQ only orders requests inside this process; kill() decides with one conditional write, so a go
         # or take from another process cannot slip between a read here and the write.
-        if not kill(store, item_id):
+        try:
+            killed = kill(store, item_id)
+        except TakingError as exc:
+            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+        if not killed:
             status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
             raise ApiError(409, "not_killable", f"cannot kill a {status} item")
         return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}

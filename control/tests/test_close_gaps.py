@@ -269,10 +269,10 @@ class AttachRaceTests:
             self._show()
             aired = {}
 
-            def spy(store, item_id):
+            def spy(store, item_id, **kw):
                 aired["span"] = store.conn.execute(
                     "SELECT span_id FROM item WHERE id = ?", (item_id,)).fetchone()["span_id"]
-                return real_take(store, item_id)
+                return real_take(store, item_id, **kw)
 
             barrier = threading.Barrier(2)
 

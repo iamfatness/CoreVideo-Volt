@@ -17,9 +17,26 @@ class HeldError(PlayoutError):
     """The rundown is held. A machine-readable subtype so callers need not parse the message."""
 
 
+class TakingError(PlayoutError):
+    """Another item of the show is taking. Callers use `.item_id`; nothing was written."""
+
+    def __init__(self, item_id: str):
+        super().__init__(f"item {item_id} is taking")
+        self.item_id = item_id
+
+
 def on_air(store: Store, show_id: str) -> Optional[str]:
     row = store.conn.execute(
         "SELECT id FROM item WHERE show_id = ? AND status = 'on air' ORDER BY position",
+        (show_id,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def taking(store: Store, show_id: str) -> Optional[str]:
+    """The item currently taking, if any. Ignored by on_air()."""
+    row = store.conn.execute(
+        "SELECT id FROM item WHERE show_id = ? AND status = 'taking' ORDER BY position",
         (show_id,),
     ).fetchone()
     return row["id"] if row else None
@@ -83,7 +100,7 @@ def go(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Optional[
 
 
 def rewind(store: Store, adv: Advance) -> None:
-    """Undo an advance: the target is ready again, the outgoing item back on air."""
+    """Undo an advance: the target is ready again (including from taking), the outgoing item back on air."""
     with store.transaction():
         if adv.target is not None:
             store.conn.execute(
@@ -95,6 +112,21 @@ def rewind(store: Store, adv: Advance) -> None:
             )
         for item_id in adv.passed:
             store.conn.execute("UPDATE item SET status = 'killed' WHERE id = ?", (item_id,))
+
+
+def commit_take(store: Store, adv: Advance, clock: Callable[[], str] = _now,
+                precise_clock: Optional[Callable[[], str]] = None) -> None:
+    """Finish a pending take: the target is on air and as-run in is stamped. No-op when the show is over."""
+    if adv.target is None:
+        return
+    now, precise = _stamp(clock, precise_clock)
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (adv.target,)).fetchone()
+    lock = show_lock(row["show_id"]) if row is not None else None
+    with store.transaction(lock):
+        store.conn.execute(
+            "UPDATE item SET status = 'on air', as_run_in = ?, as_run_in_precise = ? WHERE id = ?",
+            (now, precise, adv.target),
+        )
 
 
 def _stamp(clock: Callable[[], str], precise_clock: Optional[Callable[[], str]]) -> tuple[str, Optional[str]]:
@@ -109,18 +141,22 @@ def _stamp(clock: Callable[[], str], precise_clock: Optional[Callable[[], str]])
 
 
 def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
-            precise_clock: Optional[Callable[[], str]] = None) -> Advance:
+            precise_clock: Optional[Callable[[], str]] = None, pending: bool = False) -> Advance:
     """Take the next item and say what changed.
 
     The outgoing item gets its as-run out and the incoming item its as-run in from
-    the same clock read. A killed item that is passed over is recorded as skipped.
+    the same clock read (unless `pending`, which leaves the target taking with no as-run in).
+    A killed item that is passed over is recorded as skipped.
     If the next item cannot air (not cleared), nothing changes. While the show is
-    held this raises PlayoutError and changes nothing.
+    held this raises PlayoutError and changes nothing. A taking item raises TakingError.
     """
     with store.transaction(show_lock(show_id)):  # read the show, then change it, with no other go in between
         held = hold_state(store, show_id)
         if held is not None:
             raise HeldError(f"rundown is held: {held.reason or 'no reason given'} (since {held.held_at})")
+        busy = taking(store, show_id)
+        if busy is not None:
+            raise TakingError(busy)
         current = on_air(store, show_id)
         floor = 0
         if current is not None:
@@ -139,7 +175,7 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
                 target = row["id"]
                 break
         if target is not None:
-            take(store, target)  # raises before changing anything if it cannot air
+            take(store, target, status="taking" if pending else "on air")  # raises before changing anything if it cannot air
         now, precise = _stamp(clock, precise_clock)
         if current is not None:
             store.conn.execute(
@@ -148,7 +184,7 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
             )
         for item_id in passed:
             store.conn.execute("UPDATE item SET status = 'skipped' WHERE id = ?", (item_id,))
-        if target is not None:
+        if target is not None and not pending:
             store.conn.execute(
                 "UPDATE item SET as_run_in = ?, as_run_in_precise = ? WHERE id = ?", (now, precise, target))
         return Advance(target, current, passed)
@@ -159,6 +195,9 @@ def skip(store: Store, item_id: str) -> None:
     if found is None:
         raise KeyError(item_id)
     with store.transaction(show_lock(found["show_id"])):
+        busy = taking(store, found["show_id"])
+        if busy is not None:
+            raise TakingError(busy)
         row = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()
         if row["status"] == "on air":
             raise PlayoutError("cannot skip the item on air")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from tests.test_rooms import _no_sleep, obs
 from tests.test_take import _show
 from volt.clock import schedule_rows, set_schedule, settle_stale_claims, tick, to_utc_text
-from volt.playout import go, hold, on_air, release
+from volt.playout import advance, go, hold, on_air, release
 from volt.rooms import FakeRoom
 from volt.rundown import kill
 from volt.store import Store
@@ -98,6 +98,18 @@ class Firing(unittest.TestCase):
         now.advance(5)
         self.assertEqual([e.outcome for e in _tick(store, now)], ["fired"])
         self.assertEqual(on_air(store, show), b)
+
+    def test_due_item_waits_while_the_show_is_taking(self):
+        store = Store()
+        show, (a, b) = _show(store, [[], []])
+        set_schedule(store, b, T0)
+        advance(store, show, pending=True)
+        events = _tick(store, Now())
+        self.assertEqual([e.outcome for e in events], ["blocked"])
+        self.assertIn("taking", events[0].note)
+        self.assertEqual(_state(store, b)["status"], "ready")
+        self.assertIsNone(_state(store, b)["schedule_state"])
+        self.assertEqual(_state(store, a)["status"], "taking")
 
     def test_killed_predecessor_is_passed_over(self):
         store = Store()

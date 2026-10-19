@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 from volt.cues import arm_cues
 from volt.dispatch import Result, dispatch_item
-from volt.playout import advance, rewind
+from volt.playout import advance, commit_take, rewind
 from volt.store import Store, _now
 
 
@@ -36,7 +36,7 @@ def take_item(
     fire stay fired, since they happened in the room, and the failed cue stays armed.
     Taking again resumes at that cue.
     """
-    adv = advance(store, show_id, clock)
+    adv = advance(store, show_id, clock, pending=True)
     if adv.target is None:
         return TakeResult(True, None)
     arm_cues(store, adv.target)
@@ -47,4 +47,5 @@ def take_item(
     if any(r.status != "fired" for r in results):
         rewind(store, adv)
         return TakeResult(False, adv.target, results)
+    commit_take(store, adv, clock)
     return TakeResult(True, adv.target, results)

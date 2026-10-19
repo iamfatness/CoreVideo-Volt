@@ -38,7 +38,7 @@ from typing import Callable, Optional
 
 from volt import logs
 from volt.migrations import SchemaTooNewError
-from volt.playout import HeldError, PlayoutError, hold_state, on_air
+from volt.playout import HeldError, TakingError, hold_state, on_air, taking
 from volt.store import Store
 from volt.take import take_item
 
@@ -175,6 +175,10 @@ def tick(
         state = row["schedule_state"]
         late = (at - due).total_seconds()
 
+        busy = taking(store, show_id)
+        if busy is not None:
+            events.append(Event(item_id, show_id, "blocked", f"item {busy} is taking"))
+            continue
         if row["status"] != "ready":
             note = f"item was {row['status']} when it came due"
             if _transition(store, item_id, state, "missed", note):
@@ -210,6 +214,10 @@ def tick(
         except HeldError as exc:  # held between our check and the take: nothing changed, put it back
             _transition(store, item_id, "claimed", "held", str(exc))
             events.append(Event(item_id, show_id, "held", str(exc)))
+            continue
+        except TakingError as exc:  # a take started after we claimed: unclaim and wait
+            _transition(store, item_id, "claimed", None, None, None)
+            events.append(Event(item_id, show_id, "blocked", str(exc)))
             continue
         except Exception as exc:  # refused (not cleared, no span) or the room blew up
             store.conn.rollback()
