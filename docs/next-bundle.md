@@ -14,16 +14,16 @@ Ordered. Each piece lists what done means. Do not start later MAM (tokens, MOS, 
 - `VOLT_SHOW_INPUT_ACTIONS` is read by serve and the clock.
 - Done when: `/api/cue-commands` and the picker match that split; tests cover both warnings.
 
-This branch (`room-track-cue-verified`) is that work.
+Done on `main` (PR #59).
 
 ## 2. Default pre-take uses the new core actions
 
-After #953 is on a core the operator actually runs:
-
-- Default `show_input_actions` become `input.assign [{slot}, {source}]`, `scene.route.set [{scene}, {route}, {slot}]` (or `scene.cueWithRoutes` with a JSON object), then the existing `transport.take`.
-- Payload must name `scene` and `slot` (and a route id, or a documented default such as `ohg-host`).
+- Default `show_input_actions` are `input.assign [{slot}, {source}]`, `scene.route.set [{scene}, {route}, {slot}]`, then the existing `transport.take`.
+- Payload must name `scene` and `slot`. `{route}` defaults to `ohg-host`.
 - FakeRoom keeps covering evidence; live invoke names are config, not a second handler.
 - Done when: a unit test fires those action names, and operations.md shows the JSON.
+
+This branch (`feat/show-input-route-default`) is that work.
 
 ## 3. Live Program take
 

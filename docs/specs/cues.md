@@ -16,16 +16,16 @@ This cue track is parallel to the MAM layer in [foundation](foundation.md#room-t
 
 Put a source on Program and fire only when the core shows it there.
 
-**Payload.** A bare string is the source id (`zoom:2`, `media:clip-7`, `capture:hdmi`, or bare). A JSON object may add `scene`, `slot` (integer) and `transition` (`cut`, the default, or `fade`).
+**Payload.** A bare string is the source id (`zoom:2`, `media:clip-7`, `capture:hdmi`, or bare). A JSON object may add `scene`, `slot` (integer), `route` (defaults to `ohg-host`) and `transition` (`cut`, the default, or `fade`). The default pre-take needs `scene` and `slot`.
 
 **Sequence.**
 
 1. Read `GET /snapshot` for a baseline. If the envelope is unavailable or stale, or `programFrame.deliverySequence` is missing, fail before sending anything.
-2. Run the configured pre-take actions, a list of `{action, args}` templates. Placeholders `{scene}`, `{source}` and `{slot}` are filled from the payload. The default is `[scene.select {scene}]`, which is right only when the scene already routes the slot.
+2. Run the configured pre-take actions, a list of `{action, args}` templates. Placeholders `{scene}`, `{source}`, `{slot}` and `{route}` are filled from the payload. The default is `input.assign [{slot}, {source}]` then `scene.route.set [{scene}, {route}, {slot}]`. `{route}` is `ohg-host` when the payload omits `route`.
 3. Send `transport.take` with no args. Its reply is an ack and nothing more.
 4. Poll `GET /snapshot` with the same attempts, interval and sleep as the other handlers.
 
-`input.assign [slot, sourceId]` alone is not enough. It edits a slot and puts nothing on Preview or Program. CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) (#861) adds `scene.cueWithRoutes` / `scene.route.set`. Until that core is installed, Volt's pre-take steps stay configuration. When it is, only the configured action list changes (for example `input.assign` then `scene.route.set` then `transport.take`). The handler and its evidence do not.
+`input.assign [slot, sourceId]` alone is not enough. It edits a slot and puts nothing on Preview or Program. The default therefore also sends `scene.route.set` (CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) / #861). Override with `VOLT_SHOW_INPUT_ACTIONS` if the installed core does not have that action yet. The handler and its evidence do not change.
 
 **Evidence** (all must hold, on two consecutive polls, each with a newer `deliverySequence`):
 
@@ -49,7 +49,7 @@ The two-poll rule catches a take that lands and then rolls back. `/state` `Activ
 - `videoSources[].kind` values for capture sources (and whether `capture:` ids appear in `sourceId` or `participantId`). Matching avoids `kind` for this reason.
 - Fade behaviour: that `takeTransition.status` reads `completed` only after Program shows the incoming source alone, and the exact status strings.
 - operationId correlation: the take reply carries no id we match against the snapshot, so a take made by someone else during the poll window could satisfy the evidence. Add correlation when the core exposes it.
-- That `scene.select` then `transport.take` shows the slot's source for a scene that routes it. No live run has happened.
+- That `input.assign` then `scene.route.set` then `transport.take` shows the slot's source on Program. No live run has happened.
 - How a transition mode is set. `transport.take` takes no args, so `fade` only changes the evidence required, not the transition the core performs.
 - The 2-poll confirmation window against the real snapshot cadence and `deliverySequence` rate.
 - The route action itself ([CoreVideo Pro PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) / #861), until it is on the core used for a live Program take.

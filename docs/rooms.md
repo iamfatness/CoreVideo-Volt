@@ -44,13 +44,13 @@ Lower third, live: `graphics.lowerThird.set [true]` was accepted; `GET /state` `
 | `record.start` | `transport.record.set [true]` | `recording.lifecycle` producing, fresh, with an artifact path. Mints the asset. |
 | `stream.start` | `transport.stream.set [true]` | A sender in `outputSenderSession.senders[].lifecycle` producing and fresh |
 | `overlay.take` | `graphics.lowerThird.set [on]` | `GET /state` `lowerThirdOnAir` matches |
-| `show-input.take` | configurable steps (default `scene.select`), then `transport.take` | `GET /snapshot` `programFrame.videoSources[]` holds the source, attribution `live`, `deliverySequence` advanced |
+| `show-input.take` | configurable steps (default `input.assign` then `scene.route.set`), then `transport.take` | `GET /snapshot` `programFrame.videoSources[]` holds the source, attribution `live`, `deliverySequence` advanced |
 
 `record.arm`, `audio.snapshot` and every other room are reported `unsupported` and stay armed. Each needs a control action and a piece of evidence that are known before it gets a handler. Same status as above: wire shapes come from source and have not run against a live core.
 
-`show-input.take` reads Program through `CoreVideoProRoom.program_observed()` (`GET /snapshot`, `programFrame`). `input.assign` alone does not put anything on Program. CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) adds `scene.route.set` / `scene.cueWithRoutes`; until that build is the running core, the steps before `transport.take` stay configuration (`VOLT_SHOW_INPUT_ACTIONS`). Rules, failure details and the list of unproven live assumptions are in [cues](specs/cues.md#show-inputtake).
+`show-input.take` reads Program through `CoreVideoProRoom.program_observed()` (`GET /snapshot`, `programFrame`). `input.assign` alone does not put anything on Program. Default pre-take is `input.assign [{slot}, {source}]` then `scene.route.set [{scene}, {route}, {slot}]` (`{route}` defaults to `ohg-host`). That core action is CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) (#861). Override the list with `VOLT_SHOW_INPUT_ACTIONS`. Rules, failure details and the list of unproven live assumptions are in [cues](specs/cues.md#show-inputtake).
 
-The room track stays parallel to MAM. [Foundation](specs/foundation.md#room-track-parallel) does not need a live Program take to call that layer done. `show-input.take` keeps its handler and evidence; default `show_input_actions` change in [next-bundle](next-bundle.md) after #953. `record.arm` and `audio.snapshot` stay `unsupported` — no handler without evidence. No live Program take is recorded here (the 2026-10-16 stream run is the pattern when one lands). Until one is, the operator cue picker labels `show-input.take` unverified. The unproven list in cues stays.
+The room track stays parallel to MAM. [Foundation](specs/foundation.md#room-track-parallel) does not need a live Program take to call that layer done. `record.arm` and `audio.snapshot` stay `unsupported` — no handler without evidence. No live Program take is recorded here (the 2026-10-16 stream run is the pattern when one lands). Until one is, the operator cue picker labels `show-input.take` unverified. The unproven list in cues stays.
 
 ### Live run through the dispatcher (2026-10-13)
 
