@@ -10,6 +10,6 @@ The operations layer in [product-readiness.md](product-readiness.md) (start comm
 
 ## Next
 
-A live Program take (`show-input.take`) is the parallel room track. It does not block MAM. It still needs CoreVideo Pro #861.
+Room track: [next-bundle](next-bundle.md). CoreVideo Pro #861 is [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953). After that lands on a live core: default `show_input_actions` use `scene.route.set`, then a recorded Program take, then `show-input.take` is live-proven on the desk.
 
 Per-user tokens and roles. TLS as a supported reverse-proxy recipe. MOS export of the rundown. Hardware playout adapter. Archive tier with restore. A second NLE. Recurring and relative playout schedules. License SPDX (owner).

@@ -40,6 +40,7 @@ from volt import logs
 from volt.migrations import SchemaTooNewError
 from volt.playout import HeldError, TakingError, hold_state, on_air, taking
 from volt.store import Store
+from volt.show_input import configured_actions
 from volt.take import take_item
 
 log = logging.getLogger("volt.clock")
@@ -280,6 +281,11 @@ def main(argv: list[str]) -> int:
     url = os.environ.get("VOLT_ROOM_URL")
     if not url:
         ap.error("set VOLT_ROOM_URL (and VOLT_ROOM_TOKEN if the room needs one)")
+    try:
+        actions = configured_actions()
+    except ValueError as exc:
+        print(f"volt clock: {exc}", file=sys.stderr)
+        return 78
     logs.setup("clock")
     room = CoreVideoProRoom(url, os.environ.get("VOLT_ROOM_TOKEN") or None)
     try:
@@ -287,7 +293,8 @@ def main(argv: list[str]) -> int:
     except SchemaTooNewError as exc:  # a clock older than its database must not run
         print(f"volt clock: {exc}", file=sys.stderr)
         return 78  # EX_CONFIG: `volt run` does not restart it
-    kw = dict(grace=args.grace, fire_after_hold=args.fire_after_hold, claim_lease=args.claim_lease)
+    kw = dict(grace=args.grace, fire_after_hold=args.fire_after_hold, claim_lease=args.claim_lease,
+              show_input_actions=actions)
     try:
         if args.once:
             events = tick(store, room, **kw)

@@ -25,7 +25,7 @@ Put a source on Program and fire only when the core shows it there.
 3. Send `transport.take` with no args. Its reply is an ack and nothing more.
 4. Poll `GET /snapshot` with the same attempts, interval and sleep as the other handlers.
 
-`input.assign [slot, sourceId]` alone is not enough. It edits a slot and puts nothing on Preview or Program. No control action routes a slot into a scene yet: [CoreVideoPro #861](https://github.com/iamfatness/CoreVideoPro/issues/861). When it lands, only the configured action list changes (for example `input.assign` then the new route action then `scene.select`). The handler and its evidence do not.
+`input.assign [slot, sourceId]` alone is not enough. It edits a slot and puts nothing on Preview or Program. CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) (#861) adds `scene.cueWithRoutes` / `scene.route.set`. Until that core is installed, Volt's pre-take steps stay configuration. When it is, only the configured action list changes (for example `input.assign` then `scene.route.set` then `transport.take`). The handler and its evidence do not.
 
 **Evidence** (all must hold, on two consecutive polls, each with a newer `deliverySequence`):
 
@@ -42,7 +42,7 @@ The two-poll rule catches a take that lands and then rolls back. `/state` `Activ
 
 ### Built
 
-`volt/show_input.py`, wired in `dispatch.py` (`dispatch_item` and `take_item` take `show_input_actions`). `rooms.py` has `ProgramObservation` and `ProgramSource`, `CoreVideoProRoom.program_observed()`, and a scriptable `FakeRoom(program=[...])` (stale, holding attribution, outgoing still present during a fade, roll-back). `tests/test_show_input.py` covers every failure above, the happy path, dispatch and take, and a stub HTTP core.
+`volt/show_input.py`, wired in `dispatch.py` (`dispatch_item` and `take_item` take `show_input_actions`). Serve and the clock pass `VOLT_SHOW_INPUT_ACTIONS` (JSON list of `{action, args}`; unset uses the default). `rooms.py` has `ProgramObservation` and `ProgramSource`, `CoreVideoProRoom.program_observed()`, and a scriptable `FakeRoom(program=[...])` (stale, holding attribution, outgoing still present during a fade, roll-back). `tests/test_show_input.py` covers every failure above, the happy path, dispatch and take, and a stub HTTP core. The operator cue picker labels `show-input.take` unverified (`not live-proven`) until a live Program take is recorded in rooms.md; a take still runs the adapter.
 
 ### Unproven against a live core
 
@@ -52,4 +52,4 @@ The two-poll rule catches a take that lands and then rolls back. `/state` `Activ
 - That `scene.select` then `transport.take` shows the slot's source for a scene that routes it. No live run has happened.
 - How a transition mode is set. `transport.take` takes no args, so `fade` only changes the evidence required, not the transition the core performs.
 - The 2-poll confirmation window against the real snapshot cadence and `deliverySequence` rate.
-- The route action itself (#861).
+- The route action itself ([CoreVideo Pro PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) / #861), until it is on the core used for a live Program take.

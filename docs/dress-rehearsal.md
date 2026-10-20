@@ -62,7 +62,7 @@ Regression tests: `control/tests/test_ingest.py` (frame rate and audio layout re
 ## Not run
 
 - Any stream. `transport.stream.set [true]` was never called.
-- `show-input.take` (needs the route action, [CoreVideoPro #861](https://github.com/iamfatness/CoreVideoPro/issues/861)), `record.arm`, audio snapshot.
+- `show-input.take` (needs CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) on the running core), `record.arm`, audio snapshot.
 - The NLE files were not opened in Premiere, Resolve or Final Cut. They are still unverified against a real editor.
 - Publishing to S3, Azure or GCS; only local storage.
 - Postgres (CI only), a crash mid-take, two runners at once, a hold landing during a take.

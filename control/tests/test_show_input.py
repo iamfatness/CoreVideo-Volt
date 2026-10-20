@@ -1,7 +1,9 @@
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 from tests.test_dispatch import _armed_item, _statuses
 from tests.test_playout import Clock
@@ -10,7 +12,7 @@ from tests.test_take import _show
 from volt.dispatch import dispatch_item
 from volt.playout import on_air
 from volt.rooms import CoreVideoProRoom, FakeRoom, LiveError, ProgramObservation, ProgramSource
-from volt.show_input import parse_payload, plan_actions, show_input_take
+from volt.show_input import configured_actions, parse_payload, plan_actions, show_input_take
 from volt.store import Store
 from volt.take import take_item
 
@@ -60,6 +62,34 @@ class Payload(unittest.TestCase):
         steps = plan_actions(si, [{"action": "input.assign", "args": ["{slot}", "{source}"]},
                                   {"action": "scene.select", "args": ["{scene}"]}])
         self.assertEqual(steps, [("input.assign", [3, "zoom:2"]), ("scene.select", ["s"])])
+
+
+class ConfiguredActions(unittest.TestCase):
+    def test_unset_and_empty_mean_the_handler_default(self):
+        self.assertIsNone(configured_actions(""))
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOLT_SHOW_INPUT_ACTIONS", None)
+            self.assertIsNone(configured_actions())
+
+    def test_json_list_is_the_action_plan(self):
+        raw = json.dumps([{"action": "scene.select", "args": ["from-env"]}])
+        self.assertEqual(configured_actions(raw), [{"action": "scene.select", "args": ["from-env"]}])
+        self.assertEqual(configured_actions("[]"), [])
+
+    def test_bad_json_and_shape_are_refused(self):
+        for bad in ("{", "{}", "[{}]", '[{"action":"x","args":1}]', "null"):
+            with self.assertRaises(ValueError, msg=bad):
+                configured_actions(bad)
+
+    def test_env_reaches_dispatch(self):
+        store = Store()
+        item = _armed_item(store, ("corevideo.pro", "show-input.take", "zoom:2"))
+        room = FakeRoom([obs("idle")], program=CUT)
+        raw = json.dumps([{"action": "scene.select", "args": ["from-env"]}])
+        with mock.patch.dict(os.environ, {"VOLT_SHOW_INPUT_ACTIONS": raw}):
+            dispatch_item(store, room, item, attempts=4, sleep=_no_sleep,
+                          show_input_actions=configured_actions())
+        self.assertTrue(room.invoked("scene.select", ["from-env"]))
 
 
 class Evidence(unittest.TestCase):

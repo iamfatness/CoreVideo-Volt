@@ -37,6 +37,7 @@ from volt.rundown import ItemNotReady, attach, kill, reorder
 from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
 from volt.store import NotClearedError, Store
+from volt.show_input import configured_actions
 from volt.take import take_item
 
 log = logging.getLogger("volt.serve")
@@ -294,7 +295,8 @@ def act_take(store, show_id, body):
     _show_exists(store, show_id)
     room = get_room()
     # Dispatch waits on the room with no _SEQ; the taking row is the contract across processes.
-    result = _advance_errors(lambda: take_item(store, room, show_id, owner=owner, **POLL))
+    result = _advance_errors(
+        lambda: take_item(store, room, show_id, owner=owner, show_input_actions=configured_actions(), **POLL))
     results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
                for r in result.results]
     state = rundown_payload(store, show_id)
@@ -671,7 +673,8 @@ def _cue_json(store, cue_id: str) -> dict:
     row = store.conn.execute("SELECT item_id FROM cue WHERE id = ?", (cue_id,)).fetchone()
     c = next(c for c in cues_of(store, row["item_id"]) if c.id == cue_id)
     return {"id": c.id, "room": c.room, "command": c.command, "payload": c.payload, "status": c.status,
-            "verified": c.command in building.HANDLERS,
+            "adapter": c.command in building.HANDLERS,
+            "verified": c.command in building.LIVE_PROVEN,
             "failure": None if c.fail_status is None else {"status": c.fail_status, "detail": c.fail_detail}}
 
 
@@ -684,9 +687,12 @@ def act_cue_add(store, item_id, body):
     cue_id, _show, verified = _build_errors(lambda: building.add_cue(store, item_id, room, command, payload))
     out = {"ok": True, "cue": _cue_json(store, cue_id), "rundown": rundown_payload(store, show_id),
             "orderVersion": building.order_version(store, show_id)}
-    if not verified:
+    if command not in building.HANDLERS:
         out["warning"] = (f"{command} has no verified adapter yet: the cue is stored, but a take stops at it "
                           "with cue_unsupported")
+    elif not verified:
+        out["warning"] = (f"{command} has an adapter but is not proven against a live core yet: "
+                          "the cue is stored and a take will run it")
     return out
 
 
@@ -1204,7 +1210,10 @@ def main(argv=None):
     host, port = args.host, args.port
     try:
         check_bind(host, TOKEN)
+        configured_actions()
     except ConfigError as exc:
+        _config_exit(str(exc))
+    except ValueError as exc:
         _config_exit(str(exc))
     for name in ("SIGTERM", "SIGBREAK"):  # a supervisor's stop request ends the loop like Ctrl-C does
         if hasattr(signal, name):

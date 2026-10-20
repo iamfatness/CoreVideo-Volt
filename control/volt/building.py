@@ -27,6 +27,9 @@ from volt.rundown import show_lock
 from volt.store import Store, _id, _now
 
 CUE_ROOM = "corevideo.pro"
+# Commands whose adapter has been run against a live core and recorded in rooms.md.
+# show-input.take has a handler and FakeRoom evidence; it is not live-proven until a Program take is.
+LIVE_PROVEN = frozenset({"overlay.take", "record.start", "stream.start"})
 
 
 class BuildError(Exception):
@@ -210,14 +213,19 @@ def detach_span(store: Store, item_id: str) -> tuple[str, bool]:
 # ---- cues -----------------------------------------------------------------------------------------------
 
 def cue_commands() -> list[dict]:
-    """Every command the corevideo.pro room accepts, and whether dispatch has a verified adapter for it. A cue for
-    an unverified command can be stored and armed, but a take stops at it with `cue_unsupported`."""
-    return [{"room": CUE_ROOM, "command": c, "verified": c in HANDLERS}
+    """Every command the corevideo.pro room accepts.
+
+    `adapter` is whether dispatch has a handler. `verified` is whether that handler has been
+    proven against a live core (rooms.md). A cue without an adapter can be stored and armed,
+    but a take stops at it with `cue_unsupported`. A cue with an adapter that is not live-proven
+    still runs on take; the picker labels it unverified until rooms records a live Program take.
+    """
+    return [{"room": CUE_ROOM, "command": c, "adapter": c in HANDLERS, "verified": c in LIVE_PROVEN}
             for c in sorted(cue_mod.COREVIDEO_COMMANDS)]
 
 
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> tuple[str, str, bool]:
-    """Returns (cue id, show id, verified)."""
+    """Returns (cue id, show id, verified) — verified means live-proven, not merely that an adapter exists."""
     if room != CUE_ROOM:
         raise BuildError(422, "bad_input", f"room must be {CUE_ROOM}: it is the only room with a command list")
     if command not in cue_mod.COREVIDEO_COMMANDS:
@@ -232,7 +240,7 @@ def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -
             raise BuildError(404, "not_found", f"no such item: {item_id}")
         _need_ready(cur_row, "add a cue to")
         cue_id = cue_mod.add_cue(store, item_id, room, command, payload)
-    return cue_id, row["show_id"], command in HANDLERS
+    return cue_id, row["show_id"], command in LIVE_PROVEN
 
 
 def remove_cue(store: Store, cue_id: str) -> tuple[str, str]:

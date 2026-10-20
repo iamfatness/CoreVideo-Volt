@@ -328,12 +328,17 @@ class Cues(Behaviour):
     def test_commands_say_which_have_a_verified_adapter(self):
         s, p = self.get("/api/cue-commands")
         self.assertEqual((s, p["ok"]), (200, True))
-        by = {c["command"]: c["verified"] for c in p["commands"]}
+        by = {c["command"]: c for c in p["commands"]}
         self.assertEqual(set(by), {"show-input.take", "overlay.take", "audio.snapshot", "record.arm",
                                    "record.start", "stream.start"})
-        self.assertEqual({c for c, v in by.items() if v},
-                         {"show-input.take", "overlay.take", "record.start", "stream.start"})
-        self.assertEqual({c for c, v in by.items() if not v}, {"audio.snapshot", "record.arm"})
+        live = {c for c, row in by.items() if row["verified"]}
+        adapters = {c for c, row in by.items() if row["adapter"]}
+        self.assertEqual(live, {"overlay.take", "record.start", "stream.start"})
+        self.assertEqual(adapters, {"show-input.take", "overlay.take", "record.start", "stream.start"})
+        self.assertFalse(by["show-input.take"]["verified"])
+        self.assertTrue(by["show-input.take"]["adapter"])
+        self.assertEqual({c for c, row in by.items() if not row["adapter"]},
+                         {"audio.snapshot", "record.arm"})
         self.assertEqual(self.get("/api/cue-commands?x=1")[1]["error"]["code"], "bad_input")
 
     def test_add_list_and_remove(self):
@@ -341,8 +346,9 @@ class Cues(Behaviour):
         (a,) = self.new_items(show, "Open")
         p = self.ok(f"/api/items/{a}/cues", {"command": "overlay.take", "payload": "on"})
         cue = p["cue"]
-        self.assertEqual((cue["room"], cue["command"], cue["payload"], cue["status"], cue["verified"]),
-                         ("corevideo.pro", "overlay.take", "on", "stored", True))
+        self.assertEqual((cue["room"], cue["command"], cue["payload"], cue["status"],
+                          cue["verified"], cue["adapter"]),
+                         ("corevideo.pro", "overlay.take", "on", "stored", True, True))
         self.assertNotIn("warning", p)
         second = self.ok(f"/api/items/{a}/cues", {"command": "stream.start"})["cue"]
         s, listing = self.get(f"/api/items/{a}/cues")
@@ -360,7 +366,17 @@ class Cues(Behaviour):
         (a,) = self.new_items(show, "Open")
         p = self.ok(f"/api/items/{a}/cues", {"command": "audio.snapshot", "payload": "mix-1"})
         self.assertFalse(p["cue"]["verified"])
+        self.assertFalse(p["cue"]["adapter"])
         self.assertIn("no verified adapter", p["warning"])
+
+    def test_show_input_take_is_stored_as_unverified_until_a_live_program_take(self):
+        show = self.new_show()
+        (a,) = self.new_items(show, "Open")
+        p = self.ok(f"/api/items/{a}/cues", {"command": "show-input.take", "payload": "zoom:2"})
+        self.assertFalse(p["cue"]["verified"])
+        self.assertTrue(p["cue"]["adapter"])
+        self.assertIn("not proven against a live core", p["warning"])
+        self.assertNotIn("cue_unsupported", p["warning"])
 
     def test_refusals(self):
         show = self.new_show()

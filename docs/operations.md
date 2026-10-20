@@ -82,6 +82,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
+| `VOLT_SHOW_INPUT_ACTIONS` | `[{"action":"scene.select","args":["{scene}"]}]` | JSON list of `{action, args}` steps before `transport.take` for `show-input.take`. Placeholders `{scene}`, `{source}`, `{slot}` come from the cue payload. Unset uses the default (right only when the scene already routes the slot). Bad JSON refuses serve and clock at start. |
 | `VOLT_CLOCK_GRACE` | `30` | Seconds past `scheduled_at` an item may still fire. |
 | `VOLT_EXPORT_PATH_MAP` | none | `D:\iso=\\nas\iso;...` rewrites media paths in NLE exports. |
 

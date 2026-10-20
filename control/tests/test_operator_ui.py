@@ -591,6 +591,14 @@ class TakingDesk(unittest.TestCase):
         self.assertEqual(got["next"]["id"], "c")
 
 
+class CuePicker(unittest.TestCase):
+    def test_show_input_take_is_labelled_not_live_proven(self):
+        js = FILES["operator.js"]
+        self.assertIn("(not live-proven)", js)
+        self.assertIn("no live Program take is recorded yet", js)
+        self.assertIn("(no verified adapter)", js)
+
+
 class TakingCopy(unittest.TestCase):
     def test_desk_words_taking_and_blocks_take(self):
         js = FILES["operator.js"]

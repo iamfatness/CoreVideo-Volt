@@ -9,6 +9,7 @@ So the steps that precede `transport.take` are configuration, a list of
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -18,6 +19,25 @@ SCHEMES = ("zoom:", "media:", "capture:")
 
 # Default for a scene that already routes the slot. `input.assign` alone is NOT enough.
 DEFAULT_ACTIONS = [{"action": "scene.select", "args": ["{scene}"]}]
+
+
+def configured_actions(raw: Optional[str] = None) -> Optional[list]:
+    """Parse `VOLT_SHOW_INPUT_ACTIONS` (JSON list of {action, args}). Unset or empty: None, so the default list runs."""
+    text = os.environ.get("VOLT_SHOW_INPUT_ACTIONS") if raw is None else raw
+    if text is None or not str(text).strip():
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"VOLT_SHOW_INPUT_ACTIONS is not JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("VOLT_SHOW_INPUT_ACTIONS must be a JSON list of {action, args}")
+    for i, step in enumerate(data):
+        if not isinstance(step, dict) or not str(step.get("action") or "").strip():
+            raise ValueError(f"VOLT_SHOW_INPUT_ACTIONS[{i}] needs an action")
+        if "args" in step and not isinstance(step["args"], list):
+            raise ValueError(f"VOLT_SHOW_INPUT_ACTIONS[{i}].args must be a list")
+    return data
 
 # Evidence must hold on this many consecutive polls, each on a newer delivered frame.
 CONFIRMATIONS = 2

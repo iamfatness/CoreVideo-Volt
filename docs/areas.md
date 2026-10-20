@@ -28,7 +28,7 @@ The session is the show. Items hold spans and cues. A take arms the cues on that
 
 Built: rundown, reorder, kill, cue records, arm, dispatch into CoreVideo, software playout, as-run, `taking`.
 
-A live Program take (`show-input.take`) stays a parallel room track until CoreVideo Pro #861. Hardware playout is later.
+A live Program take (`show-input.take`) stays a parallel room track ([next-bundle](next-bundle.md)). Hardware playout is later.
 
 ## Distribution
 
