@@ -727,9 +727,11 @@
         formRow('Add a cue', 'cue-cmd', el('select', { id: 'cue-cmd', 'data-fk': 'cue-cmd', disabled: !cmds.length,
           onchange: (e) => { b.cmd = e.target.value; S.sigs['cue-add'] = null; render(); } },
           cmds.length ? cmds.map((c) => el('option', { value: c.command, selected: c.command === b.cmd },
-            (CUE_LABEL[c.command] || c.command) + (c.verified ? '' : ' (no verified adapter)'))) : el('option', { value: '' }, 'Loading commands'))),
+            (CUE_LABEL[c.command] || c.command) + (c.verified ? '' : (c.adapter ? ' (not live-proven)' : ' (no verified adapter)')))) : el('option', { value: '' }, 'Loading commands'))),
         formRow('Payload (optional)', 'cue-payload', textIn('cue-payload', 'payload', { maxlength: '2000' })),
-        info && !info.verified ? el('small', { class: 'no', text: '? No verified adapter for ' + info.command + ' yet. The cue is stored, but a take stops at it.' }) : null,
+        info && !info.verified ? el('small', { class: 'no', text: info.adapter
+          ? '? ' + info.command + ' has an adapter, but no live Program take is recorded yet. The cue is stored and a take will run it.'
+          : '? No verified adapter for ' + info.command + ' yet. The cue is stored, but a take stops at it.' }) : null,
         el('div', { class: 'bar flush' }, btn('Add cue', { key: 'cue-add', cls: 'ghost', disabled: !cmds.length, onclick: () => addCue(sItem) }))));
     });
   }

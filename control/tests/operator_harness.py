@@ -207,7 +207,7 @@ def seed(store: Store, scenario: str, media_dir=None):
         if slug == "Game action":
             add_cue(store, item, "corevideo.pro", "overlay.take", "on")
             add_cue(store, item, "corevideo.pro", "stream.start", "")
-            if scenario in ("take_fail", "held"):  # no verified adapter yet, so a take cannot pass it
+            if scenario in ("take_fail", "held"):  # extra cue that the scripted room cannot satisfy
                 add_cue(store, item, "corevideo.pro", "show-input.take", "Camera 2")
             store.conn.execute("UPDATE cue SET status = 'armed' WHERE item_id = ?", (item,))
         if slug == "Under review":

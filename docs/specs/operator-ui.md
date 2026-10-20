@@ -58,7 +58,7 @@ Below the rundown, a small panel (`#build`) and, under the Cues panel, an add-cu
 - **New item**: a name field and Add item (Enter works). The item goes last.
 - **Edit the selected row** (a ready row only; otherwise it says why it cannot be edited): Rename; a picker of the clips ticked in the Library's Selection tray, with Attach clip; Detach clip when one is attached; Remove item (armed: the button turns to Confirm remove for 4 s, like Kill). Kill stays on the row and keeps the item in the list.
 - **Reorder** is the row's existing up and down buttons, now sending `version` (`orderVersion` from `/api/state`). If another operator changed the list the server answers `stale_order`, the page shows "The list changed" and the refreshed list; nothing moved.
-- **Add a cue** (selected ready row): a command picker from `GET /api/cue-commands` (unverified commands are labelled "(no verified adapter)" and a warning appears under the picker), a payload field, Add cue. Each unfired cue has a Remove button.
+- **Add a cue** (selected ready row): a command picker from `GET /api/cue-commands`. Commands with no adapter are labelled "(no verified adapter)" and a take stops at them. Commands with an adapter that is not live-proven (`show-input.take` until rooms.md records a Program take) are labelled "(not live-proven)"; a take still runs them. A warning appears under the picker. Payload field, Add cue. Each unfired cue has a Remove button.
 - **New show**: a disclosure with a name field; the new show opens.
 - As-run times in the rundown show milliseconds when the server has them.
 - Not built in the page: deleting a show. (Ingest is on the Library screen, below.)

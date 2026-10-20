@@ -1,63 +1,43 @@
 # Next bundle
 
-State on `main` plus PR #4: store hardened, room adapter, live record, cue dispatch, playout and as-run. 63 tests. Nothing has run against a live CoreVideo core, and nothing can drive any of it except tests.
+MAM foundation is on `main` (PR #58). The room track is unblocked once CoreVideo Pro [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953) (`scene.cueWithRoutes` / `scene.route.set`, #861) is on an installed core.
 
-Ordered. Each piece lists what done means.
+Ordered. Each piece lists what done means. Do not start later MAM (tokens, MOS, archive) in this bundle.
 
-## 1. Take means on air, with its cues
+## 1. Desk tells the truth about Program take
 
-`go` moves the rundown. `dispatch_item` sends cues. Nothing joins them.
+`show-input.take` has a FakeRoom adapter. Until a live Program take is recorded in [rooms.md](rooms.md), the cue picker must not treat it as live-proven.
 
-- Add `take_item(store, room, show_id)`: `go`, then `dispatch_item` for the new item.
-- **Decision needed:** when a cue fails, does the item stay on air with the cue armed and a failure flag, or does the take roll back? The playout spec says the rundown does not advance on a failed cue. That reads as rollback.
-- Done when: a failed cue is visible on the item, replaying the take resumes at the failed cue, and as-run in is written only after the decision's rule is met.
+- `verified` = recorded live in rooms.md (`overlay.take`, `record.start`, `stream.start`).
+- `adapter` = dispatch has a handler (`show-input.take` included).
+- Picker: `(not live-proven)` vs `(no verified adapter)`. A take still runs the adapter.
+- `VOLT_SHOW_INPUT_ACTIONS` is read by serve and the clock.
+- Done when: `/api/cue-commands` and the picker match that split; tests cover both warnings.
 
-## 2. Live proof against a real core
+This branch (`room-track-cue-verified`) is that work.
 
-The wire shapes come from CoreVideoPro source, not from a running core.
+## 2. Default pre-take uses the new core actions
 
-- Run record start, observe, stop, wrap against `127.0.0.1:8011`. Then stream start to a local SRT sink, and the lower third.
-- Check the `/invoke` args format (`[true]` is assumed), the sender snapshot key (it is `outputSenderSession`, see rooms.md), `lowerThirdOnAir` casing, and the artifact path on a finished recording.
-- Needs the owner to approve launching a core. CoreVideoPro's notes authorize control-API tests in the designated test meeting.
-- Done when: a recorded clip is minted, finalized, wrapped and checksummed on disk, and the notes in `docs/rooms.md` say "run live" with the date.
+After #953 is on a core the operator actually runs:
 
-## 3. CI and repo hygiene (small)
+- Default `show_input_actions` become `input.assign [{slot}, {source}]`, `scene.route.set [{scene}, {route}, {slot}]` (or `scene.cueWithRoutes` with a JSON object), then the existing `transport.take`.
+- Payload must name `scene` and `slot` (and a route id, or a documented default such as `ohg-host`).
+- FakeRoom keeps covering evidence; live invoke names are config, not a second handler.
+- Done when: a unit test fires those action names, and operations.md shows the JSON.
 
-- GitHub Actions: run the tests with ffmpeg installed on Windows and Linux.
-- `.gitattributes` for line endings. Git warns about LF to CRLF on every new file.
-- Delete merged branches.
-- Done when: a PR shows a green check.
+## 3. Live Program take
 
-## 4. An operator surface that can act
+Same pattern as the 2026-10-16 stream run in rooms.md.
 
-`serve.py` is read-only. The session can list, search and seek, and it cannot take, skip, start a recording, set rights, or publish.
+- Against `127.0.0.1:8011`: assign a source, cue a scene with routes, take, then `GET /snapshot` `programFrame.videoSources[]` holds the source, `sceneIdAttribution == "live"`, `deliverySequence` advanced.
+- Record date, core build, action list, and any 422s.
+- Then add `show-input.take` to `LIVE_PROVEN`. The picker drops `(not live-proven)`.
+- Done when: rooms.md has the run and the picker shows Input to program without the unverified suffix.
 
-- Rule from CoreVideoPro: design the screens first and show them, then code. The OHG Show tab was rejected for being bolted on.
-- Mockups before any endpoint: rundown with take, skip and as-run; record state with the lifecycle; rights clear/hold.
-- Then POST endpoints over the functions that already exist, with a bearer token off loopback.
-- Done when: the owner has approved the screens and an operator can run a rehearsal show without a terminal.
+## 4. Leave unsupported
 
-## 5. show-input.take
+`record.arm` and `audio.snapshot` stay without a handler. No stub.
 
-The most important cue and the one with no adapter.
+## After this bundle
 
-- Likely `input.assign` then `transport.take`, but the evidence field for what is on Program is not found yet. Find it in the snapshot (`programFrameHealth`, rendered sources) or add it in CoreVideoPro.
-- Done when: the cue fires only when the observed Program source matches the cue.
-
-## 6. The workers the docs promise
-
-Each is a job on an existing asset. Idempotency and the job table are already in place.
-
-- Speech worker that writes transcript word spans. Today `index_words` is fed by hand.
-- Deliverable transcodes: house, OTT, social. Publish URLs are placeholders.
-- Postgres as the running store. `Store` accepts a `postgres://` DSN and the contract suite passes against Postgres 16. Left: pooling, Postgres migrations, concurrent-write tests.
-- A clock that fires on a schedule. (Hold in playout is built; see the playout spec.)
-- Done when: a recorded clip becomes searchable text and three files with real URLs.
-
-## Not now
-
-MOS export, hardware playout, archive tier, a second NLE. Those stay on the roadmap.
-
-## Suggested order
-
-1 and 3 together this week, 2 as soon as a core is available, then 4 (screens first), 5, 6.
+Per-user tokens. TLS reverse-proxy recipe. MOS. Hardware playout. Archive. Second NLE. SPDX license. NLE import check (owner).
