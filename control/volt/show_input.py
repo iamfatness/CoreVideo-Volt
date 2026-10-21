@@ -1,9 +1,8 @@
 """show-input.take: put a source on Program and fire only when the core shows it there.
 
-CoreVideo Pro has no control action that routes a source into a scene (CoreVideoPro
-issue #861). `input.assign` only edits a slot and does not touch Preview or Program.
-So the steps that precede `transport.take` are configuration, a list of
-{action, args} templates, and the evidence is the core's own programFrame.
+`input.assign` only edits a slot. The default pre-take then cues Preview through
+`scene.route.set` (CoreVideo Pro #861 / PR #953). Those steps are still a list of
+{action, args} templates; the evidence is the core's own programFrame.
 """
 
 from __future__ import annotations
@@ -17,8 +16,12 @@ from volt.rooms import LiveError, ProgramObservation
 
 SCHEMES = ("zoom:", "media:", "capture:")
 
-# Default for a scene that already routes the slot. `input.assign` alone is NOT enough.
-DEFAULT_ACTIONS = [{"action": "scene.select", "args": ["{scene}"]}]
+# `input.assign` alone is NOT enough: it does not touch Preview or Program.
+DEFAULT_ROUTE = "ohg-host"
+DEFAULT_ACTIONS = [
+    {"action": "input.assign", "args": ["{slot}", "{source}"]},
+    {"action": "scene.route.set", "args": ["{scene}", "{route}", "{slot}"]},
+]
 
 
 def configured_actions(raw: Optional[str] = None) -> Optional[list]:
@@ -51,11 +54,12 @@ class ShowInput:
     source: str
     scene: Optional[str] = None
     slot: Optional[int] = None
+    route: Optional[str] = None
     transition: str = "cut"  # cut | fade
 
 
 def parse_payload(payload: str) -> ShowInput:
-    """A bare string is a source id. A JSON object may add scene, slot and transition."""
+    """A bare string is a source id. A JSON object may add scene, slot, route and transition."""
     text = (payload or "").strip()
     if not text:
         raise LiveError("show-input.take: payload names no source")
@@ -78,7 +82,8 @@ def parse_payload(payload: str) -> ShowInput:
     if slot is not None and (isinstance(slot, bool) or not isinstance(slot, int)):
         raise LiveError("show-input.take: slot must be an integer")
     scene = data.get("scene")
-    return ShowInput(source, str(scene) if scene else None, slot, transition)
+    route = str(data.get("route") or "").strip() or None
+    return ShowInput(source, str(scene) if scene else None, slot, route, transition)
 
 
 def _fill(arg, si: ShowInput):
@@ -87,7 +92,8 @@ def _fill(arg, si: ShowInput):
     if arg == "{slot}" and si.slot is not None:
         return si.slot
     values = {"{scene}": si.scene, "{source}": si.source,
-              "{slot}": None if si.slot is None else str(si.slot)}
+              "{slot}": None if si.slot is None else str(si.slot),
+              "{route}": si.route or DEFAULT_ROUTE}
     for key, value in values.items():
         if key in arg:
             if value is None:

@@ -88,7 +88,7 @@ def dispatch_item(
 
     A cue that fails or is unsupported stays armed. Fired cues are skipped on replay.
     `show_input_actions` is the configurable list of {action, args} steps that run
-    before transport.take for show-input.take (default: scene.select).
+    before transport.take for show-input.take (default: input.assign then scene.route.set).
     """
     ctx = {"owner": owner, "attempts": attempts, "interval": interval, "sleep": sleep,
            "show_input_actions": show_input_actions}

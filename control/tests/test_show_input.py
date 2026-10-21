@@ -28,7 +28,7 @@ def prog(seq, *sources, attribution="live", stale=False, available=True):
 OLD = src("zoom:1", "1", layer="L1")
 NEW = src("zoom:2", "2", layer="L1")
 CUT = [prog(10, OLD), prog(11, NEW), prog(12, NEW)]
-SCENE = json.dumps({"source": "zoom:2", "scene": "scene-b"})
+SCENE = json.dumps({"source": "zoom:2", "scene": "scene-b", "slot": 1})
 
 
 def _run(room, payload=SCENE, **kw):
@@ -52,16 +52,30 @@ class Payload(unittest.TestCase):
             with self.assertRaises(LiveError, msg=bad):
                 parse_payload(bad)
 
-    def test_default_action_is_scene_select_and_needs_a_scene(self):
-        self.assertEqual(plan_actions(parse_payload(SCENE), None), [("scene.select", ["scene-b"])])
-        with self.assertRaises(LiveError):
+    def test_default_actions_assign_then_route_set(self):
+        self.assertEqual(plan_actions(parse_payload(SCENE), None), [
+            ("input.assign", [1, "zoom:2"]),
+            ("scene.route.set", ["scene-b", "ohg-host", 1]),
+        ])
+        with self.assertRaises(LiveError) as ctx:
             plan_actions(parse_payload("zoom:2"), None)
+        self.assertIn("needs slot", str(ctx.exception))
+        with self.assertRaises(LiveError) as ctx:
+            plan_actions(parse_payload('{"source":"zoom:2","slot":1}'), None)
+        self.assertIn("needs scene", str(ctx.exception))
+
+    def test_payload_route_overrides_ohg_host(self):
+        si = parse_payload('{"source":"zoom:2","scene":"s","slot":2,"route":"ohg-box-1"}')
+        self.assertEqual(plan_actions(si, None), [
+            ("input.assign", [2, "zoom:2"]),
+            ("scene.route.set", ["s", "ohg-box-1", 2]),
+        ])
 
     def test_templates_keep_slot_an_int(self):
         si = parse_payload('{"source":"zoom:2","slot":3,"scene":"s"}')
         steps = plan_actions(si, [{"action": "input.assign", "args": ["{slot}", "{source}"]},
-                                  {"action": "scene.select", "args": ["{scene}"]}])
-        self.assertEqual(steps, [("input.assign", [3, "zoom:2"]), ("scene.select", ["s"])])
+                                  {"action": "scene.route.set", "args": ["{scene}", "{route}", "{slot}"]}])
+        self.assertEqual(steps, [("input.assign", [3, "zoom:2"]), ("scene.route.set", ["s", "ohg-host", 3])])
 
 
 class ConfiguredActions(unittest.TestCase):
@@ -96,7 +110,11 @@ class Evidence(unittest.TestCase):
     def test_happy_cut_sends_actions_in_order_then_take(self):
         room = FakeRoom([obs("idle")], program=CUT)
         _run(room)
-        self.assertEqual(room.calls, [("scene.select", ["scene-b"]), ("transport.take", [])])
+        self.assertEqual(room.calls, [
+            ("input.assign", [1, "zoom:2"]),
+            ("scene.route.set", ["scene-b", "ohg-host", 1]),
+            ("transport.take", []),
+        ])
 
     def test_configured_actions_replace_the_default(self):
         room = FakeRoom([obs("idle")], program=CUT)
@@ -122,7 +140,7 @@ class Evidence(unittest.TestCase):
     def test_bad_payload_or_template_sends_nothing(self):
         room = FakeRoom([obs("idle")], program=CUT)
         _fails(self, room, "no source", payload="")
-        _fails(self, room, "needs scene", payload="zoom:2")
+        _fails(self, room, "needs slot", payload="zoom:2")
         self.assertEqual(room.calls, [])
 
     def test_stale(self):
@@ -183,16 +201,16 @@ class Evidence(unittest.TestCase):
                  ("hdmi", src("capture:hdmi"))]
         for target, new in cases:
             room = FakeRoom([obs("idle")], program=[prog(10, OLD), prog(11, new), prog(12, new)])
-            _run(room, json.dumps({"source": target, "scene": "s"}))
+            _run(room, json.dumps({"source": target, "scene": "s", "slot": 1}))
 
     def test_prefixed_target_does_not_match_a_different_scheme(self):
         new = src("media:2", "")
         room = FakeRoom([obs("idle")], program=[prog(10, OLD), prog(11, new), prog(12, new)])
-        _fails(self, room, "not on program", json.dumps({"source": "zoom:2", "scene": "s"}))
+        _fails(self, room, "not on program", json.dumps({"source": "zoom:2", "scene": "s", "slot": 1}))
 
 
 class Fade(unittest.TestCase):
-    FADE = json.dumps({"source": "zoom:2", "scene": "scene-b", "transition": "fade"})
+    FADE = json.dumps({"source": "zoom:2", "scene": "scene-b", "slot": 1, "transition": "fade"})
 
     def test_fade_allows_outgoing_but_waits_for_the_transition(self):
         both = [prog(10, OLD), prog(11, NEW, OLD), prog(12, NEW, OLD), prog(13, NEW), prog(14, NEW)]
@@ -326,7 +344,11 @@ class StubServer(unittest.TestCase):
     def test_happy_path_over_http(self):
         _Core.lag = 1
         _run(self.room)
-        self.assertEqual(_Core.posted, [("scene.select", ["scene-b"]), ("transport.take", [])])
+        self.assertEqual(_Core.posted, [
+            ("input.assign", [1, "zoom:2"]),
+            ("scene.route.set", ["scene-b", "ohg-host", 1]),
+            ("transport.take", []),
+        ])
 
     def test_ack_only_server_never_fires(self):
         _Core.flip = False
@@ -346,7 +368,7 @@ class StubServer(unittest.TestCase):
 
     def test_fade_waits_for_transition_over_http(self):
         _Core.transition = "running"
-        fade = json.dumps({"source": "zoom:2", "scene": "scene-b", "transition": "fade"})
+        fade = json.dumps({"source": "zoom:2", "scene": "scene-b", "slot": 1, "transition": "fade"})
         _fails(self, self.room, "fade not finished", fade)
 
     def test_missing_program_frame_is_unavailable(self):
