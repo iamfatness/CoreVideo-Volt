@@ -23,7 +23,7 @@ Done on `main` (PR #59).
 - FakeRoom keeps covering evidence; live invoke names are config, not a second handler.
 - Done when: a unit test fires those action names, and operations.md shows the JSON.
 
-This branch (`feat/show-input-route-default`) is that work.
+Done on `main` (PR #60).
 
 ## 3. Live Program take
 
@@ -33,6 +33,8 @@ Same pattern as the 2026-10-16 stream run in rooms.md.
 - Record date, core build, action list, and any 422s.
 - Then add `show-input.take` to `LIVE_PROVEN`. The picker drops `(not live-proven)`.
 - Done when: rooms.md has the run and the picker shows Input to program without the unverified suffix.
+
+Done on branch `live-program-take`: run recorded in [rooms.md](rooms.md), `show-input.take` is in `LIVE_PROVEN`.
 
 ## 4. Leave unsupported
 

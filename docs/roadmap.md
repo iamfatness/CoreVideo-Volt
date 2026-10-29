@@ -10,6 +10,6 @@ The operations layer in [product-readiness.md](product-readiness.md) (start comm
 
 ## Next
 
-Room track: [next-bundle](next-bundle.md). Default pre-take is `input.assign` then `scene.route.set` (CoreVideo Pro #861 / [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953)). Next is a recorded live Program take, then `show-input.take` is live-proven on the desk.
+Room track: [next-bundle](next-bundle.md). Default pre-take is `input.assign` then `scene.route.set` (CoreVideo Pro #861 / [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953)). The live Program take is recorded (2026-10-28) and `show-input.take` is live-proven on the desk.
 
 Per-user tokens and roles. TLS as a supported reverse-proxy recipe. MOS export of the rundown. Hardware playout adapter. Archive tier with restore. A second NLE. Recurring and relative playout schedules. License SPDX (owner).

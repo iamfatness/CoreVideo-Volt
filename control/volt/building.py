@@ -29,7 +29,7 @@ from volt.store import Store, _id, _now
 CUE_ROOM = "corevideo.pro"
 # Commands whose adapter has been run against a live core and recorded in rooms.md.
 # show-input.take has a handler and FakeRoom evidence; it is not live-proven until a Program take is.
-LIVE_PROVEN = frozenset({"overlay.take", "record.start", "stream.start"})
+LIVE_PROVEN = frozenset({"overlay.take", "record.start", "show-input.take", "stream.start"})
 
 
 class BuildError(Exception):
@@ -218,7 +218,7 @@ def cue_commands() -> list[dict]:
     `adapter` is whether dispatch has a handler. `verified` is whether that handler has been
     proven against a live core (rooms.md). A cue without an adapter can be stored and armed,
     but a take stops at it with `cue_unsupported`. A cue with an adapter that is not live-proven
-    still runs on take; the picker labels it unverified until rooms records a live Program take.
+    still runs on take; a command leaves this list only when rooms.md records a live run.
     """
     return [{"room": CUE_ROOM, "command": c, "adapter": c in HANDLERS, "verified": c in LIVE_PROVEN}
             for c in sorted(cue_mod.COREVIDEO_COMMANDS)]
