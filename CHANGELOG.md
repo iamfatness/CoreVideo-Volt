@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Per-user tokens with two roles, operator and admin (migration 17, table `volt_user`, `volt user add|list|disable|enable|rotate`). Tokens are stored as sha256 hashes and shown once; the audit actor is the token's user; operators get `403 forbidden_role` on delete, unpublish, re-detect and user management. `VOLT_TOKEN` keeps working as an admin named `desk`. A users-only server may bind beyond loopback once an enabled admin exists. Every POST route is classified in `ROUTE_ROLES`, and a test fails on an unclassified one. New: `GET /api/whoami`, `GET/POST /api/users...`. See [operations](docs/operations.md#users-and-tokens).
+
 - `deploy/postgres/compose.yaml`: a local Postgres 16 container for Volt, with setup and a recorded run in [operations](docs/operations.md).
 
 - [docs/tls.md](docs/tls.md): a supported TLS reverse-proxy recipe for Caddy and nginx (Volt on loopback, token required, 64 KiB body cap, Range passthrough, HSTS). Run through both with an internal certificate; no code change was needed. Linked from operations and product-readiness gap 14.

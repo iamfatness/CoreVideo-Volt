@@ -128,6 +128,7 @@
     not_wrapped: 'Not wrapped', publish_failed: 'Publish failed', not_found: 'Not found',
     not_skippable: 'Cannot skip', not_killable: 'Cannot kill', not_attachable: 'Cannot attach',
     bad_input: 'Bad input', unauthorized: 'Token needed', bad_host: 'Wrong host',
+    forbidden_role: 'Admin only',
     too_large: 'Too large', internal: 'Server error',
     overlaps_shot: 'Shots overlap', span_in_use: 'Span in use', bad_timecode: 'Bad timecode',
     outside_source: 'Outside the source', no_proxy: 'No proxy', not_deletable: 'Cannot delete',
@@ -298,6 +299,20 @@
     n.classList.toggle('bad', state === 'lost' || state === 'token');
   }
 
+  // Show who the token belongs to on the Token button. Best effort: an older server has no /api/whoami.
+  let whoamiFor = null;
+  async function showWhoami() {
+    const token = getToken();
+    if (!token) { whoamiFor = null; $('token-btn').textContent = 'Token'; return; }
+    if (whoamiFor === token) return;
+    whoamiFor = token;
+    try {
+      const res = await fetch('/api/whoami', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+      const who = res.ok ? await res.json() : null;
+      $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
+    } catch (e) { /* leave the button as it is */ }
+  }
+
   async function refresh() {
     const epoch = S.epoch;
     try {
@@ -307,6 +322,7 @@
       if (epoch !== S.epoch) return; // an action finished meanwhile; its own refresh follows
       S.lastOk = Date.now();
       setConn('ok');
+      showWhoami();
       data.rundown = data.rundown ? parseRundown(data.rundown) : null;
       S.data = data;
       if (data.show && S.show !== data.show.id) S.show = data.show.id;

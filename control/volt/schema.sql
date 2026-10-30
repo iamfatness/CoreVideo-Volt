@@ -190,3 +190,11 @@ CREATE TABLE IF NOT EXISTS audit (
   target_id TEXT NOT NULL,
   detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS volt_user (
+  name TEXT PRIMARY KEY,
+  role TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL,
+  disabled_at TIMESTAMPTZ
+);

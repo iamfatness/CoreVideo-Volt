@@ -102,6 +102,9 @@ MIGRATIONS = (
               postgres=("CREATE TABLE IF NOT EXISTS audit ("
                         "id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, "
                         "target_kind TEXT NOT NULL, target_id TEXT NOT NULL, detail TEXT)",)),
+    # volt_user is a new table (base-table creation makes it), as in 4, 7 and 12: per-user tokens, stored as a
+    # sha256 hash with a role (operator or admin). Named volt_user because USER is reserved on Postgres.
+    Migration(17, "volt_user table"),
 )
 
 LATEST = MIGRATIONS[-1].version

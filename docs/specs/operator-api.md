@@ -22,7 +22,27 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 
 `Authorization: Bearer <VOLT_TOKEN>`, compared in constant time (`hmac.compare_digest`). Missing or wrong: `401 unauthorized` with `WWW-Authenticate: Bearer`, checked before routing. When a token is set it also guards the GET data routes (`/assets`, `/rundown`, `/seek`, `/api/audit`, `/api/media-ticket`); only the static shell at `/` stays open.
 
-`X-Volt-Actor` on any POST, 1–100 characters matching `[A-Za-z0-9._:-]`, default `desk`. If the header is absent, body `owner` (take, record, ingest) is used. Invalid: `422 bad_actor` before the action. A 2xx that changed or confirmed state writes one `audit` row (`actor`, `action`, `target_id`). A 401/404/409 writes none. `GET /api/audit?target=<id>` returns the last 200 rows for that target (newest first).
+`X-Volt-Actor` on any POST made with the legacy `VOLT_TOKEN` (or on an open loopback server), 1–100 characters matching `[A-Za-z0-9._:-]`, default `desk`. If the header is absent, body `owner` (take, record, ingest) is used. Invalid: `422 bad_actor` before the action. A 2xx that changed or confirmed state writes one `audit` row (`actor`, `action`, `target_id`). A 401/404/409 writes none. `GET /api/audit?target=<id>` returns the last 200 rows for that target (newest first).
+
+### Per-user tokens and roles
+
+Besides `VOLT_TOKEN` (an admin named `desk`), `Authorization: Bearer <token>` may be a per-user token made by `volt user add`
+(table `volt_user`, only a sha256 stored). The user has one role: `operator` or `admin`. Operators can call every route
+except those marked admin in `ROUTE_ROLES` (`serve.py`): `POST /api/assets/{id}/delete`, `/api/shows/{id}/delete`,
+`/api/spans/{id}/delete`, `/api/versions/{id}/unpublish`, `/api/assets/{id}/shots/detect`, and the user routes below. A
+per-user token's audit actor is its user name; `X-Volt-Actor` and body `owner` do not change it.
+
+| Route | Role | Notes |
+|---|---|---|
+| `GET /api/whoami` | any | `{ok, name, role, legacy}` |
+| `GET /api/users` | admin | `{ok, users: [{name, role, created_at, disabled_at}]}`; never tokens |
+| `POST /api/users` | admin | `{name, role}` -> `{ok, user, token}`; the token is shown only here |
+| `POST /api/users/{name}/disable` / `enable` | admin | disable is immediate; the last enabled admin is `409 last_admin` unless `VOLT_TOKEN` is set |
+| `POST /api/users/{name}/rotate` | admin | `{ok, user, token}`; the old token stops working at once; `409 user_disabled` for a disabled user |
+
+Errors: `403 forbidden_role`, `401 unauthorized` (also a disabled or rotated-out token), `422 bad_name`/`bad_role`, `409
+user_exists`, `404 no_such_user`, `503 auth_unavailable` (the user table could not be read; the request is refused, not let through).
+Once any user row exists a token is required for everything but the static shell, even with no `VOLT_TOKEN`.
 
 Environment: `VOLT_HOST` (default `127.0.0.1`), `VOLT_PORT` (default 8765), `VOLT_TOKEN`, `VOLT_MEDIA_KEY` (optional HMAC key for media tickets; otherwise `VOLT_TOKEN`), `VOLT_DB`, `VOLT_INGEST_ROOTS` and `VOLT_QUARANTINE` (ingest, see Show building), `VOLT_OUT` (publish output directory, default `control/out`), `VOLT_ROOM_URL` and `VOLT_ROOM_TOKEN` (the CoreVideoPro room; unset means room-backed routes answer `503 no_room`).
 
@@ -129,7 +149,7 @@ All are `GET`, behind the same auth and host rules as every other data route (be
 | `/api/assets/{asset}/proxy` | The proxy file, streamed. Honours one `Range` (`206` with `Content-Range`; `bytes=a-b`, `a-`, `-n`). A range past the end, malformed, or on an empty file is `416 bad_range` with `Content-Range: bytes */<size>`. Several ranges, a non-`bytes` unit and any request with `If-Range` get the whole file (`200`), which the spec allows. `404 no_proxy` when there is no proxy row or its file is gone. Accepts `?ticket=`. |
 | `/media?path=<location>` | The old shell's player. `path` must equal, as a string, the `location` of a registered proxy essence; anything else (an unregistered file, a hi-res, `..`, a missing parameter's value) is `404 not_found`. The string is only compared, never opened. Same `Range` behaviour. |
 | `/api/spans/{span}/thumb` | `image/jpeg`, 320 px wide, `Cache-Control: private, max-age=3600`. Cached at `VOLT_OUT/thumbs/<asset>/<span>-<frame>.jpg`; made on first request with one ffmpeg seek on the proxy (frame is `frame_in + max(2, 10% of length)`, kept inside the span). `404 no_proxy`; `502 thumb_failed` (ffmpeg missing, non-zero exit, or no image); `504 thumb_timeout` (15 s limit). A failure or timeout leaves no file behind, so the next request tries again. Accepts `?ticket=`. |
-| `/api/media-ticket?asset=&kind=proxy\|thumb&ttl?` | `{ok, url, expires}`. HMAC ticket on the existing media path (`?ticket=`). Default TTL 120 s, max 3600. Signing key is `VOLT_MEDIA_KEY` or `VOLT_TOKEN`. Loopback with no token does not need a ticket. `503 no_media_key` when neither key is set. |
+| `/api/media-ticket?asset=&kind=proxy\|thumb&ttl?` | `{ok, url, expires}`. HMAC ticket on the existing media path (`?ticket=`). Default TTL 120 s, max 3600. Signing key is `VOLT_MEDIA_KEY` or `VOLT_TOKEN` (a users-only server needs `VOLT_MEDIA_KEY`). Loopback with no token does not need a ticket. `503 no_media_key` when neither key is set. |
 | `/api/audit?target=` | Last 200 audit rows for that `target_id` (newest first): `id, at, actor, action, target_kind, target_id, detail`. |
 
 Span JSON: `id, assetId, kind, origin, label, tcIn, tcOut, frameIn, frameOut, text, runId, blockedBy, usedBy: {items, versions}`. `blockedBy` is `null`, `"not cleared"` or `"legal hold"`, same words as `/api/state`. `lastRun` is the newest `shot_run` row (`job, essence, engine, engineVersion, threshold, minFrames, shotCount, createdAt`) or `null`.
@@ -191,7 +211,7 @@ Same contract and auth as above; rights are never consulted (a legal hold or an 
 
 ## Other codes
 
-`401 unauthorized` (also `ticket_invalid` / expired media ticket), `403 bad_host`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 taking` (go, take, skip, kill, clock while an item of the show is taking), `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `503 no_media_key`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`, `bad_actor`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
+`401 unauthorized` (also `ticket_invalid` / expired media ticket), `403 bad_host`, `403 forbidden_role`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 taking` (go, take, skip, kill, clock while an item of the show is taking), `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `503 no_media_key`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`, `bad_actor`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).
 
 ## Known limits
 
