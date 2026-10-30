@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- `show-input.take` is live-proven: a recorded Program take against CoreVideo Pro beta-2026-10-26 (`bench/live_take_check.py`, [rooms.md](docs/rooms.md)); the cue picker drops "(not live-proven)" for it.
+
 - The operator desk treats a `taking` item as the current row (`GET /api/state` names it; TAKE/GO wait). `volt watch --once` persists fingerprints so a later scan can enqueue; a brand-new file still waits for `VOLT_WATCH_STABLE_SECONDS`.
 - Docs list the finished foundation work as in the tree. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not a Volt license.
 - `volt check` warns `sqlite_on_air` when `VOLT_ROOM_URL` is set and `VOLT_DB` is SQLite.
