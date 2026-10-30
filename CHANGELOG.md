@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- [docs/tls.md](docs/tls.md): a supported TLS reverse-proxy recipe for Caddy and nginx (Volt on loopback, token required, 64 KiB body cap, Range passthrough, HSTS). Run through both with an internal certificate; no code change was needed. Linked from operations and product-readiness gap 14.
+
 - `show-input.take` is live-proven: a recorded Program take against CoreVideo Pro beta-2026-10-26 (`bench/live_take_check.py`, [rooms.md](docs/rooms.md)); the cue picker drops "(not live-proven)" for it.
 
 - The operator desk treats a `taking` item as the current row (`GET /api/state` names it; TAKE/GO wait). `volt watch --once` persists fingerprints so a later scan can enqueue; a brand-new file still waits for `VOLT_WATCH_STABLE_SECONDS`.
