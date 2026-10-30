@@ -1,0 +1,29 @@
+# Local Postgres for Volt. Loopback only, one named volume.
+#
+#   cp postgres.env.example postgres.env     # set VOLT_PG_PASSWORD
+#   docker compose --env-file postgres.env up -d
+#   VOLT_DB=postgresql://volt:<password>@127.0.0.1:5433/volt volt check
+#
+# The volume lives inside Docker's data disk. On this project's dev box that disk is on D:
+# (D:\DockerDesktop\wsl), so check free space on the drive that holds it before a large load.
+services:
+  postgres:
+    image: postgres:16
+    container_name: volt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: volt
+      POSTGRES_DB: volt
+      POSTGRES_PASSWORD: ${VOLT_PG_PASSWORD:?set VOLT_PG_PASSWORD in postgres.env}
+    ports:
+      - "127.0.0.1:${VOLT_PG_PORT:-5433}:5432"
+    volumes:
+      - volt-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volt -d volt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  volt-pgdata:
