@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- MOS export of the rundown: `GET /api/shows/{show}/mos` and `volt mos export <show> [--out file]` render a show as a MOS `roCreate` XML message (items as stories, the attached span as the story's item, durations and timebase from the span, cues optional and namespaced). Read-only; nothing is sent. Structurally follows MOS 2.8.5 as documented; unvalidated against an NCS or the MOS XSD/DTD ([mos.md](docs/specs/mos.md)).
+
 - Per-user tokens with two roles, operator and admin (migration 17, table `volt_user`, `volt user add|list|disable|enable|rotate`). Tokens are stored as sha256 hashes and shown once; the audit actor is the token's user; operators get `403 forbidden_role` on delete, unpublish, re-detect and user management. `VOLT_TOKEN` keeps working as an admin named `desk`. A users-only server may bind beyond loopback once an enabled admin exists. Every POST route is classified in `ROUTE_ROLES`, and a test fails on an unclassified one. New: `GET /api/whoami`, `GET/POST /api/users...`. See [operations](docs/operations.md#users-and-tokens).
 
 - `deploy/postgres/compose.yaml`: a local Postgres 16 container for Volt, with setup and a recorded run in [operations](docs/operations.md).

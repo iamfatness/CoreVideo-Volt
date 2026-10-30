@@ -138,6 +138,18 @@ Refusals (nothing is written): 404 `not_found` (a span); 409 `essence_open` (the
 
 `VOLT_EXPORT_PATH_MAP` (server environment, read on each request): `D:\iso=\\nas\iso;E:\cam=/Volumes/cam`. A leading prefix of the stored media location is rewritten (segment boundary, longest prefix first, Windows prefixes case-insensitive) when building the file's media path. Unset means paths are written as stored.
 
+## MOS export (rundown)
+
+`GET /api/shows/{show}/mos[?cues=1&mos_id=&ncs_id=]`. Read-only and stateless: same auth, host and error rules as every other read; nothing is written, audited or sent. Returns the show as one MOS `roCreate` message in `content` (UTF-8 XML), with `{ok, format: "mos-roCreate", mosVersion, validated: false, conformance, filename, mime, show, sha256, stories, items, durationSeconds, includeCues, warnings}`. Design, element mapping and the conformance statement: [mos.md](mos.md). **Structurally follows MOS 2.8.5 roCreate as documented; unvalidated against an NCS or the MOS XSD/DTD.**
+
+| Parameter | Meaning |
+| --- | --- |
+| `cues` | `1`/`true` adds each item's cues as namespaced `mosExternalMetadata`. Default off. |
+| `mos_id` | `mosID` of this media object server (default `volt.mos`). Letters, digits, `_ . : -`, 1 to 128. |
+| `ncs_id` | `ncsID` of the receiving system (default `ncs.unset`). Same rule. |
+
+Refusals: `404 not_found` (unknown show), `422 bad_input` (unknown, repeated or malformed parameter). The `{show}` segment is the show id. The CLI (`volt mos export <show> [--out file] [--db] [--cues] [--mos-id] [--ncs-id]`) also accepts an exact title.
+
 ## Read endpoints (shot spans, slice 2)
 
 All are `GET`, behind the same auth and host rules as every other data route (bearer token when set; `403 bad_host` on a non-loopback `Host` with no token). Errors use the same `{ok: false, error: {code, reason}}` shape. Unknown query parameters, a repeated parameter and bad values are `422 bad_input`; an unknown asset or span is `404 not_found`. Nothing here writes control-plane state.
