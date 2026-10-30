@@ -7,6 +7,7 @@
     volt restore  restore a backup into a database; volt verify checks one; volt verify-storage checks media
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
+    volt user     per-user tokens: add, list, disable, enable, rotate (operator and admin roles)
     volt watch    enqueue ingest for files sitting still in VOLT_INGEST_ROOTS
     volt mos      volt mos export <show> [--out file]: the rundown as a MOS roCreate message (read-only)
     volt version  the build
@@ -198,6 +199,9 @@ def main(argv=None) -> int:
         from volt import clock
         _bridge_break_signal()
         return clock.main(rest)
+    if command == "user":
+        from volt import users
+        return users.main(rest)
     if command == "mos":
         return _mos(rest)
     if command == "watch":

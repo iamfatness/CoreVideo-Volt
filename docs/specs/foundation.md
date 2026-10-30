@@ -15,14 +15,14 @@ The session already mints, proxies, transcribes, marks, and publishes. A small t
 3. Ingest is a job. The operator and a watch folder enqueue; the runner copies, probes, and checksums.
 4. Authenticated media plays with Range requests. The operator token never appears in a URL.
 5. A job can carry a JSON payload. Settings do not live in the idempotency key.
-6. Every mutating operator call records an actor. One shared token is still the auth.
+6. Every mutating operator call records an actor. A per-user token supplies it; the shared `VOLT_TOKEN` takes it from `X-Volt-Actor`.
 7. `volt` from a wheel finds its pages and schema. `/` is the operator desk.
 8. A backup names every essence file the restore will need. An opt-in copy takes the local bytes.
 9. Docs state what the tree does. Stale "next" lists are gone.
 
 ## Non-goals
 
-- Per-user tokens, passwords, roles. Actor is a name on the call, not an account.
+- Passwords, SSO, and more than two roles. Per-user tokens with the operator and admin roles are built (see [operator-api](operator-api.md#per-user-tokens-and-roles)); the legacy shared `VOLT_TOKEN` still works as an admin named `desk`.
 - Replacing `http.server`. TLS is a reverse-proxy recipe in operations, not a Volt TLS stack.
 - vMix, OBS, MOS, Premiere import, hardware playout, archive tier.
 - Rewriting `operator.js` or generating its timecode from Python. The existing twin test stays.

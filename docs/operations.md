@@ -78,7 +78,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_PUBLISH_DIR` | none | Local publish directory. Required for `VOLT_STORAGE=local` publishing. |
 | `VOLT_HOST` | `127.0.0.1` | Bind address. Anything but loopback needs `VOLT_TOKEN`. |
 | `VOLT_PORT` | `8765` | Port; `0` picks a free one. |
-| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only. POSTs may send `X-Volt-Actor` (default `desk`). |
+| `VOLT_TOKEN` | none | Legacy shared bearer token, treated as an admin named `desk`. Required (16+ characters) to bind beyond loopback unless an enabled admin user exists. With no token and no users the server answers loopback `Host` headers only, so behind a TLS proxy a token or user is required ([tls](tls.md)). POSTs with this token may send `X-Volt-Actor` (default `desk`); per-user tokens ignore the header. |
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
@@ -151,10 +151,54 @@ upload. Details and what is proven are in `docs/specs/storage.md`.
 | azure | `VOLT_AZURE_CONTAINER` (required), `VOLT_AZURE_ACCOUNT_URL` or `AZURE_STORAGE_CONNECTION_STRING` (one required), `VOLT_AZURE_PREFIX`, `VOLT_AZURE_URL_EXPIRES` (7 days), `VOLT_AZURE_PUBLIC_URL_BASE`, `VOLT_AZURE_BLOCK_MB` (16) |
 | gcs | `VOLT_GCS_BUCKET` (required), `VOLT_GCS_PREFIX`, `VOLT_GCS_PROJECT`, `VOLT_GCS_ENDPOINT_URL`, `VOLT_GCS_URL_EXPIRES` (7 days), `VOLT_GCS_PUBLIC_URL_BASE`, `VOLT_GCS_CHUNK_MB` (16) |
 
+### Local Postgres in a container
+
+`deploy/postgres/compose.yaml` runs Postgres 16 on loopback port 5433 (override with `VOLT_PG_PORT`) with one named volume, `restart: unless-stopped` and a health check.
+
+```
+cd deploy/postgres
+cp postgres.env.example postgres.env        # set VOLT_PG_PASSWORD (postgres.env is git-ignored)
+docker compose --env-file postgres.env up -d
+export VOLT_DB='postgresql://volt:<password>@127.0.0.1:5433/volt'
+volt check
+```
+
+The volume lives in Docker's data disk. Check free space on the drive that holds it before a large load (on the dev box that disk is on D:). `volt backup` and `volt restore` still need `pg_dump` and `pg_restore` on the machine that runs Volt; the container's copies are not used.
+
+Run against it on 2026-10-30 (Windows 11, Docker Desktop 29.8.2, postgres:16, Python 3.12.10, psycopg 3.3.6): the full suite with `VOLT_TEST_PG_DSN` set ran 1434 tests, OK, 44 skipped (428 skipped without it); `volt check` passed the database line; `volt.serve` with `VOLT_PG_POOL_MAX=4` created schema v16, `/api/health` reported `postgres` current, a POSTed show was in the table and was still there after a container restart. Backup drill, same day, with `pg_dump` and `pg_restore` 16.10 from the EnterpriseDB binaries zip (extracted to a folder and pointed at with `VOLT_PG_DUMP` / `VOLT_PG_RESTORE`) against the 16.15 server: two shows created through the API, `volt backup` (schema v16, 20 rows, SHA-256 in the manifest), `volt verify` (exit 0), `volt restore` into a fresh database (2 shows in source and copy). A dump with one byte appended failed `volt verify` with exit 2 ("is 24153 bytes, the manifest says 24152"), and `volt restore` onto the now non-empty copy was refused with exit 2 until `--overwrite`. Not run: `--with-media`, `--overwrite`, `volt verify-storage`, a restore from an older schema, a runner or clock against Postgres, and a managed cloud Postgres.
+
 ### Postgres pool
 
 Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_POOL_MIN`, `VOLT_PG_POOL_TIMEOUT`,
 `VOLT_PG_POOL_MAX_IDLE`, `VOLT_PG_POOL_MAX_LIFETIME`.
+
+
+## Users and tokens
+
+Two roles. **operator** runs the show: go, take, hold, release, skip, kill, reorder, attach, record, clear/legal-hold/restore
+rights, publish, clip edits, rundown and cue writes, ingest, and every read. **admin** does all of that plus managing
+users and tokens, and the destructive actions: delete an asset, delete a show, delete a clip, unpublish, and re-detect shots.
+The full table is `ROUTE_ROLES` in `control/volt/serve.py`; a test fails when a route is not classified.
+
+```
+volt user add alice --role operator     # prints the token once; it cannot be recovered
+volt user add root --role admin
+volt user list [--json]                 # names, roles, state; never tokens
+volt user disable alice                 # revoked on her next request
+volt user enable alice
+volt user rotate alice                  # prints a replacement once; the old token stops working at once
+```
+
+Tokens are random, stored only as a sha256 hash (table `volt_user`, migration 17) and compared in constant time. The
+audit actor for a per-user token is the user's name; `X-Volt-Actor` is ignored for it. A role violation is `403
+forbidden_role`; a bad or disabled token is `401 unauthorized`. The last enabled admin cannot be disabled unless
+`VOLT_TOKEN` is set. `volt user` reads `VOLT_DB` (or `--db`) and works on the database directly, so it also recovers a
+locked-out server. An admin can do the same over HTTP (`POST /api/users`, `/api/users/{name}/disable|enable|rotate`,
+`GET /api/users`).
+
+A users-only setup (no `VOLT_TOKEN`) may bind beyond loopback once one enabled admin exists. As soon as any user row
+exists, every non-static request needs a token. Media tickets need a signing key: set `VOLT_MEDIA_KEY` when you have no
+`VOLT_TOKEN`. Tokens cross the LAN in the clear without TLS, as before.
 
 ## Start
 
@@ -276,9 +320,10 @@ is not blocked from starting.
 - **License.** There is no LICENSE file: the owner has not chosen one. Until then nobody outside the owner has a
   right to install or redistribute Volt. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not
   a grant for Volt.
-- **Auth.** One shared bearer token, no users or roles. Operator writes take `X-Volt-Actor` (default `desk`) and
-  append to `audit`; `GET /api/audit?target=` is the read.
-- **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
+- **Auth.** Per-user tokens with two roles (operator, admin; see "Users and tokens" above), plus the legacy shared
+  `VOLT_TOKEN` as an admin named `desk`. Writes append to `audit` with the token's user as the actor;
+  `GET /api/audit?target=` is the read. No passwords, SSO or finer roles.
+- **TLS.** Volt speaks plain HTTP by design. The supported setup is a Caddy or nginx reverse proxy on the same machine with Volt on loopback and `VOLT_TOKEN` set: [tls](tls.md) has the configs and the run that checked them (Caddy 2.11.7, nginx 1.31.8, internal certificate; public-certificate issuance and HTTP/2 not run).
 - **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.
 - **Not exercised on real systems:** the Task Scheduler registration and the systemd unit were reviewed and the

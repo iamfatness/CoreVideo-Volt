@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets
+from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
@@ -93,7 +93,18 @@ _AUDIT_KIND = {
     "record": "asset",
     "ingest": "asset",
     "exports": "export",
+    "users": "user",
 }
+
+
+class Principal:
+    """Who a request is: a per-user token (name, role), or the legacy VOLT_TOKEN / open loopback (desk, admin)."""
+
+    def __init__(self, name: str, role: str, legacy: bool):
+        self.name, self.role, self.legacy = name, role, legacy
+
+
+LEGACY_ACTOR = "desk"
 
 
 class ConfigError(Exception):
@@ -127,12 +138,15 @@ def _host_name(header: str) -> str:
     return header.rsplit(":", 1)[0] if header.count(":") == 1 else header
 
 
-def check_bind(host: str, token) -> None:
-    """Refuse a non-loopback bind unless a real token is set."""
+def check_bind(host: str, token, has_admin_user: bool = False) -> None:
+    """Refuse a non-loopback bind unless a real token is set, or (with no VOLT_TOKEN) an enabled admin user exists."""
     if _is_loopback(host):
         return
+    if not token and has_admin_user:
+        return
     if not token:
-        raise ConfigError(f"refusing to bind {host!r}: set VOLT_TOKEN to serve beyond loopback")
+        raise ConfigError(f"refusing to bind {host!r}: set VOLT_TOKEN to serve beyond loopback "
+                          "(or create an admin with `volt user add NAME --role admin`)")
     if len(token) < MIN_REMOTE_TOKEN:
         raise ConfigError(f"refusing to bind {host!r}: VOLT_TOKEN must be at least {MIN_REMOTE_TOKEN} characters")
 
@@ -216,8 +230,11 @@ def _unknown_keys(body: dict, allowed: set) -> None:
         raise ApiError(422, "bad_input", f"unknown field(s): {', '.join(extra)}")
 
 
-def _actor(headers, body: dict) -> str:
-    """X-Volt-Actor, else body owner, else desk. Invalid is 422 before the mutation runs."""
+def _actor(headers, body: dict, principal=None) -> str:
+    """A per-user token's own name (the header is ignored). Otherwise X-Volt-Actor, else body owner, else desk.
+    Invalid is 422 before the mutation runs."""
+    if principal is not None and not principal.legacy:
+        return principal.name
     given = headers.get("X-Volt-Actor")
     if given is None:
         given = body["owner"] if "owner" in body else "desk"
@@ -233,6 +250,10 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "delete_asset"
     if len(parts) >= 2 and parts[1] == "record":
         action = "record_" + parts[-1]
+    if len(parts) >= 2 and parts[1] == "users":
+        action = "user_" + (parts[-1] if len(parts) > 2 else "add")
+        if not captured and isinstance(out.get("user"), dict):
+            captured = out["user"].get("name") or ""
     kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
     target = captured or ""
     if not target:
@@ -737,6 +758,40 @@ READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
 MOS_ROUTE = re.compile(rf"^/api/shows/{_ID}/mos$")
 
+def _user_error(fn):
+    try:
+        return fn()
+    except users.UserError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason) from None
+
+
+def act_user_add(store, _unused, body):
+    _unknown_keys(body, {"name", "role"})
+    user, token = _user_error(lambda: users.add(store, body.get("name"), body.get("role")))
+    # The only time the plaintext exists. It is not written to the audit row or the log.
+    return {"ok": True, "user": user, "token": token}
+
+
+def act_user_disable(store, name, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "user": _user_error(lambda: users.disable(store, name, legacy_admin=bool(TOKEN)))}
+
+
+def act_user_enable(store, name, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "user": _user_error(lambda: users.enable(store, name))}
+
+
+def act_user_rotate(store, name, body):
+    _unknown_keys(body, set())
+    token = _user_error(lambda: users.rotate(store, name))
+    return {"ok": True, "user": _public_user(store, name), "token": token}
+
+
+def _public_user(store, name):
+    return next(u for u in users.list_users(store) if u["name"] == name)
+
+
 ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/go$"), act_go),
     (re.compile(rf"^/api/shows/{_ID}/hold$"), act_hold),
@@ -775,39 +830,106 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/cues/{_ID}/remove$"), act_cue_remove),
     (re.compile(r"^/api/ingest$()"), act_ingest),
 ]
+ROUTES += [  # user management: admin only
+    (re.compile(r"^/api/users$()"), act_user_add),
+    (re.compile(rf"^/api/users/{_ID}/disable$"), act_user_disable),
+    (re.compile(rf"^/api/users/{_ID}/enable$"), act_user_enable),
+    (re.compile(rf"^/api/users/{_ID}/rotate$"), act_user_rotate),
+]
+
+# Every POST route's role, by action function. operator runs the show; admin is everything an operator can do plus
+# users and the destructive or retention actions. A route missing here is refused as admin-only, and a test fails
+# until it is classified on purpose.
+ROUTE_ROLES = {
+    # show control
+    "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
+    "act_record_start": "operator", "act_record_stop": "operator",
+    # rights and publishing
+    "act_cleared": "operator", "act_legal_hold": "operator", "act_restore": "operator",
+    "act_publish": "operator", "act_export_nle": "operator",
+    # clip (span) editing
+    "act_span_create": "operator", "act_span_trim": "operator", "act_span_label": "operator",
+    "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
+    # rundown and cue writes
+    "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
+    "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_cue_remove": "operator", "act_ingest": "operator",
+    # destructive or retention
+    "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
+    "act_show_delete": "admin",
+    # users and tokens
+    "act_user_add": "admin", "act_user_disable": "admin", "act_user_enable": "admin", "act_user_rotate": "admin",
+}
 
 
 # ---- HTTP -----------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
+    principal = None  # set by _gate: who this request is
+
+    def _bearer(self) -> str:
+        scheme, _, given = self.headers.get("Authorization", "").partition(" ")
+        return given.strip() if scheme.lower() == "bearer" else ""
+
+    def _open_store(self) -> Store:
+        return Store(DB_PATH, init=not is_dsn(DB_PATH))
+
+    def _bearer_principal(self):
+        """The principal a valid Authorization header names (legacy VOLT_TOKEN, else a user token), or None."""
+        given = self._bearer()
+        if not given:
+            return None
+        if TOKEN and hmac.compare_digest(given.encode("utf-8"), TOKEN.encode("utf-8")):
+            return Principal(LEGACY_ACTOR, "admin", True)
+        try:
+            store = self._open_store()
+            try:
+                user = users.authenticate(store, given)
+            finally:
+                store.close()
+        except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
+            log.exception("token lookup failed")
+            raise ApiError(503, "auth_unavailable", "cannot check the token right now") from None
+        return Principal(user.name, user.role, False) if user else None
+
+    def _auth_configured(self) -> bool:
+        """Is a token required? Yes with VOLT_TOKEN or any user row; otherwise this is the open loopback mode."""
+        if TOKEN:
+            return True
+        try:
+            store = self._open_store()
+            try:
+                return users.any_users(store)
+            finally:
+                store.close()
+        except Exception:  # noqa: BLE001 - cannot tell: require a token rather than open up
+            log.exception("user table check failed")
+            return True
+
+    def _authenticate(self) -> Principal:
+        found = self._bearer_principal()
+        if found is not None:
+            return found
+        if self._auth_configured():
+            raise ApiError(401, "unauthorized", "missing or wrong bearer token")
+        # No token and no users means loopback only. A rebinding page would arrive with a foreign Host.
+        if not _is_loopback(_host_name(self.headers.get("Host") or "")):
+            raise ApiError(403, "bad_host", "this server answers on loopback only")
+        return Principal(LEGACY_ACTOR, "admin", True)
+
     def _gate(self) -> bool:
         """Auth and host checks. Sends the refusal and returns False when the request must stop."""
-        token = TOKEN
         try:
-            if token:
-                header = self.headers.get("Authorization", "")
-                scheme, _, given = header.partition(" ")
-                ok = scheme.lower() == "bearer" and hmac.compare_digest(
-                    given.strip().encode("utf-8"), token.encode("utf-8"))
-                if not ok:
-                    raise ApiError(401, "unauthorized", "missing or wrong bearer token")
-            else:
-                # No token means loopback only. A rebinding page would arrive with a foreign Host.
-                host = _host_name(self.headers.get("Host") or "")
-                if not _is_loopback(host):
-                    raise ApiError(403, "bad_host", "this server answers on loopback only")
+            self.principal = self._authenticate()
         except ApiError as err:
             self._error(err)
             return False
         return True
 
-    def _bearer_ok(self) -> bool:
-        if not TOKEN:
-            return True
-        header = self.headers.get("Authorization", "")
-        scheme, _, given = header.partition(" ")
-        return scheme.lower() == "bearer" and hmac.compare_digest(
-            given.strip().encode("utf-8"), TOKEN.encode("utf-8"))
+    def _require_admin(self) -> None:
+        if self.principal is None or self.principal.role != "admin":
+            raise ApiError(403, "forbidden_role", "this needs the admin role")
 
     def _ticket_on_media_get(self) -> bool:
         parsed = urlparse(self.path)
@@ -820,9 +942,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _gate_or_ticket(self) -> bool:
         """Bearer (or loopback host) as usual, except a media GET may present `ticket` instead of Authorization."""
-        if TOKEN and self._ticket_on_media_get():
+        if self._ticket_on_media_get() and self._auth_configured():
             return True
-        if not TOKEN and self._ticket_on_media_get():
+        if self._ticket_on_media_get():
             host = _host_name(self.headers.get("Host") or "")
             if not _is_loopback(host):
                 self._error(ApiError(403, "bad_host", "this server answers on loopback only"))
@@ -847,7 +969,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if len(given) != 1:
             raise ApiError(422, "bad_input", "ticket may be given once")
-        if TOKEN and self._bearer_ok():
+        if self._bearer_principal() is not None:
             return
         secret = MEDIA_KEY or TOKEN
         try:
@@ -925,8 +1047,12 @@ class Handler(BaseHTTPRequestHandler):
                     break
             else:
                 raise ApiError(404, "not_found", "no such route")
+            need = ROUTE_ROLES.get(fn.__name__, "admin")
+            if need == "admin" and self.principal.role != "admin":
+                raise ApiError(403, "forbidden_role",
+                               f"{need} role required; {self.principal.name} is {self.principal.role}")
             body = self._read_json()
-            actor = _actor(self.headers, body)
+            actor = _actor(self.headers, body, self.principal)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body)
             status = 200
@@ -1027,6 +1153,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(422, "bad_input", "target is required")
             self._json(200, {"ok": True, "rows": STORE.list_audit(given[0])})
             return
+        if parsed.path == "/api/whoami":
+            self._json(200, {"ok": True, "name": self.principal.name if self.principal else LEGACY_ACTOR,
+                             "role": self.principal.role if self.principal else "admin",
+                             "legacy": self.principal is None or self.principal.legacy})
+            return
+        if parsed.path == "/api/users":
+            self._require_admin()
+            self._json(200, {"ok": True, "users": users.list_users(STORE)})
+            return
         if parsed.path == "/api/media-ticket":
             self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))
             return
@@ -1110,7 +1245,7 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path: str):
         name, ctype = STATIC[path]
         # Host check only: with no token this server answers loopback only (DNS rebinding guard).
-        if not TOKEN and not _is_loopback(_host_name(self.headers.get("Host") or "")):
+        if not self._auth_configured() and not _is_loopback(_host_name(self.headers.get("Host") or "")):
             self._error(ApiError(403, "bad_host", "this server answers on loopback only"))
             return
         body = (ROOT / name).read_bytes()
@@ -1217,7 +1352,8 @@ def main(argv=None):
         _config_exit(str(exc))
     host, port = args.host, args.port
     try:
-        check_bind(host, TOKEN)
+        check_bind(host, TOKEN, has_admin_user=(not TOKEN and not _is_loopback(host)
+                                                and users.db_has_enabled_admin(DB_PATH)))
         configured_actions()
     except ConfigError as exc:
         _config_exit(str(exc))
@@ -1241,10 +1377,10 @@ def main(argv=None):
         except OSError as exc:
             _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
         port = server.server_address[1]
-        print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN else "")
+        print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN or users.db_has_enabled_admin(DB_PATH) else "")
               + (f" (postgres pool of up to {pool.max_size})" if pool else ""), flush=True)
         log.info("serve started version=%s host=%s port=%d db=%s auth=%s access_log=%s", health.__version__, host,
-                 port, logs.redact_dsn(DB_PATH), "required" if TOKEN else "none", ACCESS_LOG)
+                 port, logs.redact_dsn(DB_PATH), "required" if TOKEN else "users" if users.db_has_enabled_admin(DB_PATH) else "none", ACCESS_LOG)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
