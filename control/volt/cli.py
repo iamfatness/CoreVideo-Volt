@@ -8,6 +8,7 @@
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
     volt watch    enqueue ingest for files sitting still in VOLT_INGEST_ROOTS
+    volt mos      volt mos export <show> [--out file]: the rundown as a MOS roCreate message (read-only)
     volt version  the build
 
 `serve`, `runner` and `clock` pass every argument through, so `volt runner --once` and
@@ -135,6 +136,40 @@ def _run(argv: list) -> int:
     return code
 
 
+def _mos(argv: list) -> int:
+    from volt import mos
+    from volt.store import Store
+
+    ap = argparse.ArgumentParser(prog="volt mos", description="MOS export of a show's rundown (roCreate XML).")
+    sub = ap.add_subparsers(dest="action", required=True)
+    ex = sub.add_parser("export", help="write the show's roCreate message to stdout or --out")
+    ex.add_argument("show", help="show id, or an exact show title")
+    ex.add_argument("--db", default=os.environ.get("VOLT_DB"), help="SQLite path or DSN (default: VOLT_DB)")
+    ex.add_argument("--out", default=None, help="write the XML to this file instead of stdout")
+    ex.add_argument("--cues", action="store_true", help="include the item's cues as namespaced metadata")
+    ex.add_argument("--mos-id", default=mos.DEFAULT_MOS_ID, help="mosID of this media object server")
+    ex.add_argument("--ncs-id", default=mos.DEFAULT_NCS_ID, help="ncsID of the receiving newsroom system")
+    args = ap.parse_args(argv)
+    if not args.db:
+        ap.error("a database path or DSN is required (--db or VOLT_DB)")
+    store = Store(args.db)
+    try:
+        out = mos.export(store, args.show, include_cues=args.cues, mos_id=args.mos_id, ncs_id=args.ncs_id)
+    except mos.MosError as exc:
+        print(f"volt mos: {exc.reason}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    for warning in out["warnings"]:
+        print(f"volt mos: warning: {warning}", file=sys.stderr)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(out["content"])
+    else:
+        sys.stdout.write(out["content"])
+    return 0
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -163,6 +198,8 @@ def main(argv=None) -> int:
         from volt import clock
         _bridge_break_signal()
         return clock.main(rest)
+    if command == "mos":
+        return _mos(rest)
     if command == "watch":
         from volt import watch
         _bridge_break_signal()

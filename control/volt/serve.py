@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, health, logs, media, nle, operator_state, retention, shots, tickets
+from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets
 from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
@@ -735,6 +735,7 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
 # Reads on an asset and on a span, served by do_GET. IDs are path segments, never file names.
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
+MOS_ROUTE = re.compile(rf"^/api/shows/{_ID}/mos$")
 
 ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/go$"), act_go),
@@ -1030,6 +1031,13 @@ class Handler(BaseHTTPRequestHandler):
             self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))
             return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        m = MOS_ROUTE.match(parsed.path)
+        if m:  # read-only MOS roCreate export (docs/specs/mos.md)
+            try:
+                self._json(200, mos.export(STORE, m.group(1), **mos.parse_query(parse_qs(parsed.query, keep_blank_values=True))))
+            except mos.MosError as exc:
+                raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
             return
         m = READ_ROUTES.match(parsed.path)
         if m:
