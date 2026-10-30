@@ -6,7 +6,7 @@ Date 2026-10-16, against `origin/main` at b3554ff. Question: what does the repo 
 
 Short answer: the control plane is well tested and honest about its limits. It is not yet a product. There is no installer, no service definition, no backup story, no health endpoint, no license, and no way to know which person did what. Those are operations gaps, not design gaps; most are small to medium.
 
-**Update, same day (branch `ops-run-as-a-product`):** gaps 2 (start command, service files), 3 (health), 4 (logs), 5 (packaging, `volt` command, extras), 6 (disk floor and thumbnail cache cap, not the quarantine or publish folders), 10 (operator doc) and 12 (version, changelog) are addressed; the `--help` trap in gap 14 is fixed. Gaps 1, 7 and 9 were addressed by the backup, retention and version-skew work merged separately. Open: 8 (auth), 11 (license, not chosen), 13 (CI), TLS. See [operations](operations.md).
+**Update, same day (branch `ops-run-as-a-product`):** gaps 2 (start command, service files), 3 (health), 4 (logs), 5 (packaging, `volt` command, extras), 6 (disk floor and thumbnail cache cap, not the quarantine or publish folders), 10 (operator doc) and 12 (version, changelog) are addressed; the `--help` trap in gap 14 is fixed. Gaps 1, 7 and 9 were addressed by the backup, retention and version-skew work merged separately. Gap 8 (per-user tokens, two roles) is addressed on branch `per-user-tokens`. Open: 11 (license, not chosen), 13 (CI), TLS. See [operations](operations.md).
 
 ## How to read this
 
@@ -47,11 +47,11 @@ One finding from running: `python -m volt.serve --help` does not print help. `se
 | **Auth** | | |
 | Operator token | present | Ran and read: `VOLT_TOKEN`, bearer, constant-time compare, 401 with `WWW-Authenticate`; guards GET data routes too (`operator-api.md`, `serve._gate`). |
 | Required by default | partial | Ran: on loopback with no token the server answers with no auth (`/api/state` returned 200). Non-loopback bind without a 16+ char token refuses to start (`check_bind`). Loopback-without-token is the shipped default; fine for one box, wrong on a shared workstation. |
-| Rotation | partial | Read: change the variable and restart. No overlap period, no second token, no revocation. |
+| Rotation | present | Per-user tokens rotate (`volt user rotate`) and disable (`volt user disable`) with effect on the next request, no restart; the legacy `VOLT_TOKEN` still needs a restart. Was: change the variable and restart. |
 | Bind / LAN | present | Read: `VOLT_HOST`, default `127.0.0.1`. Ran: a foreign `Host` header with no token got 403 `bad_host` (DNS-rebinding guard). |
 | TLS | absent | Read: plain `http.server`; no ssl import. A bearer token over LAN HTTP is readable on the wire. Needs a documented reverse proxy. |
 | CORS / CSRF | present | Ran and read: no CORS header is sent; POST needs `Content-Type: application/json` (415 otherwise, ran); 64 KiB body cap; operator pages carry a strict CSP and `frame-ancestors 'none'`. |
-| Multi-user and roles | absent | Read: one shared token, no users. `shot-spans.md` open question 11 records "any token holder can delete or re-detect". |
+| Multi-user and roles | present | Ran: per-user tokens with operator and admin roles (`volt user`, migration 17); the audit actor is the token's user; tests cover 403 `forbidden_role`, immediate revocation and the route-role table. Was: one shared token, no users. `shot-spans.md` open question 11 records "any token holder can delete or re-detect". |
 | Audit trail of who did what | absent | Read: no actor on any write; NLE export logs span IDs and sha256 to stderr only (`operator-api.md`). `as_run_in/out` on items is a playout record, not an operator audit. |
 | **Secrets** | | |
 | Handling | present | Read: cloud credentials are never accepted by Volt; they come from the SDK chains (`storage.md`). Error text blanks `sig=`, `AccountKey=`, tokens. `serve` prints only "(token required)". |
@@ -98,7 +98,7 @@ Severity is for a team running a live show: **Critical** loses data or a broadca
 | 5 | No packaging: no `pyproject.toml`, entry points, extras, lockfile; ffmpeg and faster-whisper not in the install story | High | M | Every install is a hand-built environment, and the cloud SDKs are unpinned. |
 | 6 | No disk-space guards or cleanup (thumbnail cache, quarantine, orphan part files, publish folder) | High | M | A full disk fails recording wrap and publish at the worst moment. |
 | 7 | Asset deletion and retention do not run: no handler for `delete`, no route, `retention_class` unused, storage objects never removed | High | M | The legal-hold promise is half of a feature; a team will assume delete works. |
-| 8 | No audit trail, one shared token, no roles | Medium | L | Fine for one trusted room; not for a team where "who took that item" matters. Start with an actor header and an append-only table, then per-user tokens. |
+| 8 | ~~No audit trail, one shared token, no roles~~ Addressed: audit table, actor, and per-user tokens with operator/admin roles | Medium | L | Fine for one trusted room; not for a team where "who took that item" matters. Start with an actor header and an append-only table, then per-user tokens. |
 | 9 | No schema version-skew guard | Medium | S | A rolled-back server or old runner against a migrated database fails in strange ways. Refuse to start when the database is newer than the code. |
 | 10 | No operator install and runbook docs | Medium | M | The specs are written for builders. |
 | 11 | No license or third-party notices | Medium | S | Blocks any install outside this owner. |

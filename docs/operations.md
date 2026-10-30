@@ -78,7 +78,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_PUBLISH_DIR` | none | Local publish directory. Required for `VOLT_STORAGE=local` publishing. |
 | `VOLT_HOST` | `127.0.0.1` | Bind address. Anything but loopback needs `VOLT_TOKEN`. |
 | `VOLT_PORT` | `8765` | Port; `0` picks a free one. |
-| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only. POSTs may send `X-Volt-Actor` (default `desk`). |
+| `VOLT_TOKEN` | none | Legacy shared bearer token, treated as an admin named `desk`. Required (16+ characters) to bind beyond loopback unless an enabled admin user exists. With no token and no users the server answers loopback `Host` headers only. POSTs with this token may send `X-Volt-Actor` (default `desk`); per-user tokens ignore the header. |
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
@@ -155,6 +155,34 @@ upload. Details and what is proven are in `docs/specs/storage.md`.
 
 Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_POOL_MIN`, `VOLT_PG_POOL_TIMEOUT`,
 `VOLT_PG_POOL_MAX_IDLE`, `VOLT_PG_POOL_MAX_LIFETIME`.
+
+
+## Users and tokens
+
+Two roles. **operator** runs the show: go, take, hold, release, skip, kill, reorder, attach, record, clear/legal-hold/restore
+rights, publish, clip edits, rundown and cue writes, ingest, and every read. **admin** does all of that plus managing
+users and tokens, and the destructive actions: delete an asset, delete a show, delete a clip, unpublish, and re-detect shots.
+The full table is `ROUTE_ROLES` in `control/volt/serve.py`; a test fails when a route is not classified.
+
+```
+volt user add alice --role operator     # prints the token once; it cannot be recovered
+volt user add root --role admin
+volt user list [--json]                 # names, roles, state; never tokens
+volt user disable alice                 # revoked on her next request
+volt user enable alice
+volt user rotate alice                  # prints a replacement once; the old token stops working at once
+```
+
+Tokens are random, stored only as a sha256 hash (table `volt_user`, migration 17) and compared in constant time. The
+audit actor for a per-user token is the user's name; `X-Volt-Actor` is ignored for it. A role violation is `403
+forbidden_role`; a bad or disabled token is `401 unauthorized`. The last enabled admin cannot be disabled unless
+`VOLT_TOKEN` is set. `volt user` reads `VOLT_DB` (or `--db`) and works on the database directly, so it also recovers a
+locked-out server. An admin can do the same over HTTP (`POST /api/users`, `/api/users/{name}/disable|enable|rotate`,
+`GET /api/users`).
+
+A users-only setup (no `VOLT_TOKEN`) may bind beyond loopback once one enabled admin exists. As soon as any user row
+exists, every non-static request needs a token. Media tickets need a signing key: set `VOLT_MEDIA_KEY` when you have no
+`VOLT_TOKEN`. Tokens cross the LAN in the clear without TLS, as before.
 
 ## Start
 
@@ -276,8 +304,9 @@ is not blocked from starting.
 - **License.** There is no LICENSE file: the owner has not chosen one. Until then nobody outside the owner has a
   right to install or redistribute Volt. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not
   a grant for Volt.
-- **Auth.** One shared bearer token, no users or roles. Operator writes take `X-Volt-Actor` (default `desk`) and
-  append to `audit`; `GET /api/audit?target=` is the read.
+- **Auth.** Per-user tokens with two roles (operator, admin; see "Users and tokens" above), plus the legacy shared
+  `VOLT_TOKEN` as an admin named `desk`. Writes append to `audit` with the token's user as the actor;
+  `GET /api/audit?target=` is the read. No passwords, SSO or finer roles.
 - **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
 - **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.

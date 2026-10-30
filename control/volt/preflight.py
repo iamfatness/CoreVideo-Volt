@@ -203,8 +203,12 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
 
     token = env.get("VOLT_TOKEN") or None
     try:
-        serve.check_bind(host, token)
-        results.append(Result("access", OK, "token required" if token else "no token: loopback only"))
+        from volt import users
+
+        admin = not token and not serve._is_loopback(host) and users.db_has_enabled_admin(db)
+        serve.check_bind(host, token, has_admin_user=admin)
+        results.append(Result("access", OK, "token required" if token else
+                              "user tokens required (enabled admin exists)" if admin else "no token: loopback only"))
     except serve.ConfigError as exc:
         results.append(Result("access", FAIL, str(exc)))
     results.append(_port(host, port))
