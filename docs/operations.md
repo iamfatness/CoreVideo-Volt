@@ -78,7 +78,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_PUBLISH_DIR` | none | Local publish directory. Required for `VOLT_STORAGE=local` publishing. |
 | `VOLT_HOST` | `127.0.0.1` | Bind address. Anything but loopback needs `VOLT_TOKEN`. |
 | `VOLT_PORT` | `8765` | Port; `0` picks a free one. |
-| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only. POSTs may send `X-Volt-Actor` (default `desk`). |
+| `VOLT_TOKEN` | none | Operator bearer token. Required (16+ characters) to bind beyond loopback. With no token the server answers loopback `Host` headers only, so behind a TLS proxy the token is required ([tls](tls.md)). POSTs may send `X-Volt-Actor` (default `desk`). |
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
@@ -278,7 +278,7 @@ is not blocked from starting.
   a grant for Volt.
 - **Auth.** One shared bearer token, no users or roles. Operator writes take `X-Volt-Actor` (default `desk`) and
   append to `audit`; `GET /api/audit?target=` is the read.
-- **TLS.** Plain HTTP. Put a reverse proxy in front for anything beyond one machine.
+- **TLS.** Volt speaks plain HTTP by design. The supported setup is a Caddy or nginx reverse proxy on the same machine with Volt on loopback and `VOLT_TOKEN` set: [tls](tls.md) has the configs and the run that checked them (Caddy 2.11.7, nginx 1.31.8, internal certificate; public-certificate issuance and HTTP/2 not run).
 - **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.
 - **Not exercised on real systems:** the Task Scheduler registration and the systemd unit were reviewed and the
