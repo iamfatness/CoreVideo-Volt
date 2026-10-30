@@ -5,3 +5,6 @@ control/volt.db
 
 control/build/
 *.egg-info/
+
+# local Postgres compose secrets
+deploy/postgres/postgres.env

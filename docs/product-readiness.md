@@ -6,7 +6,7 @@ Date 2026-10-16, against `origin/main` at b3554ff. Question: what does the repo 
 
 Short answer: the control plane is well tested and honest about its limits. It is not yet a product. There is no installer, no service definition, no backup story, no health endpoint, no license, and no way to know which person did what. Those are operations gaps, not design gaps; most are small to medium.
 
-**Update, same day (branch `ops-run-as-a-product`):** gaps 2 (start command, service files), 3 (health), 4 (logs), 5 (packaging, `volt` command, extras), 6 (disk floor and thumbnail cache cap, not the quarantine or publish folders), 10 (operator doc) and 12 (version, changelog) are addressed; the `--help` trap in gap 14 is fixed. Gaps 1, 7 and 9 were addressed by the backup, retention and version-skew work merged separately. Gap 8 (per-user tokens, two roles) is addressed on branch `per-user-tokens`. Open: 11 (license, not chosen), 13 (CI), TLS. See [operations](operations.md).
+**Update, same day (branch `ops-run-as-a-product`):** gaps 2 (start command, service files), 3 (health), 4 (logs), 5 (packaging, `volt` command, extras), 6 (disk floor and thumbnail cache cap, not the quarantine or publish folders), 10 (operator doc) and 12 (version, changelog) are addressed; the `--help` trap in gap 14 is fixed. Gaps 1, 7 and 9 were addressed by the backup, retention and version-skew work merged separately. Gap 8 (per-user tokens, two roles) is addressed on branch `per-user-tokens`. Open: 11 (license, not chosen), 13 (CI). TLS (14) now has a supported reverse-proxy recipe: [tls](tls.md). See [operations](operations.md).
 
 ## How to read this
 
@@ -104,7 +104,7 @@ Severity is for a team running a live show: **Critical** loses data or a broadca
 | 11 | No license or third-party notices | Medium | S | Blocks any install outside this owner. |
 | 12 | No version number, changelog or release process | Medium | S | Support requests cannot name the build. |
 | 13 | CI gaps: Windows plus Postgres, packaging smoke test, cloud SDKs installed, a scheduled live check | Medium | M | The Windows runner cannot host a Postgres service; a self-hosted or `pip install` job on Windows against a service elsewhere would close it. |
-| 14 | No TLS and no documented reverse proxy; `--help` starts a server | Medium | S | The token crosses the LAN in the clear. |
+| 14 | ~~No TLS and no documented reverse proxy~~; `--help` starts a server (fixed) | Medium | S | Addressed 2026-10-30: [tls](tls.md) is a supported Caddy and nginx recipe, run through both with an internal certificate. Public-certificate issuance and an HTTP/2 client were not exercised. |
 
 ## Recommended order
 
