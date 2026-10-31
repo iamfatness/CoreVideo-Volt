@@ -663,3 +663,51 @@ class Icons(unittest.TestCase):
         self.assertNotIn("xmlns", FILES["index.html"])
         self.assertNotIn("style=", FILES["index.html"])
         self.assertIn("function icon(", FILES["operator.js"])
+
+
+def _node(*calls):
+    """Call exported pure functions of operator.js under node: each call is [name, *args]."""
+    script = ("const m = require(process.argv[1]); const calls = JSON.parse(process.argv[2]);"
+              "console.log(JSON.stringify(calls.map(([fn, ...a]) => m[fn] && m[fn].apply ? m[fn](...a) : m[fn])));")
+    out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(list(calls))],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class StateLanguage(unittest.TestCase):
+    def test_each_state_maps_to_an_existing_icon_and_a_class(self):
+        (state,) = _node(["STATE"])
+        self.assertEqual(sorted(state), ["failed", "locked", "onair", "pending", "ready"])
+        for kind, spec in state.items():
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
+            self.assertTrue(spec["cls"].startswith("st "), kind)
+        self.assertEqual(state["onair"], {"icon": "onair", "word": "On air", "cls": "st air"})
+        self.assertEqual(state["locked"]["word"], "Held")
+
+    def test_chip_spec_never_throws_on_an_unknown_kind(self):
+        known, unknown, bare = _node(["stateChipSpec", "ready"], ["stateChipSpec", "future-state", "Sealed"], ["stateChipSpec", "nonsense"])
+        self.assertEqual(known, {"icon": "ready", "word": "Ready", "cls": "st ok"})
+        self.assertEqual(unknown, {"icon": "pending", "word": "Sealed", "cls": "st"})
+        self.assertEqual(bare["word"], "nonsense")
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class Workspaces(unittest.TestCase):
+    def test_names_fall_back_to_operator(self):
+        self.assertEqual(_node(["workspaceName", "director"], ["workspaceName", None], ["workspaceName", "editor"],
+                               ["workspaceName", "constructor"], ["workspaceName", 5]),
+                         ["operator", "operator", "editor", "operator", "operator"])
+
+    def test_rail_has_the_workspaces_screens_and_one_extra_for_an_off_rail_hash(self):
+        got = _node(["railFor", "operator", "rights"], ["railFor", "editor", "library"], ["railFor", "operator", "nonsense"],
+                    ["railFor", "producer", "show"])
+        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "rights"})
+        self.assertIsNone(got[1]["extra"])
+        self.assertIsNone(got[2]["extra"])
+        self.assertEqual(got[3]["screens"], ["show", "rights", "publish", "library"])
+
+    def test_default_screen_is_the_first_on_the_rail(self):
+        self.assertEqual(_node(["defaultScreen", "editor"], ["defaultScreen", "operator"], ["defaultScreen", "producer"]),
+                         ["library", "show", "show"])

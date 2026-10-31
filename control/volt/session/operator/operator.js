@@ -71,8 +71,39 @@
     return { items, air, next, hold: rundown ? rundown.hold : null, taking };
   }
 
+  // The state language: one mapping, always icon + word + colour. Take is an action, not a state, so it is not here.
+  const STATE = {
+    onair:   { icon: 'onair',   word: 'On air',  cls: 'st air' },
+    ready:   { icon: 'ready',   word: 'Ready',   cls: 'st ok' },
+    pending: { icon: 'pending', word: 'Pending', cls: 'st pend' },
+    failed:  { icon: 'alert',   word: 'Failed',  cls: 'st fail' },
+    locked:  { icon: 'lock',    word: 'Held',    cls: 'st hold' },
+  };
+  // A kind this page does not know (a future server state) renders its own word with the neutral pending icon.
+  function stateChipSpec(kind, word) {
+    const known = Object.prototype.hasOwnProperty.call(STATE, kind) ? STATE[kind] : null;
+    return known ? { icon: known.icon, word: word || known.word, cls: known.cls }
+      : { icon: STATE.pending.icon, word: word || String(kind), cls: 'st' };
+  }
+
+  // Workspaces are saved layouts (which screens the rail shows), not permissions: the server still decides what a user may do.
+  const WORKSPACES = {
+    producer: ['show', 'rights', 'publish', 'library'],
+    editor:   ['library', 'publish', 'rights'],
+    operator: ['show', 'record'],
+  };
+  const DEFAULT_WORKSPACE = 'operator';
+  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library'];
+  const workspaceName = (stored) => (typeof stored === 'string' && Object.prototype.hasOwnProperty.call(WORKSPACES, stored) ? stored : DEFAULT_WORKSPACE);
+  // A hash naming a screen outside the rail keeps the workspace; that screen rides along as the one temporary extra.
+  function railFor(workspace, screen) {
+    const screens = WORKSPACES[workspaceName(workspace)].slice();
+    return { screens, extra: ALL_SCREENS.includes(screen) && !screens.includes(screen) ? screen : null };
+  }
+  const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -202,6 +233,10 @@
     const t = document.createElement('template');
     t.innerHTML = '<svg class="ic' + (cls ? ' ' + cls : '') + '" aria-hidden="true" focusable="false"><use href="#i-' + name + '"/></svg>';
     return t.content.firstElementChild;
+  }
+  function stateChip(kind, word) {
+    const spec = stateChipSpec(kind, word);
+    return el('span', { class: spec.cls }, icon(spec.icon, 's'), el('span', { text: spec.word }));
   }
   const short = (id) => (id || '').slice(0, 8);
 
