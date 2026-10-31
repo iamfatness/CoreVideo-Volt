@@ -682,7 +682,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "failed", "killed", "locked", "next", "onair", "pending", "ready", "skipped", "taking"])
+        self.assertEqual(sorted(state), ["aired", "cleared", "done", "failed", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "running", "skipped", "taking", "uncleared", "withdrawn"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -899,3 +899,129 @@ class RundownColumns(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class LibraryState(unittest.TestCase):
+    def test_cleared_and_hold_specs(self):
+        got = _node(["stateChipSpec", "cleared"], ["stateChipSpec", "uncleared"], ["stateChipSpec", "hold"],
+                    ["stateChipSpec", "running"], ["stateChipSpec", "done"], ["stateChipSpec", "queued"])
+        self.assertEqual(got, [{"icon": "ready", "word": "Cleared", "cls": "st ok"},
+                               {"icon": "alert", "word": "Not cleared", "cls": "st fail"},
+                               {"icon": "lock", "word": "Legal hold", "cls": "st fail"},
+                               {"icon": "pending", "word": "Running", "cls": "st pend"},
+                               {"icon": "ready", "word": "Done", "cls": "st ok"},
+                               {"icon": "pending", "word": "Queued", "cls": "st pend"}])
+        for spec in got:
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS)
+
+    def test_headers_use_the_chips(self):
+        js = FILES["operator.js"]
+        self.assertNotIn("'⚑ '", js)
+        self.assertEqual(len(re.findall(r"d\.cleared \? '✓ ' : '✕ '", js)), 0)
+        self.assertGreaterEqual(js.count("assetChips("), 3)   # the definition and both headers
+        self.assertNotIn("chip(JOB_CHIP", js)
+        self.assertNotIn("chip(VER_CHIP", js)
+
+
+class LibraryMarkup(unittest.TestCase):
+    HTML = FILES["index.html"]
+
+    def piece(self, start, end):
+        i = self.HTML.index(start)
+        return self.HTML[i:self.HTML.index(end, i)]
+
+    def test_headings_and_tabs_have_icons(self):
+        for hid, icon_name in (("h-ingest", "download"), ("h-player", "eye"), ("h-shots", "shot"), ("h-tray", "library"), ("h-span", "sliders")):
+            self.assertIn('href="#i-%s"' % icon_name, self.piece('id="%s"' % hid, "</h2>"), hid)
+        for tid, icon_name in (("lib-tab-shots", "shot"), ("lib-tab-words", "transcript"), ("lib-tab-export", "export")):
+            self.assertIn('href="#i-%s"' % icon_name, self.piece('id="%s"' % tid, "</button>"), tid)
+
+    def test_tab_attributes_survive(self):
+        for tid, ctl in (("lib-tab-shots", "lib-body"), ("lib-tab-words", "lib-words"), ("lib-tab-export", "lib-export")):
+            self.assertIn('aria-controls="%s"' % ctl, self.piece('id="%s"' % tid, "</button>"))
+        for tid in ("lib-tab-words", "lib-tab-export"):
+            self.assertIn('tabindex="-1"', self.piece('id="%s"' % tid, "</button>"))
+
+    def test_no_script_overwrites_a_heading_with_an_icon(self):
+        js = FILES["operator.js"]
+        for hid in ("h-ingest", "h-player", "h-shots", "h-tray", "h-span"):
+            self.assertNotIn("$('%s').textContent" % hid, js)
+            self.assertNotIn("getElementById('%s').textContent" % hid, js)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class Shuttle(unittest.TestCase):
+    def run_keys(self, keys, state=None):
+        script = ("const m = require(process.argv[1]); let s = JSON.parse(process.argv[2]); const out = [];"
+                  "for (const k of JSON.parse(process.argv[3])) { s = m.shuttleNext(s, k); out.push([s.dir, s.speed]); }"
+                  "console.log(JSON.stringify(out));")
+        out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(state or {"dir": 0, "speed": 0}), json.dumps(keys)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_speed_ladder(self):
+        self.assertEqual(self.run_keys(list("lllll")), [[1, 1], [1, 2], [1, 4], [1, 8], [1, 8]])
+        self.assertEqual(self.run_keys(list("jjj")), [[-1, 1], [-1, 2], [-1, 4]])
+        self.assertEqual(self.run_keys(list("lj")), [[1, 1], [-1, 1]])
+        self.assertEqual(self.run_keys(list("jl")), [[-1, 1], [1, 1]])
+        self.assertEqual(self.run_keys(list("llk")), [[1, 1], [1, 2], [0, 0]])
+        self.assertEqual(self.run_keys(["k"]), [[0, 0]])
+
+    def test_keys_are_wired_and_ignore_repeat_and_fields(self):
+        js = FILES["operator.js"]
+        start = js.index("function libKey")
+        body = js[start:js.index("function stateGlyph", start)]
+        self.assertRegex(body, r"low === 'j'[^\n]*!e\.repeat")
+        self.assertRegex(body, r"low === 'l'[^\n]*!e\.repeat")
+        on_key = js[js.index("function onKey"):js.index("function onKey") + 600]
+        self.assertIn("input,select,textarea", on_key)   # typing jkl into a field never reaches libKey
+
+    def test_every_exit_stops_the_shuttle(self):
+        js = FILES["operator.js"]
+        for fn in ("function libLeave", "function stepFrames", "function jumpShot", "function togglePlay", "function setTab", "function proxyRelease"):
+            i = js.index(fn)
+            self.assertIn("shuttleStop(", js[i:i + 700], fn)
+
+    def test_documented(self):
+        md = (Path(serve.ROOT).parents[2] / "docs" / "specs" / "operator-ui.md").read_text(encoding="utf-8")
+        table = md[md.index("## Keys (Library screen)"):md.index("The Export tab has no keys")]
+        for key in ("`J`", "`K`", "`L`"):
+            self.assertIn(key, table)
+
+
+class LibraryLayouts(unittest.TestCase):
+    def test_editor_gives_the_main_column_the_width(self):
+        css = FILES["operator.css"]
+        m = re.search(r"@media\(min-width:1001px\)\{[^@]*\.ws-editor \.cols\.lib\{[^}]*minmax\(0,1fr\) 300px", css)
+        self.assertIsNotNone(m)
+
+    def test_narrow_rule_still_collapses_and_comes_last(self):
+        css = FILES["operator.css"]
+        narrow = css.index("@media(max-width:1000px){.cols.lib{grid-template-columns:1fr}}")
+        self.assertGreater(narrow, css.index(".ws-editor .cols.lib"))
+
+    def test_play_has_an_icon_and_keeps_its_key_and_label_updates(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        i = html.index('id="lib-play"')
+        btn = html[html.rindex("<button", 0, i):html.index("</button>", i)]
+        self.assertIn('href="#i-take"', btn)
+        self.assertIn('aria-keyshortcuts="K"', btn)
+        self.assertIn('id="lib-play-text"', btn)
+        self.assertNotIn("$('lib-play').firstChild", js)   # the icon is the first child now
+
+
+class ShuttleEdges(unittest.TestCase):
+    def test_the_natural_end_and_a_video_error_clear_the_shuttle(self):
+        js = FILES["operator.js"]
+        self.assertRegex(js, r"addEventListener\('ended'[^\n]*SH\.dir")
+        i = js.index("function onVideoError")
+        self.assertIn("shuttleStop(", js[i:i + 300])
+
+    def test_reverse_step_is_capped_so_a_hidden_tab_cannot_jump(self):
+        js = FILES["operator.js"]
+        self.assertRegex(js, r"Math\.min\(\s*\(t - SH\.last\) / 1000,\s*0\.1\s*\)")
+
+    def test_withdrawn_versions_do_not_look_like_work_in_progress(self):
+        self.assertEqual(_node(["stateChipSpec", "withdrawn"])[0], {"icon": "close", "word": "Withdrawn", "cls": "st done"})

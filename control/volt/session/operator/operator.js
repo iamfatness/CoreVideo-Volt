@@ -110,6 +110,14 @@
     return t === 0 ? '00:00' : (t > 0 ? '+' : '-') + fmtOffset(Math.abs(t));
   }
 
+  // J/K/L shuttle: L plays forward, J in reverse, K stops. Repeated presses of the same key double the speed up to 8x;
+  // the opposite key starts again at 1x the other way.
+  function shuttleNext(state, key) {
+    if (key === 'k') return { dir: 0, speed: 0 };
+    const dir = key === 'l' ? 1 : -1;
+    return state.dir === dir ? { dir, speed: Math.min(8, state.speed * 2) } : { dir, speed: 1 };
+  }
+
   // The state language: one mapping, always icon + word + colour. Take is an action, not a state, so it is not here.
   const STATE = {
     onair:   { icon: 'onair',   word: 'On air',  cls: 'st air' },
@@ -122,6 +130,14 @@
     aired:   { icon: 'ready',   word: 'Aired',   cls: 'st done' },
     skipped: { icon: 'skip',    word: 'Skipped', cls: 'st done' },
     killed:  { icon: 'close',   word: 'Killed',  cls: 'st done' },
+    cleared:   { icon: 'ready',   word: 'Cleared',     cls: 'st ok' },
+    uncleared: { icon: 'alert',   word: 'Not cleared', cls: 'st fail' },
+    hold:      { icon: 'lock',    word: 'Legal hold',  cls: 'st fail' },
+    running:   { icon: 'pending', word: 'Running',     cls: 'st pend' },
+    done:      { icon: 'ready',   word: 'Done',        cls: 'st ok' },
+    queued:    { icon: 'pending', word: 'Queued',      cls: 'st pend' },
+    withdrawn: { icon: 'close',   word: 'Withdrawn',   cls: 'st done' },
+
 
   };
   // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
@@ -152,7 +168,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -236,9 +252,6 @@
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
-  };
-  const VER_CHIP = {
-    done: ['done', '✓', 'Done'], failed: ['failed', '✕', 'Failed'], queued: ['queued', '…', 'Queued'],
   };
   const REC_STEPS = ['requested', 'preparing', 'producing', 'stopping', 'finalizing', 'completed'];
   const REC_ALIAS = { starting: 'preparing', live: 'producing' };
@@ -603,6 +616,11 @@
   function chip(map, key, extra) {
     const m = map[key] || ['ready', '?', key];
     return el('span', { class: 'chip ' + m[0] + (extra ? ' ' + extra : '') }, el('span', { 'aria-hidden': 'true', text: m[1] }), m[2]);
+  }
+
+  // The rights state of an asset: cleared or not, and legal hold when it is set. Both can show at once.
+  function assetChips(d) {
+    return [stateChip(d.cleared ? 'cleared' : 'uncleared'), d.legalHold ? stateChip('hold') : null];
   }
 
   function cueChip(status) {
@@ -1083,7 +1101,7 @@
             const v = s.versions.find((x) => x.kind === k);
             const url = v && v.url;
             return el('div', { class: 'ver' }, el('span', { text: k }),
-              v ? chip(VER_CHIP, v.status) : el('span', { class: 'chip unsupported' }, el('span', { 'aria-hidden': 'true', text: '–' }), 'Not made'),
+              v ? stateChip(v.status) : stateChip('pending', 'Not made'),
               url ? (/^https?:\/\//i.test(url) ? el('a', { class: 'url', href: url, rel: 'noopener', text: url }) : el('span', { class: 'url', text: url })) : el('span', { class: 'url muted', text: '' }));
           })), el('div', { class: 'muted', text: running ? 'Rendering…' : s.versions.length ? done + ' of 3 done' : '' })),
           el('td', {},
@@ -1144,13 +1162,15 @@
     $('lib-add-shot').addEventListener('click', () => addSpan('shot'));
     for (const ev of ['timeupdate', 'seeked', 'seeking']) v.addEventListener(ev, updatePos);
     v.addEventListener('loadedmetadata', onVideoReady);
-    v.addEventListener('play', () => { $('lib-play').firstChild.textContent = 'Pause '; tickPos(); });
-    v.addEventListener('pause', () => { $('lib-play').firstChild.textContent = 'Play '; updatePos(); });
+    v.addEventListener('play', () => { $('lib-play-text').textContent = 'Pause'; tickPos(); });
+    // The clip played out (or stopped by itself): forget the shuttle so the next K or L starts clean.
+    v.addEventListener('ended', () => { if (SH.dir === 1) { cancelAnimationFrame(SH.raf); SH.dir = 0; SH.speed = 0; v.playbackRate = 1; } });
+    v.addEventListener('pause', () => { $('lib-play-text').textContent = 'Play'; updatePos(); });
     v.addEventListener('error', onVideoError);
   }
 
   function libEnter() { if (L.assetId) libLoad(L.load === 'ready'); }
-  function libLeave() { const v = $('lib-video'); if (v && !v.paused) v.pause(); }
+  function libLeave() { shuttleStop(); const v = $('lib-video'); if (v && !v.paused) v.pause(); }
 
   function libPoll() {
     if (L.assetId && L.load === 'ready' && !document.hidden && ![...S.pending].some((k) => k.startsWith('lib:'))) libLoad(true);
@@ -1361,6 +1381,7 @@
 
   // ---- the proxy -------------------------------------------------------------------------------------------
   function proxyRelease() {
+    shuttleStop();
     const P = L.proxy, v = $('lib-video');
     if (P.abort) { P.abort.abort(); P.abort = null; }
     if (!v.paused) v.pause();
@@ -1445,6 +1466,7 @@
   async function onVideoError() {
     const P = L.proxy, v = $('lib-video');
     if (!v.getAttribute('src')) return;   // we just cleared it
+    shuttleStop();
     P.state = 'error';
     P.msg = 'The browser could not play this proxy.';
     if (P.mode === 'native') {
@@ -1535,8 +1557,42 @@
     return true;
   }
 
-  function togglePlay() { const v = $('lib-video'); if (!videoReady()) return; if (v.paused) v.play().catch(() => {}); else v.pause(); }
+  // The shuttle. Forward is the browser's own playbackRate; reverse is a timed seek loop, since a video cannot play backwards.
+  const SH = { dir: 0, speed: 0, raf: 0, last: 0 };
+  function shuttleRun(next) {
+    const v = $('lib-video');
+    cancelAnimationFrame(SH.raf);
+    SH.dir = next.dir; SH.speed = next.speed;
+    if (!v || !videoReady()) { SH.dir = 0; SH.speed = 0; return; }
+    if (SH.dir === 1) { v.playbackRate = SH.speed; v.play().catch(() => {}); return; }
+    v.playbackRate = 1;
+    if (!v.paused) v.pause();
+    if (SH.dir === 0) return;
+    SH.last = 0;
+    const back = (t) => {
+      // A hidden tab pauses animation frames; cap the step so coming back does not jump the playhead.
+      const dt = SH.last ? Math.min((t - SH.last) / 1000, 0.1) : 0;
+      SH.last = t;
+      v.currentTime = Math.max(0, v.currentTime - dt * SH.speed);
+      updatePos();
+      if (v.currentTime <= 0) { shuttleStop(); return; }
+      SH.raf = requestAnimationFrame(back);
+    };
+    SH.raf = requestAnimationFrame(back);
+  }
+  function shuttleStop() {
+    if (SH.dir === 0 && SH.speed === 0) return;
+    shuttleRun({ dir: 0, speed: 0 });
+  }
+  function shuttleKey(key) { shuttleRun(shuttleNext(SH, key)); }
+  function togglePlay() {
+    const v = $('lib-video');
+    if (!videoReady()) return;
+    if (SH.dir !== 0) { shuttleStop(); return; }   // K while shuttling stops, as on an edit controller
+    if (v.paused) v.play().catch(() => {}); else { shuttleStop(); v.pause(); }
+  }
   function stepFrames(n) {
+    shuttleStop();
     const view = libView(), v = $('lib-video');
     if (!view.ok || !videoReady()) return;
     if (!v.paused) v.pause();
@@ -1544,6 +1600,7 @@
   }
 
   function jumpShot(dir) {
+    shuttleStop();
     const view = libView();
     if (!view.ok || !videoReady()) return;
     const here = L.pos == null ? frameNow(view) : L.pos;
@@ -1850,6 +1907,8 @@
     if (low === 'i' && !e.repeat) { markAt('lib-in', 'In'); return; }
     if (low === 'o' && !e.repeat) { markAt('lib-out', 'Out'); return; }
     if (low === 'k' && !e.repeat) { togglePlay(); return; }
+    if (low === 'j' && !e.repeat) { shuttleKey('j'); return; }
+    if (low === 'l' && !e.repeat) { shuttleKey('l'); return; }
     if (k === ',') { stepFrames(-1); return; }
     if (k === '.') { stepFrames(1); return; }
     if (k === '[' && !e.repeat) { jumpShot(-1); return; }
@@ -1892,7 +1951,6 @@
   // The follow-on jobs are then read from the existing state poll (assets[].jobs lists the unfinished ones).
   const I = { path: '', busy: false, result: null, err: null };
   const JOB_NAME = { ingest: 'Copy and check', proxy: 'Proxy', asr: 'Transcript', shots: 'Shot detection' };
-  const JOB_CHIP = Object.assign({ running: ['running', '▶', 'Running'] }, VER_CHIP);
 
   async function ingestNow() {
     const path = I.path.trim();
@@ -1962,7 +2020,7 @@
             el('span', { class: 'mono', text: r.asset }), r.minted ? ' is new.' : ' was already ingested; nothing was copied again.',
             r.quarantined ? ' It is held in quarantine and nothing will air from it.' : ''),
           el('ul', { class: 'jobs', 'aria-label': 'Follow-on work' }, jobs.map((j) => el('li', {},
-            el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), chip(JOB_CHIP, j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
+            el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), stateChip(j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
           el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'ingest-open',
             onclick: () => { setAsset(r.asset); } }, 'Open this asset below'))));
       }
@@ -2024,8 +2082,7 @@
     paint('lib-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      el('span', { class: d.cleared ? 'ok' : 'no' }, el('span', { 'aria-hidden': 'true', text: d.cleared ? '✓ ' : '✕ ' }), d.cleared ? 'Cleared' : 'Not cleared'),
-      d.legalHold ? el('span', { class: 'no' }, el('span', { 'aria-hidden': 'true', text: '⚑ ' }), 'Legal hold') : null,
+      assetChips(d),
       d.open ? el('span', { class: 'warn' }, el('span', { 'aria-hidden': 'true', text: '● ' }), 'Recording') : null,
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
@@ -2301,6 +2358,7 @@
 
   function setTab(name, focus) {
     if (W.tab === name) return;
+    shuttleStop();
     W.tab = name;
     if (name === 'export') X.key = null;                    // the export tab asks the server again each time it opens
     const v = $('lib-video');
@@ -2432,8 +2490,7 @@
     paint('lib-w-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      el('span', { class: d.cleared ? 'ok' : 'no' }, el('span', { 'aria-hidden': 'true', text: d.cleared ? '✓ ' : '✕ ' }), d.cleared ? 'Cleared' : 'Not cleared'),
-      d.legalHold ? el('span', { class: 'no' }, el('span', { 'aria-hidden': 'true', text: '⚑ ' }), 'Legal hold') : null,
+      assetChips(d),
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
 

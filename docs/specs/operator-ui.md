@@ -16,6 +16,8 @@ Run it against a fake room, no core needed: `cd control && python -m tests.opera
 
 **Shell (slice 1 of the redesign, [design](superpowers/specs/2026-10-30-ui-redesign-design.md)).** A header (mark, show picker, workspace switcher, signed-in user from `/api/whoami`, connection, clock), an icon rail on the left, a footer (show, item count, server version). The three workspaces, Producer, Editor and Operator, are saved layouts: each picks which screens the rail lists and which opens first (Producer: Show, Rights, Publish, Library; Editor: Library, Publish, Rights; Operator: Show, Record). They are not permissions; the server still decides what a token may do, and every screen stays reachable by its hash (a screen outside the rail shows as one temporary dashed rail item). The choice is kept in `localStorage` under `volt.workspace` (the token never goes there); without storage the page opens in Operator. Icons come from one inline SVG sprite in `index.html` through `icon(name, cls)`; status is drawn by `stateChip(kind, word)` from one map (on air, ready, pending, failed, held), always icon, word and colour. Contrast is measured in [ui-slice-1-contrast.md](superpowers/plans/ui-slice-1-contrast.md).
 
+**Library (slice 3).** Same shell and components: icons on the panel headings and the three tabs, rights and job state drawn as state chips (Cleared, Not cleared, Legal hold, Queued, Running, Done, Failed) instead of loose glyphs, and in the Editor workspace a narrower side column so the player and shot table get the width. J, K and L shuttle the proxy (see Keys (Library screen)). Rights stays per asset, with no bulk clear.
+
 **Show screen (slice 2).** The rundown has columns for number, state (icon, word, colour), item, length and front time, a summary line (`Total`, item count) and a drift readout. Front time is when an item starts: the first item that has started anchors the clock, and each later item starts after the planned lengths of the items before it that are not killed or skipped; before anything has aired the column shows running offsets (`T+02:10`). An item with no known length counts as zero and shows `--:--`. Drift is the on-air item's actual start minus its planned front time: `+00:06 behind` in red, `-00:10 ahead` or `00:00 on time` in the normal text colour, always with an icon. Back time and slot over/under need a show target the data model does not have and are not built. TAKE is the one large suite-blue control with the take icon, set apart from HOLD and Advance; Kill sits after a divider at the end of the row tools and keeps its two-press arming. In the Operator workspace the build forms (`#build`, `#cue-add`) are hidden by CSS (they stay in the page) and the rundown column is wider; Producer and Editor show them. The page is served without cache headers, so after a deploy a browser may keep an old `operator.css` until it is reloaded without cache.
 
 Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps, stop and wrap), Rights (clear, legal hold), Publish (clips and shots with per-version status and URLs; a passage of speech is published by first marking it as a clip in the Library), Library (shots and clips of one asset). `#show`, `#record`, `#rights`, `#publish`, `#library`.
@@ -90,7 +92,9 @@ Handled only when the Library is the open screen, and never when a field has foc
 
 | Key | Does |
 | --- | --- |
-| `K` | Play or pause. |
+| `K` | Play or pause; while shuttling, stop. |
+| `L` | Play forward. Press again for 2x, 4x, 8x. |
+| `J` | Play in reverse (a timed seek, since a browser video cannot play backwards). Press again for 2x, 4x, 8x. The opposite key starts again at 1x the other way. |
 | `,` `.` | Step one frame back or forward (repeats when held). |
 | `[` `]` | Previous or next shot start. |
 | `I` `O` | Put the playhead in the In or Out field. |
