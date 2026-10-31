@@ -273,6 +273,10 @@ def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None, ru
     path = str(Path(tmp.name) / "volt.db")
     store = Store(path)
     room, show, spans = seed(store, scenario, media_dir=Path(tmp.name))
+    # The rundown scenarios attach clips to assets with no essence; give each a 25 fps hi-res file so the page can total lengths.
+    for r in store.conn.execute("SELECT DISTINCT s.asset_id FROM item i JOIN span s ON s.id = i.span_id WHERE s.asset_id NOT IN "
+                                "(SELECT asset_id FROM essence WHERE role = 'hi-res')").fetchall():
+        store.add_essence(r["asset_id"], "hi-res", str(Path(tmp.name) / "clip.mxf"), frame_rate="25", timecode_start="01:00:00:00")
     if scenario == "publish_partial":
         # Publish the Open clip first with a failing social render so the page opens on the aftermath.
         publish(store, spans["open"], fail="social")

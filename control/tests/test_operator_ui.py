@@ -67,7 +67,6 @@ class Static(Api):
         for name, text in FILES.items():
             self.assertNotRegex(text, r"https?://", name)
             self.assertNotRegex(text, r"@import|url\(\s*['\"]?(?!data:)", name)
-        self.assertNotIn(" style=", html)
         self.assertNotRegex(html, r"<script(?![^>]*\bsrc=)")  # no inline script
         self.assertNotIn("<style", html)
         for ref in refs:
@@ -839,3 +838,26 @@ class RundownTiming(unittest.TestCase):
         self.assertEqual(_node(["fmtOffset", 3725], ["fmtOffset", 65], ["fmtOffset", None], ["fmtOffset", 0],
                                ["fmtSigned", 15], ["fmtSigned", -10], ["fmtSigned", 0], ["fmtSigned", None]),
                          ["1:02:05", "01:05", "--:--", "00:00", "+00:15", "-00:10", "00:00", ""])
+
+
+class RundownMarkup(unittest.TestCase):
+    def test_summary_and_columns_exist(self):
+        js, html = FILES["operator.js"], FILES["index.html"]
+        self.assertIn('id="rundown-sum"', html)
+        self.assertIn("frontTimes(", js[js.index("function renderShow"):])
+        for cls in ("dur", "front", "drift", "rhead"):
+            self.assertIn("class: '%s" % cls, js, cls)
+
+    def test_kill_is_set_apart(self):
+        rule = re.search(r"\.rrow \.sep\{([^}]*)\}", FILES["operator.css"])
+        self.assertIsNotNone(rule)
+        self.assertIn("var(--space-4)", rule.group(1))
+        self.assertIn("'sep'", FILES["operator.js"])
+
+    def test_current_row_has_a_bar_in_the_right_colour(self):
+        css = FILES["operator.css"]
+        self.assertRegex(css, r"\.rrow\.is-air\{[^}]*border-left-color:var\(--air\)")
+        self.assertRegex(css, r"\.rrow\.is-next\{[^}]*border-left-color:var\(--signal\)")
+
+    def test_no_inline_style_added(self):
+        self.assertNotIn("style=", FILES["index.html"])

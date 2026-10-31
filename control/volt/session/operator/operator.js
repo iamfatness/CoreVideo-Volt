@@ -736,10 +736,22 @@
 
     const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
     S.selected = sel || null;
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq], () => {
+    const seconds = {};
+    for (const it of items) seconds[it.id] = itemSeconds(mediaOf(it.id));
+    const timing = frontTimes(items, seconds, Date.now());
+    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec], () => {
+      if (!S.data.show || !items.length) return null;
+      const d = timing.driftSec;
+      return [el('span', { text: 'Total ' + fmtOffset(timing.totalSec) + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+        d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
+          'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
+    });
+    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
-      return el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next)));
+      return [el('div', { class: 'rhead', 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
+          el('span', { text: 'Length' }), el('span', { text: 'Front' })),
+        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id])))];
     });
 
     const sItem = items.find((i) => i.id === S.selected);
@@ -878,7 +890,7 @@
     });
   }
 
-  function rundownRow(it, idx, items, air, next) {
+  function rundownRow(it, idx, items, air, next, tm, secs) {
     const m = mediaOf(it.id);
     const isNext = next && next.id === it.id;
     const meta = [];
@@ -891,19 +903,23 @@
     const canUp = ready && prev && prev.status !== 'on air' && prev.status !== 'aired';
     const canDown = ready && idx < items.length - 1;
     const killKey = 'kill:' + it.id;
+    const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
     return el('li', { class: cls },
       el('span', { class: 'n', 'aria-hidden': 'true', text: String(idx + 1) }),
+      stateChip(itemStateKind(it.status, isNext)),
       el('button', { type: 'button', class: 'pick', 'data-fk': 'pick:' + it.id, 'aria-current': S.selected === it.id ? 'true' : null,
           onclick: () => { S.selected = it.id; render(); } },
         el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
         el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null)),
-      stateChip(itemStateKind(it.status, isNext)),
+      el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
+      el('span', { class: 'front mono', text: front }),
       el('span', { class: 'tools' },
         ready ? [
           btn('↑', { key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
           btn('↓', { key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
           btn('Skip', { key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
+          el('span', { class: 'sep', 'aria-hidden': 'true' }),
           btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
             aria: (S.armed === killKey ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }),
         ] : null));
