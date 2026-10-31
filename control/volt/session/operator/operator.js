@@ -230,6 +230,7 @@
     go:          ['POST', '/api/shows/{id}/go'],
     take:        ['POST', '/api/shows/{id}/take'],
     hold:        ['POST', '/api/shows/{id}/hold'],
+    showSlot:    ['POST', '/api/shows/{id}/slot'],
     release:     ['POST', '/api/shows/{id}/release'],
     reorder:     ['POST', '/api/shows/{id}/reorder'],
     skip:        ['POST', '/api/items/{id}/skip'],
@@ -314,7 +315,7 @@
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
     cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
-    build: { title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
+    build: { slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
 
   // ---- tiny DOM helper -----------------------------------------------------
@@ -362,9 +363,10 @@
     const hold = r.hold ? { reason: r.hold.reason || '', heldAt: r.hold.heldAt || '' } : null;
     const items = (r.items || []).map((i) => ({
       id: i.id, slug: i.slug, status: i.status, urls: i.urls || [],
+      scheduledAt: i.scheduledAt || null,
       asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
     }));
-    return { hold, items };
+    return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null };
   }
 
   // ---- network -------------------------------------------------------------
@@ -819,19 +821,24 @@
     const seconds = {};
     for (const it of items) seconds[it.id] = itemSeconds(mediaOf(it.id));
     const timing = frontTimes(items, seconds, Date.now());
-    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec], () => {
+    const slot = S.data.rundown ? S.data.rundown.slotSeconds : null;
+    const back = backTimes(items, seconds, slot);
+    const hasSlot = slot != null;
+    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec], () => {
       if (!S.data.show || !items.length) return null;
-      const d = timing.driftSec;
-      return [el('span', { text: 'Total ' + fmtOffset(timing.totalSec) + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+      const d = timing.driftSec, o = back.overSec;
+      return [el('span', { text: 'Total ' + fmtOffset(timing.totalSec) + (hasSlot ? ' of ' + fmtOffset(slot) : '') + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+        o == null ? null : el('span', { class: 'over' + (o > 0 ? ' behind' : '') }, icon(o > 0 ? 'alert' : 'ready', 's'),
+          o > 0 ? 'Over ' + fmtOffset(o) : o < 0 ? 'Under ' + fmtOffset(-o) : 'On slot'),
         d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
           'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
     });
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing], () => {
+    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
-      return [el('div', { class: 'rhead', 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
-          el('span', { text: 'Length' }), el('span', { text: 'Front' }), el('span')),
-        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id])))];
+      return [el('div', { class: 'rhead' + (hasSlot ? ' hb' : ''), 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
+          el('span', { text: 'Length' }), el('span', { text: 'Front' }), hasSlot ? el('span', { text: 'Back' }) : null, el('span')),
+        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id], hasSlot ? back.rows[idx] : null)))];
     });
 
     const sItem = items.find((i) => i.id === S.selected);
@@ -886,6 +893,16 @@
       return '"' + d.show.title + '" is open and has no items yet.';
     } });
   }
+  function setSlot() {
+    const v = parseSlot(S.build.slot);
+    if (v === 'bad') { setFlash({ kind: 'bad', title: 'Slot length not understood.', code: 'bad_input', reason: 'Write it as minutes and seconds, 15:00, or hours, 1:30:00. It must be between 0:01 and 23:59:59.' }); render(); return; }
+    if (v === null) { setFlash({ kind: 'bad', title: 'Write a slot length first.', code: 'bad_input', reason: 'Use Clear slot to remove it.' }); render(); return; }
+    S.build.slot = '';
+    act('showSlot', S.show, { seconds: v }, { key: 'show-slot', okTitle: 'Slot set.', ok: () => 'The show is planned for ' + fmtOffset(v) + '.' });
+  }
+  function clearSlot() {
+    act('showSlot', S.show, { seconds: null }, { key: 'show-slot-clear', okTitle: 'Slot cleared.', ok: () => 'The show has no planned length.' });
+  }
   function addItem() {
     const slug = S.build.slug.trim();
     if (!slug) { needName('item'); return; }
@@ -926,8 +943,13 @@
     const m = sItem ? mediaOf(sItem.id) : {};
     const pending = [...S.pending];
     const rmKey = sItem ? 'remove:' + sItem.id : '';
-    paint('build', [S.data.show, sItem, m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick], () => [
+    const slotNow = S.data.rundown ? S.data.rundown.slotSeconds : null;
+    paint('build', [S.data.show, sItem, m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
       el('div', { class: 'body' },
+        el('form', { 'aria-label': 'Set the slot length', onsubmit: (e) => { e.preventDefault(); setSlot(); } },
+          formRow('Slot length (mm:ss or h:mm:ss)', 'build-slot', textIn('build-slot', 'slot', { maxlength: '9', disabled: !S.data.show, placeholder: slotNow != null ? fmtOffset(slotNow) : '15:00' })),
+          el('div', { class: 'bar flush' }, btn('Set slot', { key: 'show-slot', cls: 'ghost', disabled: !S.data.show, onclick: setSlot }),
+            slotNow != null ? btn('Clear slot', { key: 'show-slot-clear', cls: 'ghost', onclick: clearSlot }) : null)),
         el('form', { 'aria-label': 'Add an item', onsubmit: (e) => { e.preventDefault(); addItem(); } },
           formRow('New item', 'build-slug', textIn('build-slug', 'slug', { maxlength: '200', disabled: !S.data.show })),
           el('div', { class: 'bar flush' }, btn('Add item', { key: 'item-add', cls: 'ghost', disabled: !S.data.show, onclick: addItem }))),
@@ -970,7 +992,7 @@
     });
   }
 
-  function rundownRow(it, idx, items, air, next, tm, secs) {
+  function rundownRow(it, idx, items, air, next, tm, secs, bk) {
     const m = mediaOf(it.id);
     const isNext = next && next.id === it.id;
     const meta = [];
@@ -984,7 +1006,8 @@
     const canDown = ready && idx < items.length - 1;
     const killKey = 'kill:' + it.id;
     const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
-    return el('li', { class: cls },
+    const backText = !bk ? null : bk.backMs != null ? new Date(bk.backMs).toLocaleTimeString([], { hour12: false }) : (it.status === 'ready' ? '--:--' : '');
+    return el('li', { class: cls + (bk ? ' hb' : '') },
       el('span', { class: 'n', 'aria-hidden': 'true', text: String(idx + 1) }),
       stateChip(itemStateKind(it.status, isNext)),
       el('button', { type: 'button', class: 'pick', 'data-fk': 'pick:' + it.id, 'aria-current': S.selected === it.id ? 'true' : null,
@@ -994,6 +1017,7 @@
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null)),
       el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
       el('span', { class: 'front mono', text: front }),
+      backText == null ? null : el('span', { class: 'back mono', text: backText }),
       el('span', { class: 'tools' },
         ready ? [
           btn('↑', { key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),

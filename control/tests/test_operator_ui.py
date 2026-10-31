@@ -497,7 +497,7 @@ class State(Api):
 
     def test_state_keeps_the_rundown_shape_and_adds_what_the_screens_need(self):
         s = self.state()
-        self.assertEqual(set(s["rundown"]), {"hold", "items"})
+        self.assertEqual(set(s["rundown"]), {"hold", "items", "slotSeconds"})
         self.assertEqual(s["rundown"]["hold"]["reason"], "Waiting on the producer for the replay cue")
         self.assertEqual(s["show"]["id"], self.show)
         statuses = [i["status"] for i in s["rundown"]["items"]]
@@ -894,7 +894,7 @@ class RundownColumns(unittest.TestCase):
         self.assertNotIn('auto', track)   # an auto track is sized row by row and the columns drift apart
         self.assertNotIn('em ', track.replace('rem', ''))   # em would shrink with the header's smaller font
         head = js[js.index("class: 'rhead'"):]
-        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 6)
+        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 7)   # six, plus Back when a slot is set
 
 
 if __name__ == "__main__":
@@ -1184,3 +1184,21 @@ class BackTimes(unittest.TestCase):
         self.assertEqual(_node(["parseSlot", "15:00"], ["parseSlot", "1:30:00"], ["parseSlot", "90"], ["parseSlot", ""], ["parseSlot", "abc"],
                                ["parseSlot", "0:00"], ["parseSlot", "24:00:00"], ["parseSlot", "12:75"]),
                          [900, 5400, "bad", None, "bad", "bad", "bad", "bad"])   # a bare number is ambiguous, so it is refused
+
+
+class SlotUi(unittest.TestCase):
+    def test_the_page_wires_the_slot(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        self.assertIn("showSlot:", js)
+        self.assertIn("backTimes(", js[js.index("function renderShow"):])
+        self.assertIn("slotSeconds", js[js.index("function parseRundown"):js.index("function parseRundown") + 700])
+        for needle in ("'Over '", "'Under '", "'On slot'", "'Back'"):
+            self.assertIn(needle, js)
+        self.assertRegex(css, r"\.rrow\.hb,\.rhead\.hb\{grid-template-columns:[^}]*6\.5rem 6\.5rem 16rem\}")
+        self.assertNotIn("auto", re.search(r"\.rrow\.hb,\.rhead\.hb\{grid-template-columns:([^}]*)\}", css).group(1))
+
+    def test_the_slot_control_lives_in_the_build_panel_and_is_hidden_in_operator(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        build = js[js.index("function renderBuild"):js.index("function renderBuild") + 2500]
+        self.assertIn("build-slot", build)
+        self.assertRegex(css, r"\.ws-operator #build[^{]*\{[^}]*display:none")   # read-only in the Operator layout
