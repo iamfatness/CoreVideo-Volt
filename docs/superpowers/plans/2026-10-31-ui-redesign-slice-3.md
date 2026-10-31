@@ -15,12 +15,15 @@
 - Everything in slices 1 and 2's Global Constraints holds: brand colours only; no `http(s)://`, `style=`, `<style>` or inline script in the three files; every `id`, `data-fk`, `data-screen` and `aria-*` kept; Library keys unchanged (`K` play, `,` `.` frame, `[` `]` shot, `I` `O` mark, Enter adds a clip, Space never takes); two-press arming kept; status is icon plus word plus colour.
 - Rights stays per asset; no bulk clear anywhere.
 - The Library's panels keep every current piece of information; this slice changes how it is drawn, not what is shown.
-- J and L are **not** added: a browser video cannot play backwards, so J would not mean what it does in Resolve or Avid (ruling; the spec said to skip if it does not fit).
+- **J/K/L shuttle is in** (owner, 2026-10-31: very important to the people who will use this). `L` plays forward, `J` plays in reverse, `K` stops; repeated `L` or `J` doubles the speed (1x, 2x, 4x, 8x); the opposite key slows through zero by reversing direction at 1x. A browser video cannot play backwards, so reverse is a timed seek loop; it is the same feel, not the same decoder. `K` keeps today's behaviour when nothing is shuttling (play or pause), so no existing key changes meaning.
 
 ## Review Focus
 
 - A cleared asset, an uncleared asset and one under legal hold each show icon, word and colour in the asset header on both the Shots and Transcript tabs, and an asset that is both uncleared and held shows both chips.
 - A job status the page does not know (a future worker state) renders its word with the neutral icon and does not throw.
+- Holding `J` or `L` (key repeat) must not stack timers or keep doubling: only a fresh press steps the speed. Leaving the Library, switching tab, changing asset, stepping a frame, jumping a shot or pressing `K` stops any shuttle and returns `playbackRate` to 1.
+- Reverse shuttle reaching the start of the clip stops there and shows no error; forward shuttle reaching the end pauses.
+- A focused field or button: `J`, `K`, `L` do nothing there (the existing `onControl` rule), so typing "jkl" in a clip name never moves the player.
 - Switching tabs with the keyboard (arrow keys on the tablist) still works and keeps `aria-selected` and `tabindex` right after the icons are added.
 - The Library at 1000px wide and below collapses to one column in every workspace (the Editor layout must not override the narrow rule).
 - With no asset chosen, no recordings, a load error and an asset that cannot be marked, the empty-state cards still render and the tabs stay hidden.
@@ -58,7 +61,22 @@
 - [ ] **Step 4: Run** the file. Expected: PASS.
 - [ ] **Step 5: Commit** `Library: icons on headings and tabs`.
 
-### Task 3: Editor layout and transport
+### Task 3: J/K/L shuttle
+
+**Files:**
+- Modify: `operator.js` (pure `shuttleNext` above the node early-return and exported; `shuttleStop`, `shuttleRun` beside `togglePlay` ~line 1538; keys in `libKey` ~1842), `index.html` (a "Shuttle" hint next to the transport), `docs/specs/operator-ui.md` (Keys (Library screen) table), the Keys dialog (`#keys-dlg`) rows for the Library
+- Test: `test_operator_ui.py` (new class `Shuttle`, `_node` for the pure part, static for wiring)
+
+**Interfaces:**
+- Produces: `shuttleNext(state: {dir: -1|0|1, speed: number}, key: 'j'|'k'|'l') -> {dir, speed}`: `l` from dir 0 or -1 gives `{dir:1, speed:1}`; `l` from dir 1 gives speed doubled up to 8 (8 stays 8); `j` mirrored with `dir:-1`; `k` gives `{dir:0, speed:0}`. `shuttleRun(state)` applies it: dir 1 sets `video.playbackRate = speed` and plays; dir -1 pauses the video and runs a `requestAnimationFrame` loop that subtracts `dt * speed` seconds from `currentTime`, stopping at 0; dir 0 cancels the loop, pauses and sets `playbackRate = 1`. `shuttleStop()` is the same as `shuttleRun({dir:0, speed:0})` and is called from `togglePlay` when pausing, `stepFrames`, `jumpShot`, `libLeave`, `proxyRelease` and a tab switch. Key repeat is ignored (`!e.repeat`) for `j` and `l`. The arrow-key `L.pos` playhead readout keeps following `currentTime` as it does for normal play.
+
+- [ ] **Step 1: Write the failing tests.** `Shuttle.test_speed_ladder`: from `{dir:0,speed:0}` `l,l,l,l,l` gives speeds `1,2,4,8,8` with dir 1; `j,j,j` gives `-1` with speeds `1,2,4`; `l` then `j` gives `{dir:-1,speed:1}`; any state then `k` gives `{dir:0,speed:0}`. `Shuttle.test_keys_are_wired_and_ignore_repeat_and_fields` (static: `libKey` handles `'j'` and `'l'` with `!e.repeat`, and sits after the `onControl` check). `Shuttle.test_every_exit_stops_the_shuttle` (static: `shuttleStop(` appears in `libLeave`, `stepFrames`, `jumpShot`, `togglePlay` and the tab-switch code). `Shuttle.test_documented` (the keys table in `docs/specs/operator-ui.md` has rows for `J`, `K`, `L`).
+- [ ] **Step 2: Run** `python -m unittest tests.test_operator_ui.Shuttle -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the pure function, the run/stop functions and the key wiring; add the table rows and the dialog rows; add `aria-keyshortcuts` hints only where a visible button exists (there is none for J and L, so add a visible `J K L` hint text beside the transport).
+- [ ] **Step 4: Run** the class and the file. Expected: PASS.
+- [ ] **Step 5: Commit** `Library: J/K/L shuttle`.
+
+### Task 4: Editor layout and transport
 
 **Files:**
 - Modify: `operator.css`, `index.html` (transport buttons)
@@ -73,7 +91,7 @@
 - [ ] **Step 4: Run** the file and `python -m unittest discover -s tests`. Expected: PASS.
 - [ ] **Step 5: Commit** `Library: Editor layout and transport icon`.
 
-### Task 4: Browser check and docs
+### Task 5: Browser check and docs
 
 **Files:**
 - Modify: `docs/specs/operator-ui.md` (Library section), `CHANGELOG.md`, `docs/mockups/` Library PNGs that exist (re-shot; list them with `ls docs/mockups`, keep names)
