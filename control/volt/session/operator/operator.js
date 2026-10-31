@@ -117,7 +117,17 @@
     pending: { icon: 'pending', word: 'Pending', cls: 'st pend' },
     failed:  { icon: 'alert',   word: 'Failed',  cls: 'st fail' },
     locked:  { icon: 'lock',    word: 'Held',    cls: 'st hold' },
+    next:    { icon: 'take',    word: 'Next',    cls: 'st next' },
+    taking:  { icon: 'pending', word: 'Taking',  cls: 'st pend' },
+    aired:   { icon: 'ready',   word: 'Aired',   cls: 'st done' },
+    skipped: { icon: 'skip',    word: 'Skipped', cls: 'st done' },
+    killed:  { icon: 'close',   word: 'Killed',  cls: 'st done' },
+
   };
+  // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
+  const itemStateKind = (status, isNext) => (isNext ? 'next' : status === 'on air' ? 'onair' : status);
+  const CUE_STATE = { fired: ['ready', 'Fired'], failed: ['failed', 'Failed'], armed: ['pending', 'Armed'], stored: ['pending', 'Stored'], unsupported: ['locked', 'Unsupported'] };
+  const cueStateKind = (status) => CUE_STATE[status] || [status, String(status)];
   // A kind this page does not know (a future server state) renders its own word with the neutral pending icon.
   function stateChipSpec(kind, word) {
     const known = Object.prototype.hasOwnProperty.call(STATE, kind) ? STATE[kind] : null;
@@ -142,7 +152,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -226,14 +236,6 @@
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
-  };
-  const ITEM_CHIP = {
-    'on air': ['air', '●', 'On air'], taking: ['taking', '…', 'Taking'], ready: ['ready', '○', 'Ready'],
-    aired: ['aired', '✓', 'Aired'], skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
-  };
-  const CUE_CHIP = {
-    fired: ['fired', '✓', 'Fired'], failed: ['failed', '✕', 'Failed'], armed: ['armed', '▶', 'Armed'],
-    stored: ['stored', '○', 'Stored'], unsupported: ['unsupported', '?', 'Unsupported'],
   };
   const VER_CHIP = {
     done: ['done', '✓', 'Done'], failed: ['failed', '✕', 'Failed'], queued: ['queued', '…', 'Queued'],
@@ -603,6 +605,11 @@
     return el('span', { class: 'chip ' + m[0] + (extra ? ' ' + extra : '') }, el('span', { 'aria-hidden': 'true', text: m[1] }), m[2]);
   }
 
+  function cueChip(status) {
+    const [kind, word] = cueStateKind(status);
+    return stateChip(kind, word);
+  }
+
   function btn(label, o) {
     o = o || {};
     const dis = o.disabled || S.pending.has(o.key || '\0');
@@ -744,7 +751,7 @@
       return [cs.map((c) => el('div', { class: 'cue' },
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
           el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
-        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
+        cueChip(c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
         sItem.status === 'ready' && c.status !== 'fired' ? btn('Remove', { key: 'cue-rm:' + c.id, cls: 'ghost small', aria: 'Remove cue ' + (CUE_LABEL[c.command] || c.command),
           onclick: () => act('cueRemove', c.id, {}, { key: 'cue-rm:' + c.id, okTitle: 'Cue removed.', ok: () => '' }) }) : null)),
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
@@ -891,7 +898,7 @@
         el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
         el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null)),
-      isNext ? chip({ next: ['next', '▶', 'Next'] }, 'next') : chip(ITEM_CHIP, it.status),
+      stateChip(itemStateKind(it.status, isNext)),
       el('span', { class: 'tools' },
         ready ? [
           btn('↑', { key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),

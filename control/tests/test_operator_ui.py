@@ -608,7 +608,7 @@ class CuePicker(unittest.TestCase):
 class TakingCopy(unittest.TestCase):
     def test_desk_words_taking_and_blocks_take(self):
         js = FILES["operator.js"]
-        self.assertIn("taking: ['taking'", js)
+        self.assertRegex(js, r"taking:\s+\{ icon: 'pending', word: 'Taking'")
         self.assertIn("taking: 'Taking'", js)
         block = js[js.index("function takeBlock"):js.index("function takeNow")]
         self.assertIn("taking", block)
@@ -683,12 +683,22 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["failed", "locked", "onair", "pending", "ready"])
+        self.assertEqual(sorted(state), ["aired", "failed", "killed", "locked", "next", "onair", "pending", "ready", "skipped", "taking"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
         self.assertEqual(state["onair"], {"icon": "onair", "word": "On air", "cls": "st air"})
         self.assertEqual(state["locked"]["word"], "Held")
+
+    def test_row_states(self):
+        next_, aired, killed, taking = _node(["stateChipSpec", "next"], ["stateChipSpec", "aired"], ["stateChipSpec", "killed"], ["stateChipSpec", "taking"])
+        self.assertEqual(next_, {"icon": "take", "word": "Next", "cls": "st next"})
+        self.assertEqual(aired, {"icon": "ready", "word": "Aired", "cls": "st done"})
+        self.assertEqual(killed, {"icon": "close", "word": "Killed", "cls": "st done"})
+        self.assertEqual(taking, {"icon": "pending", "word": "Taking", "cls": "st pend"})
+        self.assertEqual(_node(["itemStateKind", "on air", False], ["itemStateKind", "ready", True], ["itemStateKind", "skipped", False],
+                               ["cueStateKind", "armed"], ["cueStateKind", "fired"], ["cueStateKind", "unsupported"]),
+                         ["onair", "next", "skipped", ["pending", "Armed"], ["ready", "Fired"], ["locked", "Unsupported"]])
 
     def test_chip_spec_never_throws_on_an_unknown_kind(self):
         known, unknown, bare = _node(["stateChipSpec", "ready"], ["stateChipSpec", "future-state", "Sealed"], ["stateChipSpec", "nonsense"])
