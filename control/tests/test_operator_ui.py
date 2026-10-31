@@ -682,7 +682,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "cleared", "done", "failed", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "running", "skipped", "taking", "uncleared", "withdrawn"])
+        self.assertEqual(sorted(state), ["aired", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -1025,3 +1025,38 @@ class ShuttleEdges(unittest.TestCase):
 
     def test_withdrawn_versions_do_not_look_like_work_in_progress(self):
         self.assertEqual(_node(["stateChipSpec", "withdrawn"])[0], {"icon": "close", "word": "Withdrawn", "cls": "st done"})
+
+
+def _fn_source(js, name, span=6000):
+    i = js.index("function " + name)
+    j = js.find("\n  function ", i + 10)
+    return js[i:j if j > 0 else i + span]
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class ScreensState(unittest.TestCase):
+    def test_specs(self):
+        got = _node(*[["stateChipSpec", k] for k in ("recording", "wrapped", "fresh", "stale", "canair", "blocked")])
+        self.assertEqual(got, [{"icon": "record", "word": "Recording", "cls": "st air"},
+                               {"icon": "ready", "word": "Wrapped", "cls": "st ok"},
+                               {"icon": "ready", "word": "Fresh", "cls": "st ok"},
+                               {"icon": "alert", "word": "Stale", "cls": "st pend"},
+                               {"icon": "ready", "word": "Yes", "cls": "st ok"},
+                               {"icon": "alert", "word": "No", "cls": "st fail"}])
+        for spec in got:
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS)
+
+    def test_no_loose_glyphs_left_on_these_screens(self):
+        js = FILES["operator.js"]
+        for fn in ("renderRecord", "assetsTable", "renderRights", "renderPublish"):
+            src = _fn_source(js, fn)
+            for ch in "✓✕⚑⚠▶":
+                self.assertNotIn(ch, src, (fn, ch))
+
+
+class ScreensMarkup(unittest.TestCase):
+    def test_headings_carry_icons(self):
+        js = FILES["operator.js"]
+        for hid in ("h-recstart", "h-lifecycle", "h-assets", "h-assets2", "h-clips"):
+            i = js.index("el('h2', { id: '%s'" % hid)
+            self.assertIn("icon(", js[i:i + 260], hid)

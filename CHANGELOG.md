@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Operator UI redesign, slice 4: Record, Rights and Publish on the shared system: state chips for recording, wrapped, snapshot, cleared, hold, can-air and blocked, icons on the recording lifecycle steps and on the panel headings. Front end only. The mockup PNGs 04-11 are re-shot.
+
 - Operator UI redesign, slice 3: the Library on the shared system (icons on headings and tabs, state chips for cleared, legal hold and job status, a wider player in the Editor workspace) and a J/K/L shuttle on the proxy player: `L` forward, `J` reverse, `K` stop, repeated presses double the speed up to 8x. Front end only.
 
 - Operator UI redesign, slice 2: the Show screen. The rundown gains length and front-time columns, a total and a signed drift readout, the state language on every row and cue, and a divider before Kill; TAKE carries the take icon and sits apart from HOLD and Advance; the Operator workspace hides the build forms and widens the rundown. `/api/state` media entries gain `frames` and `rate` (additive).
