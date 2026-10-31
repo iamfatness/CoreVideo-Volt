@@ -17,7 +17,7 @@ The control plane, the Postgres runner, per-user tokens, MOS export and the rede
 - Anything that needs CoreVideo Pro, a real NCS, a real HyperDeck, or a real NLE to prove. Those are validation runs, tracked in [product-readiness](../../product-readiness.md) and [dress-rehearsal](../../dress-rehearsal.md).
 - The license choice (the owner's) and third-party notices that depend on it.
 - Free-docking panels (the redesign spec ruled them out and nothing has changed).
-- Receiving MOS (Volt as the NCS), AAF, a cloud archive other than the three object stores already supported, and a dashboard for the archive tier.
+- Receiving MOS (Volt as the device, its own later spec), AAF, a cloud archive other than the three object stores already supported, and a dashboard for the archive tier.
 - Cleanup of the 37 leftover agent worktrees: housekeeping, not code.
 
 ## Anti-goals
@@ -34,29 +34,29 @@ Failure even if it works: a feature that can fire on air by accident (every new 
 
 ## The workstreams
 
-Order is by dependency and risk. A and B do not depend on the others; D needs C; the rest are independent.
+Order is by dependency and risk. C precedes D; H1 (the room registry) precedes D because both change the clock; I precedes the UI-adding workstreams.
 
-### A. Hardening the Postgres and storage paths (no schema change)
+### A. Closing the Postgres and clock test gaps (no schema change)
 
-Tests and small fixes for what the 2026-10-30 Postgres run did not exercise: two runners contending for one job (exactly one claims), a clock restart between claim and fire (the item is not fired twice and not lost), `volt backup`/`restore` with `--with-media` and `--overwrite`, `verify-storage` against a fake backend with a missing, a mismatched and an empty object, and restore of a backup taken at an older schema (every historical shape forward to 17, then to the new head). These run under `VOLT_TEST_PG_DSN` and are skipped without it, as the other Postgres tests are. A real managed cloud Postgres is a validation run and stays out.
+Most of the original list is already covered (checked 2026-10-31): two runners contending on Postgres (`test_postgres_hardening.py`, `PostgresRaces`), every historical schema shape forward on Postgres (`test_migrations.py`, `PostgresForward`), backup and restore with `--with-media`, `--overwrite` and an older schema (`test_data_safety.py`), `verify-storage` with missing, mismatched and empty objects (`test_data_safety.py`), two clocks and a clock restart on SQLite (`test_clock.py`). `docs/operations.md`'s "not run" list is a live-drill gap, not a test gap. What is left to write: a clock restart between claim and fire on Postgres, and a restore of a backup from the oldest supported schema on Postgres. Beyond that, "add a historical-shape forward test for the new head" is an exit criterion of every schema-changing workstream (B, D, F, G), not a separate task.
 
 ### B. Slot length and back time (schema 18)
 
-`show.slot_seconds INTEGER NULL`. `POST /api/shows/{id}/slot` with `{seconds: int | null}` (operator role; 1 to 86399; null clears it). `/rundown` and `/api/state` carry `slotSeconds`. UI: the Show screen header shows `Total 12:40 of 15:00`, then `Over 00:00 / Under 02:20` (signed, red when over, neutral when under, icon plus word); each rundown row gains **back time**, the time of day by which that item must start for the show to end on schedule, computed from the slot end (the first item's actual start plus `slotSeconds`) minus the lengths of this item and those after it, not killed or skipped; `--:--` when unknown. A producer sets the slot from the Producer layout's build panel; the Operator layout shows it read-only. MOS `roEdDur` is unchanged (it stays the sum of spans).
+`show.slot_seconds INTEGER NULL`. `POST /api/shows/{id}/slot` with `{seconds: int | null}` (operator role; 1 to 86399; null clears it; audited). `/rundown` and `/api/state` carry `slotSeconds`. UI: the Show screen header shows `Total 12:40 of 15:00`, then `Over 00:00` or `Under 02:20` (signed, red with an alert icon when over, neutral when under); each row gains **back time**, the time of day by which that item must start for the show to end on schedule: slot end minus the lengths of this item and those after it (not killed or skipped). Slot end is the first item's actual start plus `slotSeconds`; before anything has aired it is the first item's `scheduled_at` plus `slotSeconds`, and `--:--` if neither exists. An item of unknown length after this one makes this row `--:--`. Once items have aired, totals use planned lengths for what is left and as-run for what is done. Setting the slot is a control in the Producer workspace layout's build panel and is read-only in the Operator layout; both are the same server role (`operator`), since workspaces are layouts, not permissions. MOS `roEdDur` is unchanged. New colour states are added to both theme sets (see I).
 
-Proves: arithmetic, API, migration, UI states. Does not prove: that crews read back time the way the tool shows it; the redesign spec records that colour conventions for over/under are not standardised.
+Proves: arithmetic, API, migration, UI states. Does not prove that crews read back time the way the tool shows it.
 
 ### C. Scheduling endpoints and UI
 
-`serve.py` does not expose `scheduled_at` today. Add `POST /api/items/{id}/schedule` with `{at: "YYYY-MM-DDTHH:MM:SSZ" | null}` (operator role, audited), `schedule_state` and `schedule_note` in `/rundown` items, and a schedule field and state chip on the Show screen's row (Producer layout; read-only in Operator). Refused for an item that is on air, aired, skipped or killed, with the `code` and `reason` pattern the other routes use. No clock change here.
+`serve.py` does not expose `scheduled_at` today. Add `POST /api/items/{id}/schedule` with `{at: "YYYY-MM-DDTHH:MM:SSZ" | null}` (operator role, audited; D extends the body with `mode` and `offsetSeconds`), and `scheduledAt`, `scheduleState`, `scheduleNote` in each `/rundown` item (camelCase, like `asRunIn`). A schedule field and state chip on the Show row (editable in the Producer layout, read-only in Operator). Refused for an item that is `on air`, `taking`, `aired`, `skipped` or `killed`, with the `code` and `reason` pattern the other routes use. No clock change here.
 
 ### D. Recurring and relative schedules (schema 19; needs C)
 
-Relative: `item.schedule_mode` in `absolute` (today), `after_previous` and `none`, and `item.schedule_offset_seconds`. An `after_previous` item is due when the previous item's as-run out exists and `now >= as_run_out + offset`; it is never due before. The clock gains no new claim rule: due-ness is computed, the single conditional UPDATE still takes it.
+**Relative.** `item.schedule_mode` in `absolute` (today), `after_previous` and `none`, and `item.schedule_offset_seconds`. Owner ruling 2026-10-31: an `after_previous` item is due at the previous item's as-run **start** plus the previous item's **planned length** plus the offset; it is never due before. (An as-run **end** cannot be the anchor: it is written only when the next item is taken, in `playout.advance`.) A previous item of unknown length counts as zero. Due-ness is computed on each tick; the single conditional UPDATE still claims.
 
-Recurring: a show can repeat. `show.recurrence TEXT NULL` holds a small JSON rule `{"freq": "daily"|"weekly", "days": [0-6], "at": "HH:MM", "tz": "Europe/London"}` (IANA zone; Python `zoneinfo`; no new dependency). The clock, not the HTTP server, materialises the next occurrence: when `now` is within 24 hours of the next occurrence and none exists, it clones the show's current items (ready, no as-run, cues copied, span attached) into a new show titled `<title> <date>` with the first item's `scheduled_at` set. Cloning is idempotent: `show.recurrence_of` and `show.occurrence_on` make a second tick a no-op. Daylight-saving days use the zone's wall-clock time; a nonexistent local time moves forward, an ambiguous one takes the first.
+**Recurring.** `show.recurrence TEXT NULL` holds `{"freq": "daily"|"weekly", "days": [0-6], "at": "HH:MM", "tz": "<IANA zone>"}`; no end date (owner ruling: it repeats until the rule is removed). The clock, not the HTTP server, materialises the next occurrence: when `now` is within 24 hours of it and none exists, it clones the show's items (ready, no as-run, spans attached, cues copied) into a new show titled `<title> <date>` with the first item's `scheduled_at` set. `show.recurrence_of` and `show.occurrence_on` make a second tick, and a second clock, a no-op. DST: wall-clock time in the zone; a nonexistent local time moves forward, an ambiguous one takes the first. **Dependency:** Windows has no system tz database, so add the `tzdata` package (with a `sys_platform == "win32"` marker) to the requirements. **Process:** `volt run` skips the clock when `VOLT_ROOM_URL` is unset (`supervisor.py`); recurrence cloning must run without a room, so the clock gets a clone-only mode that is started whenever a recurring show exists.
 
-Proves: the date arithmetic, DST edges, idempotence, two clocks not cloning twice. Does not prove: that a newsroom wants this shape of recurrence; a rule more complex than daily or weekly is out.
+Proves: date arithmetic, DST edges, idempotence, two clocks not cloning twice. Does not prove that a newsroom wants this shape of recurrence; rules richer than daily or weekly are out.
 
 ### E. FCPXML export (second NLE, no schema change)
 
@@ -66,39 +66,40 @@ Proves: structure against the published FCPXML DTD if the DTD can be fetched int
 
 ### F. Archive tier with restore (schema 20)
 
-Cold storage through the object stores already supported. Backend protocol gains optional `set_storage_class(key, cls)`, `restore(key, days)` and `restore_state(key) -> online | archived | restoring`; S3 maps to `GLACIER`/`DEEP_ARCHIVE` and `restore_object`, Azure to the archive access tier and rehydration, GCS to `ARCHIVE` class (immediate access, so restore is a no-op reporting `online`). `LocalBackend` and a test fake simulate the states. `essence.tier` (`online`|`archiving`|`archived`|`restoring`) and `asset.archived_at`. Two runner job types, `archive` (moves hi-res essence, verifies by stat, then records the tier) and `restore` (starts a restore, polls `restore_state`, marks `online`). `POST /api/assets/{id}/archive` and `/restore` (operator role, audited). An archived asset's hi-res is refused by take, publish, proxy and export with `archived` and the restore hint; the proxy and thumbnails stay online by design so an editor can still browse. Legal hold blocks archive. UI: a state chip on the Library header (Archived, Restoring) and an Archive or Restore button with two-press arming for archive.
+Hi-res essence lives on local disk (`essence.location` is a path); only publish uses object storage today. So archiving is an upload, not a storage-class flip. Owner ruling 2026-10-31: **upload, verify, delete the local copy; restore rehydrates and downloads back to the same path.** The archive store is the configured object store (S3, Azure Blob or GCS) in a cold class. Backend protocol gains optional `set_storage_class(key, cls)`, `restore(key, days)` and `restore_state(key) -> online | archived | restoring` (S3 `GLACIER`/`DEEP_ARCHIVE` and `restore_object`, Azure archive tier and rehydration, GCS `ARCHIVE` class where reads are immediate so restore reports `online`); `LocalBackend` and a fake simulate the states. `essence.tier` (`online`, `archiving`, `archived`, `restoring`), `essence.archive_key`, `asset.archived_at`. Runner jobs `archive` (put_file with verification, record the tier, then delete the local file, in that order, so a crash never leaves zero copies) and `restore` (start, poll `restore_state`, download with checksum verification, mark `online`). Routes `POST /api/assets/{id}/archive` and `POST /api/assets/{id}/rehydrate` (the name `restore` is taken: `/api/assets/{id}/restore` un-deletes a tombstoned asset). Operator role, audited. An archived asset's hi-res is refused by take, publish, proxy generation and export with code `archived` and the rehydrate hint; the proxy and thumbnails stay local on purpose so an editor can still browse. Legal hold blocks archive; delete and purge of an archived asset also remove the archived object. UI: Archived and Restoring chips on the Library header, Archive (two-press) and Restore buttons.
 
-Proves: the state machine, refusals, job idempotence, per-backend call shapes against fakes. Does not prove: real retrieval times or cost; those depend on the provider and the tier.
+Proves: state machine, ordering, refusals, idempotence, per-backend call shapes against fakes. Does not prove real retrieval times or cost.
 
-### G. MOS sender (no schema change; needs an NCS to validate)
+### G. MOS sender (new tables; needs a MOS device to validate)
 
-A client in the runner, opt-in (`VOLT_MOS_NCS=host`), that sends the messages Volt already knows how to build plus the ones it needs: `roCreate` (exists), `roReplace`, `roDelete`, `roStorySend`, `roMetadataReplace` and `heartbeat`, framed as MOS requires (UTF-16 big-endian XML, `<mos>` envelope, `messageID` counter persisted in `mos_message`, a new table, so ids survive a restart), with ack handling (`roAck`) and a connection state (`connecting`, `up`, `down`, `refused`) shown on the Show screen's room panel. Sends are triggered by a rundown change (item added, removed, reordered, killed, skipped, taken) through an outbox row, so a lost connection loses nothing and a restart resumes; nothing is sent while the sender is off. Ports follow the 2.8.5 roles for a MOS device talking to an NCS; the builder reads the spec text before choosing which of 10540 and 10541 is which, and records the answer in `mos.md`. Retries only for messages the protocol defines as idempotent (`roReplace`, `roMetadataReplace`); a `roCreate` that timed out is reconciled by asking the NCS, not resent blind.
+Owner ruling 2026-10-31: **Volt is the NCS; build the sender first, the receiver later as its own workstream.** In MOS the NCS sends `roCreate`, `roReplace`, `roDelete`, `roStorySend` and `roMetadataReplace` to a MOS device and the device answers `roAck`; Volt's existing export is already the NCS-side `roCreate`. A client in the runner, opt-in (`VOLT_MOS_DEVICES`, a list of `name=host[:port]`; nothing set means nothing sent), sends those messages framed as MOS requires (UTF-16 big-endian XML in the `<mos>` envelope), with `messageID` from a persisted counter, `roAck` matching, heartbeat, and a connection state (`connecting`, `up`, `down`, `refused`) on the Show screen's room panel. Outbox: a new table `mos_outbox` (device, message, sequence, state, attempts) and a counter row; sends are triggered by a rundown change (item added, removed, reordered, killed, skipped, taken). A lost connection loses nothing and a restart resumes in order. Retry only messages the protocol makes idempotent (`roReplace`, `roMetadataReplace`); a `roCreate` that timed out is reconciled, not resent blind. The builder reads the 2.8.5 text for which of ports 10540 and 10541 the NCS connects to and records it in `mos.md`; it does not trust this document.
 
-Proves: framing, ack matching, outbox ordering and restart, reconnect with backoff, against a fake NCS socket server. Does not prove: acceptance by any real NCS (the 2.8.5 DTD and XSD in sections 8 and 9 of the spec are the best offline check; fetch them as fixtures if their license allows).
+Proves: framing, ack matching, outbox order and restart, reconnect, against a fake device socket server. Does not prove acceptance by any real MOS device; fetch the spec's DTD and XSD as fixtures if their license allows.
 
 ### H. HyperDeck adapter (no schema change; needs a deck to validate)
 
-A second room kind beside `corevideo.pro`: `room = "hyperdeck"` on a cue, with commands `deck.play`, `deck.stop`, `deck.goto` (clip number or name) and `deck.record`, `deck.record.stop`. `volt/hyperdeck.py` speaks the Blackmagic HyperDeck Ethernet protocol (TCP 9993, line text commands, numbered responses; the builder follows Blackmagic's published protocol document and records its revision in the spec). The adapter honours the existing dispatch contract: a cue is `fired` only when the deck's reported transport state shows it (`play` then `transport info` reports `play`), never on the `200 ok`; a timeout or an error code makes it `failed` with the code in `detail`; a deck that is not reachable makes the cue `failed`, not hung. Configuration: `VOLT_HYPERDECK_HOSTS` as `name=host[:port]` pairs; the cue payload names the deck. Unknown deck or command is `unsupported`. The take rewind rules in [playout.md](../../specs/playout.md) apply unchanged.
+A second room kind beside `corevideo.pro`: `room = "hyperdeck"` on a cue, with commands named in the existing dotted style (`deck.play`, `deck.stop`, `deck.goto`, `deck.record.start`, `deck.record.stop`) and a JSON payload `{"deck": "<name>", "clip": <number or name>}`. **Refactor first (H1):** dispatch, the clock, `serve.py` and `take.py` each build one `CoreVideoProRoom` today and `dispatch_item` assumes `ROOM = "corevideo.pro"`; H1 is a small room registry (name to client) used by all four, landing before D touches the clock. **Adapter (H2):** `volt/hyperdeck.py` speaks the Blackmagic HyperDeck Ethernet protocol (TCP 9993, text commands, numbered responses; the builder follows Blackmagic's published document and records its revision). A deck cue is `fired` only when the deck's reported transport state shows it, never on `200 ok`; an error code or timeout is `failed` with the code in `detail`; an unreachable deck is `failed`, never hung; an unknown deck or command is `unsupported`. Configuration: `VOLT_HYPERDECK_HOSTS` as `name=host[:port]`. **Failure rule (owner, 2026-10-31):** a deck cue that fails after the CoreVideo take has fired does not rewind the take; the cue is marked failed, the item stays on air, and the desk sees the failure in red. `volt run` must start the clock for deck-only setups.
 
-Proves: protocol framing and the fired-on-observation rule against a fake deck. Does not prove: real-deck timing, clip-index behaviour on different models, or behaviour on a deck mid-record.
+Proves: framing and fired-on-observation against a fake deck. Does not prove real-deck timing or clip-index behaviour.
 
 ### I. Light theme (no schema change)
 
-A second token set for `operator.css` under `:root[data-theme="light"]` and `@media (prefers-color-scheme: light)` unless the user has chosen, a Theme control in the header (Auto, Dark, Light, kept in `localStorage` with try/catch, Dark when storage is blocked), and a contrast test over both sets (text 4.5:1, status icons 3:1 on their surfaces). Brand colours keep their roles; red stays for live paths; amber and blue get light-surface variants measured, not eyeballed. Screenshots re-shot for both. The brand guide gains a light section only after the contrast test passes.
+A second token set under `:root[data-theme="light"]` and `@media (prefers-color-scheme: light)` unless the user has chosen; a Theme control in the header (Auto, Dark, Light; `localStorage` in try/catch; Dark when storage is blocked); a small same-origin script loaded in `<head>` sets `data-theme` before first paint so there is no flash (the CSP forbids inline script). A contrast test covers both sets (text 4.5:1, status icons 3:1). **Sequenced first among the UI workstreams:** every workstream that adds a colour state (B over-time, C schedule chip, F Archived and Restoring, G connection state) adds its tokens to both sets and to the contrast test, so nothing is retrofitted. Brand colours keep their roles; red stays for live paths; amber and blue get light-surface variants measured, not eyeballed. Screenshots re-shot for both; the brand guide gains a light section only after the test passes.
 
 ## Order and size
 
 | Order | Workstream | Size | Why here |
 |---|---|---|---|
-| 1 | A hardening | small | No schema, protects everything after it |
-| 2 | B slot length and back time | small | Finishes the redesign's one open question |
-| 3 | C scheduling endpoints and UI | small | D cannot be used without it |
-| 4 | D recurring and relative | medium | Needs C; the riskiest date logic |
-| 5 | E FCPXML | small | Independent; mirrors the existing export |
-| 6 | F archive tier | medium | Schema and two job types |
-| 7 | G MOS sender | large | Socket client with an outbox |
-| 8 | H HyperDeck adapter | medium | New room kind |
-| 9 | I light theme | small | Last because it touches every screen's contrast |
+| 1 | A test gaps | small | No schema; two tests |
+| 2 | I light theme and contrast test | small | Later workstreams add tokens to both sets |
+| 3 | B slot length and back time | small | Finishes the redesign's open question |
+| 4 | C scheduling endpoints and UI | small | D cannot be used without it |
+| 5 | H1 room registry | small | Touches the clock; must land before D |
+| 6 | D recurring and relative | medium | Needs C and H1; riskiest date logic |
+| 7 | E FCPXML | small | Independent |
+| 8 | F archive tier | medium | Schema, two job types, download path |
+| 9 | G MOS sender | large | Socket client with an outbox |
+| 10 | H2 HyperDeck adapter | medium | New room kind on the registry |
 
 Each workstream gets its own plan when it starts (this document's plan, [2026-10-31-remaining-build.md](../plans/2026-10-31-remaining-build.md), sequences them and fixes the interfaces they share). Each is its own branch and PR; CI must pass on both databases before the next starts.
 
@@ -108,13 +109,14 @@ Exact column and index definitions; the HTTP error codes beyond the pattern; the
 
 ## Calls I made, for the owner to check
 
-- Hardware first is a HyperDeck, FCPXML is the second NLE, the archive tier is the object stores' cold classes, slot length is seconds (your answers, 2026-10-31).
-- Light theme is in, free docking stays out.
-- Recurrence is daily and weekly only, materialised by cloning into a new show 24 hours ahead; no cron-style rules.
-- The MOS sender is outbox-driven and opt-in; sending nothing is the default.
-- Everything unvalidated against real equipment is labelled so in its spec, and none of it runs by default.
+- Your answers: HyperDeck first, FCPXML second, archive = upload, verify, delete local, restore back; slot length in seconds; Volt is the MOS NCS with the sender first; relative items due at previous start plus its planned length plus offset; recurrence has no end date; a failed deck cue never rewinds the take.
+- Light theme is in and goes early; free docking stays out.
+- Recurrence is daily and weekly only, cloned 24 hours ahead with cues copied.
+- Skipped and killed items take no time in back time, as in front time.
+- FCPXML is "unvalidated" from the start: Apple does not publish a vendorable DTD.
+- A builder check against the repo corrected five claims in the first draft (relative-schedule anchor, MOS roles, the `restore` route name, where hi-res lives, and that most of workstream A already exists).
 
 ## Open questions
 
-1. Is a MOS sender to a real NCS likely in the first year? If not, G and H can move to the end of the list or wait; neither blocks a beta.
-2. For recurrence, should a cloned show keep the previous run's cues exactly, or arrive with cues cleared for the producer to re-arm? The default here is cues copied.
+1. Should a cloned recurring show carry last run's cues, or arrive with them cleared? Default here: copied.
+2. Does the MOS receiver (Volt as the device) belong in this release or after it? Default: after, as its own spec.
