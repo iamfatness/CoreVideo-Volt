@@ -118,6 +118,48 @@
     return state.dir === dir ? { dir, speed: Math.min(8, state.speed * 2) } : { dir, speed: 1 };
   }
 
+  // ---- slot length: back time (when an item must start for the show to end on schedule) and over/under -------
+  // "15:00" or "1:30:00". A bare number is refused (minutes or seconds?). Empty clears the slot. Returns seconds, null or 'bad'.
+  function parseSlot(text) {
+    const t = String(text == null ? '' : text).trim();
+    if (!t) return null;
+    const m = /^(\d{1,3}):(\d{2})(?::(\d{2}))?$/.exec(t);
+    if (!m) return 'bad';
+    const h3 = m[3] !== undefined;
+    const sec = h3 ? Number(m[3]) : Number(m[2]);
+    const min = h3 ? Number(m[2]) : Number(m[1]);
+    if (sec >= 60 || (h3 && min >= 60)) return 'bad';
+    const total = h3 ? Number(m[1]) * 3600 + min * 60 + sec : min * 60 + sec;
+    return total >= 1 && total <= 86399 ? total : 'bad';
+  }
+  // Back time counts back from the slot end: the first item's start plus the slot length, less the planned lengths of this
+  // item and every counted item after it. Killed and skipped items take no time. An unknown length at or after an item
+  // makes its back time unknown. Aired items count by their actual length, so the totals follow what really happened.
+  function backTimes(items, seconds, slotSec) {
+    const ft = frontTimes(items, seconds, 0);
+    const at = (it, f) => (it[f] ? Date.parse(it[f]) : NaN);
+    const eff = {};
+    for (const it of items) {
+      const a = at(it, 'asRunIn'), b = at(it, 'asRunOut');
+      eff[it.id] = it.status === 'aired' && !isNaN(a) && !isNaN(b) ? (b - a) / 1000 : seconds[it.id];
+    }
+    const counted = items.map((it, i) => ft.rows[i].offset !== null);
+    const first = counted.indexOf(true);
+    let anchor = first >= 0 ? ft.rows[first].startMs : null;
+    if (anchor == null && first >= 0 && !isNaN(at(items[first], 'scheduledAt'))) anchor = at(items[first], 'scheduledAt');
+    let total = 0;
+    items.forEach((it, i) => { if (counted[i]) total += eff[it.id] || 0; });
+    const slotEndMs = slotSec != null && anchor != null ? anchor + slotSec * 1000 : null;
+    const rows = items.map((it) => ({ id: it.id, backMs: null }));
+    let suffix = 0, unknown = false;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (!counted[i]) continue;
+      if (eff[items[i].id] == null) unknown = true; else suffix += eff[items[i].id];
+      if (slotEndMs != null && !unknown && items[i].status === 'ready') rows[i].backMs = slotEndMs - suffix * 1000;
+    }
+    return { rows, slotEndMs, totalSec: total, overSec: slotSec != null ? Math.round(total - slotSec) : null };
+  }
+
   // Theme: Auto follows the operating system; Dark and Light are a choice kept in this browser.
   const themeName = (stored) => (stored === 'dark' || stored === 'light' ? stored : 'auto');
   const nextTheme = (name) => ({ auto: 'dark', dark: 'light', light: 'auto' }[themeName(name)]);
@@ -178,7 +220,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.

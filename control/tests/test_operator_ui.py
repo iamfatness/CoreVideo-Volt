@@ -1118,3 +1118,69 @@ class ThemeChoice(Api):
         self.assertIn("try", early)
         self.assertNotRegex(early, r"https?://")
         self.assertRegex(js, r"try \{[^}]*localStorage[^}]*volt\.theme")
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class BackTimes(unittest.TestCase):
+    T0 = 1_800_000_000_000
+
+    def iso(self, ms):
+        import datetime
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def items(self, *rows):
+        out = []
+        for n, row in enumerate(rows):
+            st, at = row[0], row[1]
+            it = {"id": "i%d" % n, "status": st, "asRunIn": None if at is None else self.iso(self.T0 + at * 1000), "asRunOut": None}
+            if len(row) > 2 and row[2] is not None:
+                it["asRunOut"] = self.iso(self.T0 + row[2] * 1000)
+            if len(row) > 3:
+                it["scheduledAt"] = self.iso(self.T0 + row[3] * 1000)
+            out.append(it)
+        return out
+
+    def run_back(self, items, seconds, slot):
+        return _node(["backTimes", items, seconds, slot])[0]
+
+    def test_back_time_counts_back_from_the_slot_end(self):
+        items = self.items(("aired", 0), ("ready", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60, "i2": 60}, 300)
+        self.assertEqual(r["slotEndMs"], self.T0 + 300_000)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, self.T0 + 180_000, self.T0 + 240_000])
+        self.assertEqual(r["overSec"], -120)   # 180 s planned against a 300 s slot: 120 s under
+
+    def test_over_is_positive(self):
+        items = self.items(("aired", 0), ("ready", None))
+        self.assertEqual(self.run_back(items, {"i0": 200, "i1": 200}, 300)["overSec"], 100)
+
+    def test_unknown_length_makes_the_rows_up_to_it_unknown(self):
+        items = self.items(("aired", 0), ("ready", None), ("ready", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60, "i2": None, "i3": 60}, 600)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, None, None, self.T0 + 540_000])
+
+    def test_killed_and_skipped_take_no_time(self):
+        items = self.items(("aired", 0), ("killed", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 500, "i2": 60}, 300)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, None, self.T0 + 240_000])
+
+    def test_no_slot_gives_nothing(self):
+        items = self.items(("aired", 0), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60}, None)
+        self.assertEqual((r["slotEndMs"], r["overSec"], [x["backMs"] for x in r["rows"]]), (None, None, [None, None]))
+
+    def test_before_anything_airs_the_first_scheduled_time_anchors_it(self):
+        items = self.items(("ready", None, None, 1000), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60}, 300)
+        self.assertEqual(r["slotEndMs"], self.T0 + 1_000_000 + 300_000)
+        none = self.run_back(self.items(("ready", None), ("ready", None)), {"i0": 60, "i1": 60}, 300)
+        self.assertEqual((none["slotEndMs"], none["overSec"]), (None, -180))
+
+    def test_aired_items_count_by_their_actual_length(self):
+        items = self.items(("aired", 0, 70), ("ready", None))
+        self.assertEqual(self.run_back(items, {"i0": 60, "i1": 60}, 300)["overSec"], -170)   # 70 + 60 = 130 of 300
+
+    def test_parse_slot(self):
+        self.assertEqual(_node(["parseSlot", "15:00"], ["parseSlot", "1:30:00"], ["parseSlot", "90"], ["parseSlot", ""], ["parseSlot", "abc"],
+                               ["parseSlot", "0:00"], ["parseSlot", "24:00:00"], ["parseSlot", "12:75"]),
+                         [900, 5400, "bad", None, "bad", "bad", "bad", "bad"])   # a bare number is ambiguous, so it is refused
