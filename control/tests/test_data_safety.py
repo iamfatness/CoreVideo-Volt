@@ -507,6 +507,30 @@ class PostgresBackup(unittest.TestCase):
         with self.assertRaises(backup.BackupError):
             backup.restore(bk, self._create("bad"))
 
+    def test_an_older_schema_is_migrated_forward_on_restore_on_postgres(self):
+        src, dst = self._create("src"), self._create("dst")
+        store = Store(src)
+        populate(store)
+        # The shape of schema 10: no asset.deleted_at, no purge_audit, versions 11 and up not yet applied.
+        store.conn.execute("ALTER TABLE asset DROP COLUMN deleted_at")
+        store.conn.execute("DROP TABLE purge_audit")
+        store.conn.execute("DELETE FROM schema_version WHERE version >= 11")
+        store.conn.commit()
+        store.close()
+        bk = Path(self.tmp.name) / "bk-old"
+        manifest = backup.backup(src, str(bk))
+        self.assertEqual(manifest["schema_version"], 10)
+        report = backup.restore(bk, dst)
+        self.assertEqual(report["migrated"], list(range(11, backup.migrations.LATEST + 1)))
+        restored = Store(dst, init=False)
+        try:
+            cols = {r[0] for r in restored.conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'asset' AND table_schema = current_schema()")}
+            self.assertIn("deleted_at", cols)
+            self.assertEqual(restored.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 2)
+        finally:
+            restored.close()
+
 
 # ---- storage verification ----------------------------------------------------------------------------
 

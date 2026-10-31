@@ -403,6 +403,26 @@ class LivePostgres(unittest.TestCase):
         self.assertEqual(len([e for evs in out for e in evs if e.outcome == "fired"]), 1)
         self.assertEqual(sum(1 for r in rooms if r.calls), 1)
 
+    def test_a_clock_that_dies_between_claim_and_fire_is_settled_not_retaken_on_postgres(self):
+        first = self.store()
+        show, (a, b) = _show(first, [[], []])
+        set_schedule(first, a, T0)
+        set_schedule(first, b, T0)
+        # The first clock claimed both and took a, then died before b (a restart between claim and fire).
+        first.conn.execute(
+            "UPDATE item SET schedule_state = 'claimed', schedule_claimed_at = ? WHERE id IN (?, ?)",
+            ("2026-10-11T20:00:00Z", a, b))
+        first.conn.execute("UPDATE item SET status = 'on air' WHERE id = ?", (a,))
+        first.conn.commit()
+        first.close()
+        second = self.store()  # a new process, a new connection
+        self.assertEqual(settle_stale_claims(second, T0 + timedelta(seconds=10)), [])  # lease not up: leave it
+        events = {e.item_id: e for e in settle_stale_claims(second, T0 + timedelta(seconds=400))}
+        self.assertEqual(events[a].outcome, "fired")
+        self.assertEqual(events[b].outcome, "failed")  # never reached the air: say so, never retake
+        self.assertEqual(_tick(second, Now(T0 + timedelta(seconds=400))), [])
+        self.assertEqual(on_air(second, show), a)
+
 
 if __name__ == "__main__":
     unittest.main()
