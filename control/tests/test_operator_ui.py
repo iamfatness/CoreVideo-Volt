@@ -682,7 +682,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "cleared", "done", "failed", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "running", "skipped", "taking", "uncleared"])
+        self.assertEqual(sorted(state), ["aired", "cleared", "done", "failed", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "running", "skipped", "taking", "uncleared", "withdrawn"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -1010,3 +1010,18 @@ class LibraryLayouts(unittest.TestCase):
         self.assertIn('aria-keyshortcuts="K"', btn)
         self.assertIn('id="lib-play-text"', btn)
         self.assertNotIn("$('lib-play').firstChild", js)   # the icon is the first child now
+
+
+class ShuttleEdges(unittest.TestCase):
+    def test_the_natural_end_and_a_video_error_clear_the_shuttle(self):
+        js = FILES["operator.js"]
+        self.assertRegex(js, r"addEventListener\('ended'[^\n]*SH\.dir")
+        i = js.index("function onVideoError")
+        self.assertIn("shuttleStop(", js[i:i + 300])
+
+    def test_reverse_step_is_capped_so_a_hidden_tab_cannot_jump(self):
+        js = FILES["operator.js"]
+        self.assertRegex(js, r"Math\.min\(\s*\(t - SH\.last\) / 1000,\s*0\.1\s*\)")
+
+    def test_withdrawn_versions_do_not_look_like_work_in_progress(self):
+        self.assertEqual(_node(["stateChipSpec", "withdrawn"])[0], {"icon": "close", "word": "Withdrawn", "cls": "st done"})

@@ -136,6 +136,7 @@
     running:   { icon: 'pending', word: 'Running',     cls: 'st pend' },
     done:      { icon: 'ready',   word: 'Done',        cls: 'st ok' },
     queued:    { icon: 'pending', word: 'Queued',      cls: 'st pend' },
+    withdrawn: { icon: 'close',   word: 'Withdrawn',   cls: 'st done' },
 
 
   };
@@ -1162,6 +1163,8 @@
     for (const ev of ['timeupdate', 'seeked', 'seeking']) v.addEventListener(ev, updatePos);
     v.addEventListener('loadedmetadata', onVideoReady);
     v.addEventListener('play', () => { $('lib-play-text').textContent = 'Pause'; tickPos(); });
+    // The clip played out (or stopped by itself): forget the shuttle so the next K or L starts clean.
+    v.addEventListener('ended', () => { if (SH.dir === 1) { cancelAnimationFrame(SH.raf); SH.dir = 0; SH.speed = 0; v.playbackRate = 1; } });
     v.addEventListener('pause', () => { $('lib-play-text').textContent = 'Play'; updatePos(); });
     v.addEventListener('error', onVideoError);
   }
@@ -1463,6 +1466,7 @@
   async function onVideoError() {
     const P = L.proxy, v = $('lib-video');
     if (!v.getAttribute('src')) return;   // we just cleared it
+    shuttleStop();
     P.state = 'error';
     P.msg = 'The browser could not play this proxy.';
     if (P.mode === 'native') {
@@ -1566,7 +1570,8 @@
     if (SH.dir === 0) return;
     SH.last = 0;
     const back = (t) => {
-      const dt = SH.last ? (t - SH.last) / 1000 : 0;
+      // A hidden tab pauses animation frames; cap the step so coming back does not jump the playhead.
+      const dt = SH.last ? Math.min((t - SH.last) / 1000, 0.1) : 0;
       SH.last = t;
       v.currentTime = Math.max(0, v.currentTime - dt * SH.speed);
       updatePos();

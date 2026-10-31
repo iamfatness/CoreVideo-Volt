@@ -306,7 +306,7 @@ table.keys th.group{padding-top:14px;color:var(--text)}
 .detect-bar{width:96px;height:8px;accent-color:var(--signal)}
 /* library: mark from transcript (slice 5; docs/mockups/shot-spans.html, "Mark from transcript") */
 .btn .ic{margin-right:var(--space-1)}
-.lib-mark-hint,.tools>.hint{margin-right:var(--space-3)}
+.tools>.hint{margin-right:var(--space-3)}
 .lib-tabs{display:flex;gap:4px;border-bottom:1px solid var(--hair);margin-bottom:16px;flex-wrap:wrap}
 .lib-tabs button{display:inline-flex;gap:var(--space-2);align-items:center;background:none;border:1px solid transparent;border-bottom:0;color:var(--muted);padding:8px 16px;border-radius:4px 4px 0 0;cursor:pointer}
 .lib-tabs button:hover{color:var(--text)}
