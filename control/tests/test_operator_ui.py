@@ -77,7 +77,9 @@ class Static(Api):
     def test_token_lives_in_session_storage_only(self):
         js = FILES["operator.js"]
         self.assertIn("sessionStorage", js)
-        self.assertNotIn("localStorage", js)
+        # The one per-browser convenience is the chosen workspace; the token never goes in localStorage.
+        self.assertEqual(set(re.findall(r"localStorage\.\w+Item\('([^']+)'", js)), {"volt.workspace"})
+        self.assertEqual(js.count("localStorage"), len(re.findall(r"localStorage\.\w+Item\('volt\.workspace'", js)))
         self.assertNotIn("document.cookie", js)
 
 
@@ -93,6 +95,10 @@ class Endpoints(Api):
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual(status, 200, tpl)
                 self.assertIn("rundown", payload)
+            elif tpl == "/api/health":  # the footer reads the server version from it
+                status, payload, _ = self.call("GET", path)
+                self.assertIn(status, (200, 503), tpl)
+                self.assertIn("version", payload)
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
@@ -121,7 +127,7 @@ class Library(Api):
 
     def test_the_fifth_screen_is_in_the_nav_and_the_page(self):
         html = FILES["index.html"]
-        self.assertIn('<a href="#library" data-screen="library">Library</a>', html)
+        self.assertIn('href="#library" data-screen="library"', html)
         self.assertIn('id="screen-library"', html)
         self.assertIn("'show', 'record', 'rights', 'publish', 'library'", FILES["operator.js"])
 
@@ -606,6 +612,133 @@ class TakingCopy(unittest.TestCase):
         self.assertIn("taking: 'Taking'", js)
         block = js[js.index("function takeBlock"):js.index("function takeNow")]
         self.assertIn("taking", block)
+
+
+
+
+def _lum(hexcolour):
+    c = [int(hexcolour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    c = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def _ratio(a, b):
+    hi, lo = sorted((_lum(a), _lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class Tokens(unittest.TestCase):
+    ROOT = re.search(r":root\{(.*?)\n\}", FILES["operator.css"], re.S).group(1)
+
+    def token(self, name):
+        return re.search(r"--%s:\s*([^;]+);" % re.escape(name), self.ROOT).group(1).strip()
+
+    def test_colour_pairs_meet_contrast(self):
+        t = self.token
+        for fg, bg, need in [("text", "ground", 4.5), ("text", "panel", 4.5), ("muted", "panel", 4.5),
+                             ("signal", "panel", 3.0), ("air", "panel", 3.0), ("ok", "panel", 3.0), ("blue-hi", "panel", 3.0)]:
+            self.assertGreaterEqual(_ratio(t(fg), t(bg)), need, (fg, bg, _ratio(t(fg), t(bg))))
+
+    def test_scales_exist(self):
+        want = {**{"space-%d" % i: px for i, px in enumerate((4, 8, 12, 16, 24, 32), 1)}, "radius-sm": "3px", "radius": "6px",
+                "fs-xs": ".75rem", "fs-sm": ".875rem", "fs-md": "1rem", "fs-lg": "1.25rem", "fs-xl": "1.75rem",
+                "rail-w": "64px", "head-h": "48px"}
+        for name, value in want.items():
+            self.assertEqual(self.token(name), "%spx" % value if isinstance(value, int) else value, name)
+
+
+ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
+              "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
+              "lower3 mark").split()
+
+
+class Icons(unittest.TestCase):
+    SPRITE_IDS = set(re.findall(r'<symbol id="i-([a-z0-9]+)"', FILES["index.html"]))
+
+    def test_every_named_icon_has_a_symbol(self):
+        self.assertEqual(set(ICON_NAMES) - self.SPRITE_IDS, set())
+
+    def test_every_icon_the_page_asks_for_exists(self):
+        asked = set(re.findall(r"icon\('([a-z0-9]+)'", FILES["operator.js"]))
+        asked |= set(re.findall(r'href="#i-([a-z0-9]+)"', FILES["index.html"] + FILES["operator.js"]))
+        self.assertEqual(asked - self.SPRITE_IDS, set())
+
+    def test_sprite_obeys_the_csp_rules(self):
+        self.assertNotIn("xmlns", FILES["index.html"])
+        self.assertNotIn("style=", FILES["index.html"])
+        self.assertIn("function icon(", FILES["operator.js"])
+
+
+def _node(*calls):
+    """Call exported pure functions of operator.js under node: each call is [name, *args]."""
+    script = ("const m = require(process.argv[1]); const calls = JSON.parse(process.argv[2]);"
+              "console.log(JSON.stringify(calls.map(([fn, ...a]) => m[fn] && m[fn].apply ? m[fn](...a) : m[fn])));")
+    out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(list(calls))],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class StateLanguage(unittest.TestCase):
+    def test_each_state_maps_to_an_existing_icon_and_a_class(self):
+        (state,) = _node(["STATE"])
+        self.assertEqual(sorted(state), ["failed", "locked", "onair", "pending", "ready"])
+        for kind, spec in state.items():
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
+            self.assertTrue(spec["cls"].startswith("st "), kind)
+        self.assertEqual(state["onair"], {"icon": "onair", "word": "On air", "cls": "st air"})
+        self.assertEqual(state["locked"]["word"], "Held")
+
+    def test_chip_spec_never_throws_on_an_unknown_kind(self):
+        known, unknown, bare = _node(["stateChipSpec", "ready"], ["stateChipSpec", "future-state", "Sealed"], ["stateChipSpec", "nonsense"])
+        self.assertEqual(known, {"icon": "ready", "word": "Ready", "cls": "st ok"})
+        self.assertEqual(unknown, {"icon": "pending", "word": "Sealed", "cls": "st"})
+        self.assertEqual(bare["word"], "nonsense")
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class Workspaces(unittest.TestCase):
+    def test_names_fall_back_to_operator(self):
+        self.assertEqual(_node(["workspaceName", "director"], ["workspaceName", None], ["workspaceName", "editor"],
+                               ["workspaceName", "constructor"], ["workspaceName", 5]),
+                         ["operator", "operator", "editor", "operator", "operator"])
+
+    def test_rail_has_the_workspaces_screens_and_one_extra_for_an_off_rail_hash(self):
+        got = _node(["railFor", "operator", "rights"], ["railFor", "editor", "library"], ["railFor", "operator", "nonsense"],
+                    ["railFor", "producer", "show"])
+        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "rights"})
+        self.assertIsNone(got[1]["extra"])
+        self.assertIsNone(got[2]["extra"])
+        self.assertEqual(got[3]["screens"], ["show", "rights", "publish", "library"])
+
+    def test_default_screen_is_the_first_on_the_rail(self):
+        self.assertEqual(_node(["defaultScreen", "editor"], ["defaultScreen", "operator"], ["defaultScreen", "producer"]),
+                         ["library", "show", "show"])
+
+
+class Shell(unittest.TestCase):
+    HTML = FILES['index.html']
+
+    def test_ids_the_script_depends_on_survive(self):
+        for i in ('show-select', 'screens', 'workspaces', 'who', 'conn', 'token-btn', 'keys-btn', 'clock', 'main', 'banners',
+                  'foot-show', 'foot-count', 'foot-version'):
+            self.assertIn('id="%s"' % i, self.HTML, i)
+
+    def test_workspace_buttons_exist_for_all_three(self):
+        for w in ('producer', 'editor', 'operator'):
+            self.assertRegex(self.HTML, r'<button[^>]*data-ws="%s"[^>]*aria-pressed' % w)
+
+    def test_rail_links_keep_their_hash_and_data_screen_and_carry_an_icon(self):
+        for scr in ('show', 'record', 'rights', 'publish', 'library'):
+            self.assertRegex(self.HTML, r'<a href="#%s" data-screen="%s"[^>]*>\s*<svg class="ic"' % (scr, scr))
+        self.assertIn('<nav aria-label="Screens" id="screens" class="rail">', self.HTML)
+
+    def test_the_page_script_wires_the_workspace_and_survives_a_bad_store(self):
+        js = FILES['operator.js']
+        self.assertIn('function setWorkspace(', js)
+        self.assertIn('volt.workspace', js)
+        self.assertRegex(js, r'try \{[^}]*localStorage')
 
 
 if __name__ == "__main__":

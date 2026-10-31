@@ -1,0 +1,187 @@
+<!doctype html><meta charset="utf-8"><title>Volt icons, first pass</title><body style="background:#141414;margin:16px;color:#e2e2e2;font-family:Segoe UI,system-ui,sans-serif">
+<!-- First-pass icon sheet and Operator screen. Reference only: the blue selection colour and gradient logo square in the screen mock are WRONG against docs/brand-guide.md; the icons are the part to keep. -->
+<h2>Icon set and system, first pass</h2>
+<p class="subtitle">38 icons on a 24px grid: 1.75px stroke, round caps and joins, no fills except record and play. Drawn as SVG, so they scale and take the theme colour. Direction used: charcoal base, one blue for selection, red/green/amber reserved for state only.</p>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="i-rundown" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+<symbol id="i-record" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/></symbol>
+<symbol id="i-rights" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+<symbol id="i-publish" viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5L12 5l4.5 4.5M5 15v3a2 2 0 002 2h10a2 2 0 002-2v-3"/></symbol>
+<symbol id="i-library" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/></symbol>
+<symbol id="i-take" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z" fill="currentColor"/></symbol>
+<symbol id="i-hold" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+<symbol id="i-skip" viewBox="0 0 24 24"><path d="M6 5l9 7-9 7z"/><path d="M18 5v14"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+<symbol id="i-cut" viewBox="0 0 24 24"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5L20 18M8 15.5L20 6"/></symbol>
+<symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4M7.5 7v10M11 4v16M14.5 8v8M18 5v14M21 10v4"/></symbol>
+<symbol id="i-transcript" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></symbol>
+<symbol id="i-marker" viewBox="0 0 24 24"><path d="M6 21V4M6 5h11l-2 4 2 4H6"/></symbol>
+<symbol id="i-onair" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 000 8.4M16.2 7.8a6 6 0 010 8.4M5 5a10 10 0 000 14M19 5a10 10 0 010 14"/></symbol>
+<symbol id="i-ready" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/></symbol>
+<symbol id="i-pending" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/></symbol>
+<symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
+<symbol id="i-room" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+<symbol id="i-cue" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></symbol>
+<symbol id="i-export" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></symbol>
+<symbol id="i-shot" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-lower3" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 15h7M6 12h4"/></symbol>
+</defs></svg>
+
+<style>
+.ic{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:middle}
+.ic.s{width:16px;height:16px;stroke-width:2}
+.sheet{background:#1b1d21;color:#c9ced6;border-radius:8px;padding:18px;font:12px "Segoe UI",system-ui,sans-serif}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;margin-top:8px}
+.cell{background:#22252a;border:1px solid #2d3036;border-radius:6px;padding:12px 6px 8px;text-align:center}
+.cell .ic{width:28px;height:28px;color:#e8eaee;display:block;margin:0 auto 8px}
+.cell small{color:#8a909b;font-size:10px}
+.grp{color:#8a909b;letter-spacing:.12em;text-transform:uppercase;font-size:10px;margin:16px 0 0}
+.sw{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.sw div{width:112px;border-radius:6px;padding:26px 8px 6px;font-size:10px;color:#fff;border:1px solid #0003}
+
+.app{background:#1b1d21;color:#c9ced6;border-radius:8px;overflow:hidden;font:13px/1.35 "Segoe UI",system-ui,sans-serif;display:grid;grid-template-columns:56px 1fr;grid-template-rows:40px 1fr 28px;height:520px}
+.app .hd{grid-column:1/3;display:flex;align-items:center;gap:16px;padding:0 14px;background:#14161a;border-bottom:1px solid #2a2d33}
+.app .brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.14em;color:#e8eaee;font-size:12px}
+.app .brand i{width:18px;height:18px;border-radius:4px;background:linear-gradient(135deg,#4c8dff,#2a5fd0);display:block}
+.app .roles{display:flex;gap:2px;background:#1b1d21;padding:2px;border-radius:6px}
+.app .roles span{padding:5px 12px;border-radius:4px;color:#8a909b;display:flex;gap:6px;align-items:center}
+.app .roles .on{background:#2d3036;color:#fff}
+.app .sp{flex:1}
+.app .pill{display:flex;gap:6px;align-items:center;padding:3px 10px;border-radius:12px;background:#22252a;border:1px solid #2d3036;font-size:11px}
+.app .dot{width:7px;height:7px;border-radius:50%;background:#3ddc84}
+.app .tcv{font-family:Consolas,monospace;font-size:14px;color:#e8eaee}
+.app .rail{background:#17191d;border-right:1px solid #2a2d33;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0}
+.app .rail div{width:40px;height:40px;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7d8390;font-size:9px;gap:2px}
+.app .rail .on{background:#1f3556;color:#7fb0ff}
+.app .main{display:grid;grid-template-columns:1.3fr 1fr;gap:8px;padding:8px;min-height:0}
+.app .pn{background:#22252a;border:1px solid #2d3036;border-radius:6px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.app .ph{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#1a1c20;border-bottom:1px solid #2d3036;color:#8a909b;font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.app .ph .sp{flex:1}
+.app .r{display:grid;grid-template-columns:20px 22px 1fr 70px 78px;gap:8px;padding:7px 10px;align-items:center;border-bottom:1px solid #2a2d33}
+.app .r.cur{background:#14283f;box-shadow:inset 3px 0 #4c8dff;color:#fff}
+.app .r.dim{color:#6f7580}
+.app .tc{font-family:Consolas,monospace}
+.app .st{display:flex;align-items:center;gap:5px;font-size:11px}
+.app .st.air{color:#ff5d5d;font-weight:700}.app .st.ok{color:#3ddc84}.app .st.pend{color:#e0a82e}
+.app .mon{flex:1;background:#08090b;display:flex;align-items:center;justify-content:center;position:relative;color:#4c8dff;font-family:Consolas,monospace;font-size:20px}
+.app .tal{position:absolute;top:8px;left:8px;background:#d93636;color:#fff;font:700 10px "Segoe UI";letter-spacing:.12em;padding:2px 8px;border-radius:3px;display:flex;gap:5px;align-items:center}
+.app .bar{display:flex;gap:8px;padding:10px}
+.app .b{display:flex;align-items:center;gap:7px;padding:8px 16px;border-radius:5px;font-weight:700;letter-spacing:.06em;background:#2d3036;color:#c9ced6}
+.app .b.take{background:#1fa95b;color:#fff;padding:8px 26px}
+.app .ft{grid-column:1/3;background:#14161a;border-top:1px solid #2a2d33;display:flex;align-items:center;gap:16px;padding:0 14px;font-size:11px;color:#7d8390}
+.app .cue{display:flex;gap:8px;padding:7px 10px;align-items:center;border-bottom:1px solid #2a2d33}
+.app .cue .ic{color:#e0a82e}
+</style>
+
+<div class="sheet">
+<div class="grp" style="margin-top:0">Workspaces</div>
+<div class="grid">
+<div class="cell"><svg class="ic"><use href="#i-rundown"/></svg><small>Rundown</small></div>
+<div class="cell"><svg class="ic"><use href="#i-record"/></svg><small>Record</small></div>
+<div class="cell"><svg class="ic"><use href="#i-rights"/></svg><small>Rights</small></div>
+<div class="cell"><svg class="ic"><use href="#i-publish"/></svg><small>Publish</small></div>
+<div class="cell"><svg class="ic"><use href="#i-library"/></svg><small>Library</small></div>
+<div class="cell"><svg class="ic"><use href="#i-room"/></svg><small>Room</small></div>
+</div>
+<div class="grp">Transport</div>
+<div class="grid">
+<div class="cell"><svg class="ic"><use href="#i-take"/></svg><small>Take</small></div>
+<div class="cell"><svg class="ic"><use href="#i-hold"/></svg><small>Hold</small></div>
+<div class="cell"><svg class="ic"><use href="#i-skip"/></svg><small>Skip</small></div>
+<div class="cell"><svg class="ic"><use href="#i-stop"/></svg><small>Stop</small></div>
+<div class="cell"><svg class="ic"><use href="#i-cue"/></svg><small>Cue</small></div>
+<div class="cell"><svg class="ic"><use href="#i-lower3"/></svg><small>Lower third</small></div>
+</div>
+<div class="grp">Media and editing</div>
+<div class="grid">
+<div class="cell"><svg class="ic"><use href="#i-shot"/></svg><small>Shot</small></div>
+<div class="cell"><svg class="ic"><use href="#i-cut"/></svg><small>Clip</small></div>
+<div class="cell"><svg class="ic"><use href="#i-wave"/></svg><small>Audio</small></div>
+<div class="cell"><svg class="ic"><use href="#i-transcript"/></svg><small>Transcript</small></div>
+<div class="cell"><svg class="ic"><use href="#i-marker"/></svg><small>Marker</small></div>
+<div class="cell"><svg class="ic"><use href="#i-export"/></svg><small>Send to NLE</small></div>
+<div class="cell"><svg class="ic"><use href="#i-mic"/></svg><small>Mic</small></div>
+<div class="cell"><svg class="ic"><use href="#i-eye"/></svg><small>Preview</small></div>
+</div>
+<div class="grp">State</div>
+<div class="grid">
+<div class="cell"><svg class="ic" style="color:#ff5d5d"><use href="#i-onair"/></svg><small>On air</small></div>
+<div class="cell"><svg class="ic" style="color:#3ddc84"><use href="#i-ready"/></svg><small>Ready</small></div>
+<div class="cell"><svg class="ic" style="color:#e0a82e"><use href="#i-pending"/></svg><small>Pending</small></div>
+<div class="cell"><svg class="ic" style="color:#ff5d5d"><use href="#i-alert"/></svg><small>Failed</small></div>
+<div class="cell"><svg class="ic"><use href="#i-lock"/></svg><small>Locked</small></div>
+<div class="cell"><svg class="ic"><use href="#i-link"/></svg><small>Linked</small></div>
+</div>
+<div class="grp">System</div>
+<div class="grid">
+<div class="cell"><svg class="ic"><use href="#i-search"/></svg><small>Search</small></div>
+<div class="cell"><svg class="ic"><use href="#i-filter"/></svg><small>Filter</small></div>
+<div class="cell"><svg class="ic"><use href="#i-sliders"/></svg><small>Settings</small></div>
+<div class="cell"><svg class="ic"><use href="#i-user"/></svg><small>User</small></div>
+<div class="cell"><svg class="ic"><use href="#i-key"/></svg><small>Keys</small></div>
+<div class="cell"><svg class="ic"><use href="#i-download"/></svg><small>Download</small></div>
+<div class="cell"><svg class="ic"><use href="#i-trash"/></svg><small>Delete</small></div>
+<div class="cell"><svg class="ic"><use href="#i-plus"/></svg><small>Add</small></div>
+</div>
+<div class="grp">Colour roles</div>
+<div class="sw">
+<div style="background:#1b1d21">Surface</div><div style="background:#22252a">Panel</div><div style="background:#4c8dff">Selection</div>
+<div style="background:#d93636">On air</div><div style="background:#1fa95b">Take / ready</div><div style="background:#e0a82e;color:#111">Pending / cue</div>
+</div>
+</div>
+
+<h2 style="margin-top:28px">The Operator screen with them applied</h2>
+<p class="subtitle">Left rail is the workspace's pages. Role switcher top. Status carries an icon as well as a colour, so it reads in greyscale and for colour-blind operators.</p>
+
+<div class="app">
+ <div class="hd">
+  <div class="brand"><i></i>VOLT</div>
+  <div class="roles"><span><svg class="ic s"><use href="#i-rundown"/></svg>Producer</span><span><svg class="ic s"><use href="#i-cut"/></svg>Editor</span><span class="on"><svg class="ic s"><use href="#i-onair"/></svg>Operator</span></div>
+  <span class="sp"></span>
+  <span class="pill"><span class="dot"></span>Room connected</span>
+  <span class="pill"><svg class="ic s"><use href="#i-user"/></svg>desk &middot; admin</span>
+  <span class="tcv">20:41:07:12</span>
+ </div>
+ <div class="rail">
+  <div class="on"><svg class="ic"><use href="#i-rundown"/></svg>Show</div>
+  <div><svg class="ic"><use href="#i-record"/></svg>Record</div>
+  <div><svg class="ic"><use href="#i-rights"/></svg>Rights</div>
+  <div><svg class="ic"><use href="#i-publish"/></svg>Publish</div>
+  <div><svg class="ic"><use href="#i-library"/></svg>Library</div>
+ </div>
+ <div class="main">
+  <div class="pn">
+   <div class="ph"><svg class="ic s"><use href="#i-rundown"/></svg>Rundown &middot; Final Four<span class="sp"></span><svg class="ic s"><use href="#i-search"/></svg><svg class="ic s"><use href="#i-filter"/></svg></div>
+   <div class="r dim"><span>1</span><svg class="ic s"><use href="#i-ready"/></svg><span>Cold open</span><span class="tc">00:00:42</span><span class="st">Aired</span></div>
+   <div class="r cur"><span>2</span><svg class="ic s" style="color:#ff5d5d"><use href="#i-onair"/></svg><span><b>Coach interview</b></span><span class="tc">00:02:10</span><span class="st air">ON AIR</span></div>
+   <div class="r"><span>3</span><svg class="ic s"><use href="#i-lower3"/></svg><span>Lower third: bracket</span><span class="tc">00:00:15</span><span class="st ok"><svg class="ic s"><use href="#i-ready"/></svg>Ready</span></div>
+   <div class="r"><span>4</span><svg class="ic s"><use href="#i-library"/></svg><span>Halftime package</span><span class="tc">00:03:30</span><span class="st ok"><svg class="ic s"><use href="#i-ready"/></svg>Ready</span></div>
+   <div class="r"><span>5</span><svg class="ic s"><use href="#i-mic"/></svg><span>Sponsor read</span><span class="tc">00:00:30</span><span class="st pend"><svg class="ic s"><use href="#i-pending"/></svg>Pending</span></div>
+   <div class="r"><span>6</span><svg class="ic s"><use href="#i-room"/></svg><span>Wrap and credits</span><span class="tc">00:01:00</span><span class="st pend"><svg class="ic s"><use href="#i-pending"/></svg>Pending</span></div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px;min-height:0">
+   <div class="pn" style="flex:1"><div class="ph"><svg class="ic s"><use href="#i-eye"/></svg>Program</div>
+    <div class="mon"><span class="tal"><svg class="ic s" style="width:11px;height:11px"><use href="#i-onair"/></svg>LIVE</span>01:02:14:08</div></div>
+   <div class="pn"><div class="ph"><svg class="ic s"><use href="#i-cue"/></svg>Cues for this item</div>
+    <div class="cue"><svg class="ic s"><use href="#i-lower3"/></svg>Lower third on &middot; coach name<span style="flex:1"></span><span class="st ok">Sent</span></div>
+    <div class="bar"><span class="b take"><svg class="ic"><use href="#i-take"/></svg>TAKE</span><span class="b"><svg class="ic"><use href="#i-hold"/></svg>HOLD</span><span class="b"><svg class="ic"><use href="#i-skip"/></svg>SKIP</span></div></div>
+  </div>
+ </div>
+ <div class="ft"><span>Final Four</span><span>6 items &middot; 8:27 total</span><span class="sp" style="flex:1"></span><span>v0.1.0</span></div>
+</div>

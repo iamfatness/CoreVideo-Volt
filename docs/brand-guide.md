@@ -59,7 +59,7 @@ Dark control room. One session, three proofs.
 - Library. Search returns spans with transcript hits, not files. [brand/ui/library.jpg](../brand/ui/library.jpg)
 - Publish. One span, three deliverables, one button. [brand/ui/publish.jpg](../brand/ui/publish.jpg)
 
-These are direction frames, not spec. The next pass should be built in the CoreVideo widget sheet, not a separate web theme.
+The UI now follows one system: tokens and components in `operator.css`, a 38-icon sprite (24px grid, 1.75px round stroke), and three workspaces (Producer, Editor, Operator) in a shared shell; see [operator-ui.md](specs/operator-ui.md) and the [redesign design](superpowers/specs/2026-10-30-ui-redesign-design.md). These are direction frames, not spec. The next pass should be built in the CoreVideo widget sheet, not a separate web theme.
 
 ## Do not
 
