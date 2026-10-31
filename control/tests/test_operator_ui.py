@@ -614,8 +614,6 @@ class TakingCopy(unittest.TestCase):
         self.assertIn("taking", block)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 def _lum(hexcolour):
@@ -742,3 +740,6 @@ class Shell(unittest.TestCase):
         self.assertIn('volt.workspace', js)
         self.assertRegex(js, r'try \{[^}]*localStorage')
 
+
+if __name__ == "__main__":
+    unittest.main()

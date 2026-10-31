@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
-control/volt.db
+control/volt.db*
 
 control/build/
 *.egg-info/
