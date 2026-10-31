@@ -780,3 +780,52 @@ class ItemTiming(Api):
         self.assertTrue(with_span)
         for m in with_span:
             self.assertEqual((m["frames"], m["rate"]), (None, None))
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class RundownTiming(unittest.TestCase):
+    T0 = 1_800_000_000_000
+
+    def iso(self, ms):
+        import datetime
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def items(self, *rows):
+        return [{"id": "i%d" % n, "status": st, "asRunIn": None if at is None else self.iso(self.T0 + at * 1000)}
+                for n, (st, at) in enumerate(rows)]
+
+    def test_item_seconds_uses_the_exact_rate(self):
+        got = _node(["itemSeconds", {"frames": 250, "rate": "25"}], ["itemSeconds", {"frames": 30000, "rate": "30000/1001"}],
+                    ["itemSeconds", {"frames": 10}], ["itemSeconds", None], ["itemSeconds", {"frames": 10, "rate": "abc"}])
+        self.assertEqual(got, [10, 1001, None, None, None])
+
+    def test_nothing_aired_gives_offsets_and_no_clock(self):
+        items = self.items(("ready", None), ("ready", None), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 60, "i1": None, "i2": 30}, self.T0])
+        self.assertEqual([x["offset"] for x in r["rows"]], [0, 60, 60])
+        self.assertEqual([x["startMs"] for x in r["rows"]], [None, None, None])
+        self.assertEqual((r["totalSec"], r["driftSec"]), (90, None))
+
+    def test_drift_is_actual_start_minus_planned_front(self):
+        for late, want in ((75, 15), (50, -10), (60, 0)):
+            items = self.items(("aired", 0), ("on air", late), ("ready", None))
+            (r,) = _node(["frontTimes", items, {"i0": 60, "i1": 30, "i2": 30}, self.T0 + 99_000])
+            self.assertEqual(r["rows"][1]["startMs"], self.T0 + 60_000)
+            self.assertEqual(r["driftSec"], want, late)
+            self.assertEqual(r["rows"][2]["startMs"], self.T0 + 90_000)
+
+    def test_killed_and_skipped_take_no_time(self):
+        items = self.items(("aired", 0), ("killed", None), ("skipped", None), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 60, "i1": 500, "i2": 500, "i3": 20}, self.T0])
+        self.assertEqual([x["offset"] for x in r["rows"]], [0, None, None, 60])
+        self.assertEqual(r["totalSec"], 80)
+
+    def test_first_item_skipped_still_anchors_on_the_first_that_aired(self):
+        items = self.items(("skipped", None), ("on air", 5), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 40, "i1": 60, "i2": 10}, self.T0])
+        self.assertEqual((r["rows"][1]["offset"], r["driftSec"], r["rows"][2]["startMs"]), (0, 0, self.T0 + 65_000))
+
+    def test_formats(self):
+        self.assertEqual(_node(["fmtOffset", 3725], ["fmtOffset", 65], ["fmtOffset", None], ["fmtOffset", 0],
+                               ["fmtSigned", 15], ["fmtSigned", -10], ["fmtSigned", 0], ["fmtSigned", None]),
+                         ["1:02:05", "01:05", "--:--", "00:00", "+00:15", "-00:10", "00:00", ""])

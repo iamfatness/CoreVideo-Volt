@@ -71,6 +71,45 @@
     return { items, air, next, hold: rundown ? rundown.hold : null, taking };
   }
 
+  // ---- rundown timing: front time (when an item starts) and drift (actual start minus planned front) ----------
+  // Planned length of an item in seconds from the server's frame count and exact rate; null when either is unknown.
+  function itemSeconds(media) {
+    const r = media && media.frames != null ? parseRate(media.rate) : null;
+    return r ? media.frames * r.d / r.n : null;
+  }
+  // A killed or skipped item takes no time, so it is left out of the running sum. An item of unknown length adds zero.
+  // The clock is anchored on the first counted item that has started; before that only offsets are known.
+  function frontTimes(items, seconds, nowMs) {
+    let run = 0;
+    const rows = items.map((it) => {
+      if (it.status === 'killed' || it.status === 'skipped') return { id: it.id, offset: null, startMs: null };
+      const row = { id: it.id, offset: run, startMs: null };
+      run += seconds[it.id] || 0;
+      return row;
+    });
+    const at = (it) => (it.asRunIn ? Date.parse(it.asRunIn) : NaN);
+    const k = items.findIndex((it, i) => rows[i].offset !== null && !isNaN(at(it)));
+    let drift = null;
+    if (k >= 0) {
+      const anchor = at(items[k]) - rows[k].offset * 1000;
+      rows.forEach((r) => { if (r.offset !== null) r.startMs = anchor + r.offset * 1000; });
+      const cur = items.findIndex((it, i) => rows[i].offset !== null && (it.status === 'on air' || it.status === 'taking') && !isNaN(at(it)));
+      if (cur >= 0) drift = Math.round((at(items[cur]) - rows[cur].startMs) / 1000);
+    }
+    return { rows, totalSec: run, driftSec: drift };
+  }
+  function fmtOffset(sec) {
+    if (sec == null || isNaN(sec)) return '--:--';
+    const t = Math.max(0, Math.round(sec)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
+    const two = (n) => String(n).padStart(2, '0');
+    return h ? h + ':' + two(m) + ':' + two(x) : two(m) + ':' + two(x);
+  }
+  function fmtSigned(sec) {
+    if (sec == null || isNaN(sec)) return '';
+    const t = Math.round(sec);
+    return t === 0 ? '00:00' : (t > 0 ? '+' : '-') + fmtOffset(Math.abs(t));
+  }
+
   // The state language: one mapping, always icon + word + colour. Take is an action, not a state, so it is not here.
   const STATE = {
     onair:   { icon: 'onair',   word: 'On air',  cls: 'st air' },
@@ -103,7 +142,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
