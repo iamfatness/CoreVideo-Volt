@@ -122,6 +122,13 @@
     aired:   { icon: 'ready',   word: 'Aired',   cls: 'st done' },
     skipped: { icon: 'skip',    word: 'Skipped', cls: 'st done' },
     killed:  { icon: 'close',   word: 'Killed',  cls: 'st done' },
+    cleared:   { icon: 'ready',   word: 'Cleared',     cls: 'st ok' },
+    uncleared: { icon: 'alert',   word: 'Not cleared', cls: 'st fail' },
+    hold:      { icon: 'lock',    word: 'Legal hold',  cls: 'st fail' },
+    running:   { icon: 'pending', word: 'Running',     cls: 'st pend' },
+    done:      { icon: 'ready',   word: 'Done',        cls: 'st ok' },
+    queued:    { icon: 'pending', word: 'Queued',      cls: 'st pend' },
+
 
   };
   // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
@@ -236,9 +243,6 @@
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
-  };
-  const VER_CHIP = {
-    done: ['done', '✓', 'Done'], failed: ['failed', '✕', 'Failed'], queued: ['queued', '…', 'Queued'],
   };
   const REC_STEPS = ['requested', 'preparing', 'producing', 'stopping', 'finalizing', 'completed'];
   const REC_ALIAS = { starting: 'preparing', live: 'producing' };
@@ -603,6 +607,11 @@
   function chip(map, key, extra) {
     const m = map[key] || ['ready', '?', key];
     return el('span', { class: 'chip ' + m[0] + (extra ? ' ' + extra : '') }, el('span', { 'aria-hidden': 'true', text: m[1] }), m[2]);
+  }
+
+  // The rights state of an asset: cleared or not, and legal hold when it is set. Both can show at once.
+  function assetChips(d) {
+    return [stateChip(d.cleared ? 'cleared' : 'uncleared'), d.legalHold ? stateChip('hold') : null];
   }
 
   function cueChip(status) {
@@ -1083,7 +1092,7 @@
             const v = s.versions.find((x) => x.kind === k);
             const url = v && v.url;
             return el('div', { class: 'ver' }, el('span', { text: k }),
-              v ? chip(VER_CHIP, v.status) : el('span', { class: 'chip unsupported' }, el('span', { 'aria-hidden': 'true', text: '–' }), 'Not made'),
+              v ? stateChip(v.status) : stateChip('pending', 'Not made'),
               url ? (/^https?:\/\//i.test(url) ? el('a', { class: 'url', href: url, rel: 'noopener', text: url }) : el('span', { class: 'url', text: url })) : el('span', { class: 'url muted', text: '' }));
           })), el('div', { class: 'muted', text: running ? 'Rendering…' : s.versions.length ? done + ' of 3 done' : '' })),
           el('td', {},
@@ -1892,7 +1901,6 @@
   // The follow-on jobs are then read from the existing state poll (assets[].jobs lists the unfinished ones).
   const I = { path: '', busy: false, result: null, err: null };
   const JOB_NAME = { ingest: 'Copy and check', proxy: 'Proxy', asr: 'Transcript', shots: 'Shot detection' };
-  const JOB_CHIP = Object.assign({ running: ['running', '▶', 'Running'] }, VER_CHIP);
 
   async function ingestNow() {
     const path = I.path.trim();
@@ -1962,7 +1970,7 @@
             el('span', { class: 'mono', text: r.asset }), r.minted ? ' is new.' : ' was already ingested; nothing was copied again.',
             r.quarantined ? ' It is held in quarantine and nothing will air from it.' : ''),
           el('ul', { class: 'jobs', 'aria-label': 'Follow-on work' }, jobs.map((j) => el('li', {},
-            el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), chip(JOB_CHIP, j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
+            el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), stateChip(j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
           el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'ingest-open',
             onclick: () => { setAsset(r.asset); } }, 'Open this asset below'))));
       }
@@ -2024,8 +2032,7 @@
     paint('lib-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      el('span', { class: d.cleared ? 'ok' : 'no' }, el('span', { 'aria-hidden': 'true', text: d.cleared ? '✓ ' : '✕ ' }), d.cleared ? 'Cleared' : 'Not cleared'),
-      d.legalHold ? el('span', { class: 'no' }, el('span', { 'aria-hidden': 'true', text: '⚑ ' }), 'Legal hold') : null,
+      assetChips(d),
       d.open ? el('span', { class: 'warn' }, el('span', { 'aria-hidden': 'true', text: '● ' }), 'Recording') : null,
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
@@ -2432,8 +2439,7 @@
     paint('lib-w-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      el('span', { class: d.cleared ? 'ok' : 'no' }, el('span', { 'aria-hidden': 'true', text: d.cleared ? '✓ ' : '✕ ' }), d.cleared ? 'Cleared' : 'Not cleared'),
-      d.legalHold ? el('span', { class: 'no' }, el('span', { 'aria-hidden': 'true', text: '⚑ ' }), 'Legal hold') : null,
+      assetChips(d),
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
 

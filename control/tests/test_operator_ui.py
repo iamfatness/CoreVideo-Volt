@@ -682,7 +682,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "failed", "killed", "locked", "next", "onair", "pending", "ready", "skipped", "taking"])
+        self.assertEqual(sorted(state), ["aired", "cleared", "done", "failed", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "running", "skipped", "taking", "uncleared"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -899,3 +899,26 @@ class RundownColumns(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class LibraryState(unittest.TestCase):
+    def test_cleared_and_hold_specs(self):
+        got = _node(["stateChipSpec", "cleared"], ["stateChipSpec", "uncleared"], ["stateChipSpec", "hold"],
+                    ["stateChipSpec", "running"], ["stateChipSpec", "done"], ["stateChipSpec", "queued"])
+        self.assertEqual(got, [{"icon": "ready", "word": "Cleared", "cls": "st ok"},
+                               {"icon": "alert", "word": "Not cleared", "cls": "st fail"},
+                               {"icon": "lock", "word": "Legal hold", "cls": "st fail"},
+                               {"icon": "pending", "word": "Running", "cls": "st pend"},
+                               {"icon": "ready", "word": "Done", "cls": "st ok"},
+                               {"icon": "pending", "word": "Queued", "cls": "st pend"}])
+        for spec in got:
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS)
+
+    def test_headers_use_the_chips(self):
+        js = FILES["operator.js"]
+        self.assertNotIn("'⚑ '", js)
+        self.assertEqual(len(re.findall(r"d\.cleared \? '✓ ' : '✕ '", js)), 0)
+        self.assertGreaterEqual(js.count("assetChips("), 3)   # the definition and both headers
+        self.assertNotIn("chip(JOB_CHIP", js)
+        self.assertNotIn("chip(VER_CHIP", js)
