@@ -861,3 +861,29 @@ class RundownMarkup(unittest.TestCase):
 
     def test_no_inline_style_added(self):
         self.assertNotIn("style=", FILES["index.html"])
+
+
+class ShowLayouts(unittest.TestCase):
+    def test_take_is_blue_and_has_the_take_icon(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        self.assertIn("icon('take'", js[js.index("function renderShow"):js.index("function renderShow") + 3000])
+        rule = re.search(r"\.btn\.take\{[^}]*\}|\.take\{[^}]*\}", css)
+        self.assertIsNotNone(rule)
+        self.assertNotIn("--ok", css[css.index(".take{"):css.index(".take{") + 400])
+
+    def test_operator_layout_hides_the_build_forms_not_the_dom(self):
+        css, html = FILES["operator.css"], FILES["index.html"]
+        self.assertRegex(css, r"\.ws-operator #build[^{]*\{[^}]*display:none")
+        self.assertRegex(css, r"\.ws-operator #cue-add[^{]*\{[^}]*display:none")
+        self.assertIn('id="build"', html)
+        self.assertIn('id="cue-add"', html)
+        self.assertRegex(css, r"\.ws-operator \.cols\{[^}]*grid-template-columns:\s*2fr 1fr")
+        self.assertRegex(css, r"\.ws-producer \.cols[^{]*\{[^}]*grid-template-columns:\s*3fr 2fr")
+
+    def test_panel_headings_have_icons(self):
+        html = FILES["index.html"]
+        for name in ("rundown", "cue", "room"):
+            self.assertIn('href="#i-%s"' % name, html[html.index('id="screen-show"'):html.index('id="screen-record"')], name)
+
+    def test_take_is_spaced_from_hold_and_advance(self):
+        self.assertRegex(FILES["operator.css"], r"\.transport \.acts\{[^}]*margin-left:\s*var\(--space-5\)")

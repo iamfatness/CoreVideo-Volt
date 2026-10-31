@@ -721,7 +721,7 @@
         el('span', { class: 'val', text: next ? '▶ ' + next.slug : 'End of show' })),
       el('span', { class: 'spacer' }),
       el('div', {}, btn(
-        [el('span', {}, takeBusy ? 'TAKING…' : 'TAKE'),
+        [el('span', { class: 'tk' }, icon('take'), takeBusy ? 'TAKING…' : 'TAKE'),
          el('small', {}, next ? next.slug + ' · ' + takeCues + (takeCues === 1 ? ' cue' : ' cues') : 'nothing to take'),
          el('small', { class: 'k' }, 'Key ', el('kbd', { text: 'T' }))],
         { key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
@@ -755,7 +755,7 @@
     });
 
     const sItem = items.find((i) => i.id === S.selected);
-    $('h-cues').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
+    $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
     paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
       if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown row.' });
       const cs = cuesOf(sItem.id);
