@@ -750,8 +750,6 @@ class Shell(unittest.TestCase):
         self.assertRegex(js, r'try \{[^}]*localStorage')
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ItemTiming(Api):
@@ -887,3 +885,17 @@ class ShowLayouts(unittest.TestCase):
 
     def test_take_is_spaced_from_hold_and_advance(self):
         self.assertRegex(FILES["operator.css"], r"\.transport \.acts\{[^}]*margin-left:\s*var\(--space-5\)")
+
+
+class RundownColumns(unittest.TestCase):
+    def test_rows_and_header_share_fixed_tracks(self):
+        css, js = FILES['operator.css'], FILES['operator.js']
+        track = re.search(r'\.rrow,\.rhead\{display:grid;grid-template-columns:([^;]+);', css).group(1)
+        self.assertNotIn('auto', track)   # an auto track is sized row by row and the columns drift apart
+        self.assertNotIn('em ', track.replace('rem', ''))   # em would shrink with the header's smaller font
+        head = js[js.index("class: 'rhead'"):]
+        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 6)
+
+
+if __name__ == "__main__":
+    unittest.main()

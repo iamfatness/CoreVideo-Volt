@@ -750,7 +750,7 @@
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
       return [el('div', { class: 'rhead', 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
-          el('span', { text: 'Length' }), el('span', { text: 'Front' })),
+          el('span', { text: 'Length' }), el('span', { text: 'Front' }), el('span')),
         el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id])))];
     });
 
