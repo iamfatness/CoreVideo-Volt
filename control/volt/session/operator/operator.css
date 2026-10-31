@@ -16,6 +16,8 @@ body{margin:0;background:var(--ground);color:var(--text);font:1rem/1.45 "Segoe U
 .skip:focus{top:8px}
 :focus-visible{outline:2px solid var(--blue-hi);outline-offset:2px}
 [hidden]{display:none!important}
+.ic{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;vertical-align:-4px}
+.ic.s{width:16px;height:16px;stroke-width:2;vertical-align:-3px}
 .muted{color:var(--muted)}
 kbd{font:inherit;font-size:.85em;font-family:Consolas,monospace;border:1px solid var(--muted);border-bottom-width:2px;border-radius:3px;padding:0 5px;background:var(--raise);color:var(--text)}
 

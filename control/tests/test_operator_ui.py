@@ -641,3 +641,25 @@ class Tokens(unittest.TestCase):
                 "rail-w": "64px", "head-h": "48px"}
         for name, value in want.items():
             self.assertEqual(self.token(name), "%spx" % value if isinstance(value, int) else value, name)
+
+
+ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
+              "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
+              "lower3 mark").split()
+
+
+class Icons(unittest.TestCase):
+    SPRITE_IDS = set(re.findall(r'<symbol id="i-([a-z0-9]+)"', FILES["index.html"]))
+
+    def test_every_named_icon_has_a_symbol(self):
+        self.assertEqual(set(ICON_NAMES) - self.SPRITE_IDS, set())
+
+    def test_every_icon_the_page_asks_for_exists(self):
+        asked = set(re.findall(r"icon\('([a-z0-9]+)'", FILES["operator.js"]))
+        asked |= set(re.findall(r'href="#i-([a-z0-9]+)"', FILES["index.html"] + FILES["operator.js"]))
+        self.assertEqual(asked - self.SPRITE_IDS, set())
+
+    def test_sprite_obeys_the_csp_rules(self):
+        self.assertNotIn("xmlns", FILES["index.html"])
+        self.assertNotIn("style=", FILES["index.html"])
+        self.assertIn("function icon(", FILES["operator.js"])

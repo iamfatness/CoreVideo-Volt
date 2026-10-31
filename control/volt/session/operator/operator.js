@@ -197,6 +197,12 @@
     return n;
   }
   const $ = (id) => document.getElementById(id);
+  // An icon from the sprite in index.html. Built through a <template> so no namespace URL appears in this file.
+  function icon(name, cls) {
+    const t = document.createElement('template');
+    t.innerHTML = '<svg class="ic' + (cls ? ' ' + cls : '') + '" aria-hidden="true" focusable="false"><use href="#i-' + name + '"/></svg>';
+    return t.content.firstElementChild;
+  }
   const short = (id) => (id || '').slice(0, 8);
 
   function fmtTime(iso) {
@@ -1716,7 +1722,7 @@
 
   // ---- rendering -------------------------------------------------------------------------------------------
   // Static markup only (no data goes in), so innerHTML is safe here and needs no namespace string.
-  function icon(kind) {
+  function stateGlyph(kind) {
     const tpl = document.createElement('template');
     const stroke = kind === 'warn' ? '#ff4d4d' : '#a0a0a0';
     const shape = kind === 'warn' ? '<path d="M20 6l15 27H5z"/><path d="M20 16v8M20 28v2"/>'
@@ -1727,7 +1733,7 @@
 
   function stateCard(title, kind, text, ...actions) {
     return el('section', { class: 'panel state-card', 'aria-labelledby': 'h-state' }, el('h2', { id: 'h-state', text: title }),
-      el('div', { class: 'empty' }, el('div', { 'aria-hidden': 'true' }, icon(kind)), el('p', { text }), actions.length ? el('div', { class: 'acts' }, actions) : null));
+      el('div', { class: 'empty' }, el('div', { 'aria-hidden': 'true' }, stateGlyph(kind)), el('p', { text }), actions.length ? el('div', { class: 'acts' }, actions) : null));
   }
 
   function renderLibPicker() {
