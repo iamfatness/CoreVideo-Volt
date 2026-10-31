@@ -610,3 +610,34 @@ class TakingCopy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _lum(hexcolour):
+    c = [int(hexcolour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    c = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def _ratio(a, b):
+    hi, lo = sorted((_lum(a), _lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class Tokens(unittest.TestCase):
+    ROOT = re.search(r":root\{(.*?)\n\}", FILES["operator.css"], re.S).group(1)
+
+    def token(self, name):
+        return re.search(r"--%s:\s*([^;]+);" % re.escape(name), self.ROOT).group(1).strip()
+
+    def test_colour_pairs_meet_contrast(self):
+        t = self.token
+        for fg, bg, need in [("text", "ground", 4.5), ("text", "panel", 4.5), ("muted", "panel", 4.5),
+                             ("signal", "panel", 3.0), ("air", "panel", 3.0), ("ok", "panel", 3.0), ("blue-hi", "panel", 3.0)]:
+            self.assertGreaterEqual(_ratio(t(fg), t(bg)), need, (fg, bg, _ratio(t(fg), t(bg))))
+
+    def test_scales_exist(self):
+        want = {**{"space-%d" % i: px for i, px in enumerate((4, 8, 12, 16, 24, 32), 1)}, "radius-sm": "3px", "radius": "6px",
+                "fs-xs": ".75rem", "fs-sm": ".875rem", "fs-md": "1rem", "fs-lg": "1.25rem", "fs-xl": "1.75rem",
+                "rail-w": "64px", "head-h": "48px"}
+        for name, value in want.items():
+            self.assertEqual(self.token(name), "%spx" % value if isinstance(value, int) else value, name)

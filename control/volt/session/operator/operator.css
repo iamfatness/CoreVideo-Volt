@@ -2,6 +2,10 @@
   --ground:#141414;--panel:#1c1c1c;--raise:#242424;--hair:#303030;--text:#e2e2e2;--muted:#a0a0a0;
   --blue:#1d6dc2;--blue-hi:#5ea3ea;--signal:#f0b429;--air:#ff4d4d;--ok:#3ddc97;
   --air-bg:#2a1616;--signal-bg:#2a2210;--ok-bg:#12261d;
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;
+  --radius-sm:3px;--radius:6px;
+  --fs-xs:.75rem;--fs-sm:.875rem;--fs-md:1rem;--fs-lg:1.25rem;--fs-xl:1.75rem;
+  --rail-w:64px;--head-h:48px;
 }
 *{box-sizing:border-box}
 html{font-size:14px}
