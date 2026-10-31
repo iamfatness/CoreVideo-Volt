@@ -1187,6 +1187,10 @@ class BackTimes(unittest.TestCase):
 
 
 class SlotUi(unittest.TestCase):
+    def test_the_narrow_layout_overrides_the_slot_columns(self):
+        css = FILES["operator.css"]
+        self.assertRegex(css, r"\.rrow,\.rrow\.hb\{grid-template-columns:1\.8rem 7\.5rem minmax\(0,1fr\) auto\}")
+
     def test_the_page_wires_the_slot(self):
         js, css = FILES["operator.js"], FILES["operator.css"]
         self.assertIn("showSlot:", js)

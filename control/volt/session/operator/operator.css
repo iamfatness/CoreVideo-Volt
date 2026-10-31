@@ -235,7 +235,7 @@ table.keys td:first-child{white-space:nowrap}
 @media(max-width:820px){
   .top{gap:8px}.status{margin-left:0;width:100%}
   .rhead,.rrow .front,.rrow .back{display:none}
-  .rrow{grid-template-columns:1.8rem 7.5rem minmax(0,1fr) auto}
+  .rrow,.rrow.hb{grid-template-columns:1.8rem 7.5rem minmax(0,1fr) auto}
   .rrow .tools{grid-column:2 / -1;flex-wrap:wrap}
   .ver{grid-template-columns:5em auto}.ver .url{grid-column:1 / -1}
 }

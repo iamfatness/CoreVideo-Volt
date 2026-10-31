@@ -827,7 +827,7 @@
     paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec], () => {
       if (!S.data.show || !items.length) return null;
       const d = timing.driftSec, o = back.overSec;
-      return [el('span', { text: 'Total ' + fmtOffset(timing.totalSec) + (hasSlot ? ' of ' + fmtOffset(slot) : '') + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+      return [el('span', { text: 'Total ' + fmtOffset(hasSlot ? back.totalSec : timing.totalSec) + (hasSlot ? ' of ' + fmtOffset(slot) : '') + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
         o == null ? null : el('span', { class: 'over' + (o > 0 ? ' behind' : '') }, icon(o > 0 ? 'alert' : 'ready', 's'),
           o > 0 ? 'Over ' + fmtOffset(o) : o < 0 ? 'Under ' + fmtOffset(-o) : 'On slot'),
         d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
