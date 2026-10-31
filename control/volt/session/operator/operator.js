@@ -1161,8 +1161,8 @@
     $('lib-add-shot').addEventListener('click', () => addSpan('shot'));
     for (const ev of ['timeupdate', 'seeked', 'seeking']) v.addEventListener(ev, updatePos);
     v.addEventListener('loadedmetadata', onVideoReady);
-    v.addEventListener('play', () => { $('lib-play').firstChild.textContent = 'Pause '; tickPos(); });
-    v.addEventListener('pause', () => { $('lib-play').firstChild.textContent = 'Play '; updatePos(); });
+    v.addEventListener('play', () => { $('lib-play-text').textContent = 'Pause'; tickPos(); });
+    v.addEventListener('pause', () => { $('lib-play-text').textContent = 'Play'; updatePos(); });
     v.addEventListener('error', onVideoError);
   }
 

@@ -989,3 +989,24 @@ class Shuttle(unittest.TestCase):
         table = md[md.index("## Keys (Library screen)"):md.index("The Export tab has no keys")]
         for key in ("`J`", "`K`", "`L`"):
             self.assertIn(key, table)
+
+
+class LibraryLayouts(unittest.TestCase):
+    def test_editor_gives_the_main_column_the_width(self):
+        css = FILES["operator.css"]
+        m = re.search(r"@media\(min-width:1001px\)\{[^@]*\.ws-editor \.cols\.lib\{[^}]*minmax\(0,1fr\) 300px", css)
+        self.assertIsNotNone(m)
+
+    def test_narrow_rule_still_collapses_and_comes_last(self):
+        css = FILES["operator.css"]
+        narrow = css.index("@media(max-width:1000px){.cols.lib{grid-template-columns:1fr}}")
+        self.assertGreater(narrow, css.index(".ws-editor .cols.lib"))
+
+    def test_play_has_an_icon_and_keeps_its_key_and_label_updates(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        i = html.index('id="lib-play"')
+        btn = html[html.rindex("<button", 0, i):html.index("</button>", i)]
+        self.assertIn('href="#i-take"', btn)
+        self.assertIn('aria-keyshortcuts="K"', btn)
+        self.assertIn('id="lib-play-text"', btn)
+        self.assertNotIn("$('lib-play').firstChild", js)   # the icon is the first child now
