@@ -112,5 +112,7 @@ Exact icon drawings (the first pass is a start); how the icon sprite is served (
 
 ## Open questions
 
-1. **Where is the CoreVideo widget sheet** the brand guide says to build on (CoreVideo Pro repo, a file, a Figma)? The builder needs it to match the family. Without it the system is built from the existing `operator.css` tokens alone.
-2. **Slot length and back time:** do you want a show target (a planned length or end time, a schema and API change, later) so the header can show total against slot and the rundown can show back time? Or is front time plus drift enough for now?
+Both answered by the owner on 2026-10-31:
+
+1. **Widget sheet:** none is available. The system is built from the tokens and icons in `operator.css` and the sprite in `index.html`.
+2. **Slot length and back time:** not now. Front time and drift only; no schema or API change for a show target.

@@ -92,11 +92,10 @@ main{padding:12px 16px 40px;outline:0}
 .transport .acts{margin-left:var(--space-5)}
 .take .tk{display:inline-flex;gap:var(--space-2);align-items:center}
 /* workspaces on the Show screen: Operator runs the show, Producer builds it */
-.ws-operator .cols{grid-template-columns:2fr 1fr}
 .ws-operator #build,.ws-operator #cue-add{display:none}
 .ws-operator .nowline .val{font-size:var(--fs-xl)}
 .ws-operator .nowline{min-width:14em}
-.ws-producer .cols,.ws-editor .cols{grid-template-columns:3fr 2fr}
+@media(min-width:1001px){.ws-operator .cols{grid-template-columns:2fr 1fr}.ws-producer .cols,.ws-editor .cols{grid-template-columns:3fr 2fr}}
 .transport.held{border-color:var(--signal)}
 .take{font-size:1.25rem;padding:14px 30px;min-width:15em;text-align:left;display:flex;flex-direction:column;gap:2px}
 /* state language: icon + word + colour, never colour alone */
