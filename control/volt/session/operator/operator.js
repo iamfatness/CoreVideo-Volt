@@ -118,6 +118,10 @@
     return state.dir === dir ? { dir, speed: Math.min(8, state.speed * 2) } : { dir, speed: 1 };
   }
 
+  // Theme: Auto follows the operating system; Dark and Light are a choice kept in this browser.
+  const themeName = (stored) => (stored === 'dark' || stored === 'light' ? stored : 'auto');
+  const nextTheme = (name) => ({ auto: 'dark', dark: 'light', light: 'auto' }[themeName(name)]);
+
   // The state language: one mapping, always icon + word + colour. Take is an action, not a state, so it is not here.
   const STATE = {
     onair:   { icon: 'onair',   word: 'On air',  cls: 'st air' },
@@ -174,7 +178,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -687,6 +691,16 @@
   function storedWorkspace() {
     try { return workspaceName(localStorage.getItem('volt.workspace')); } catch (e) { return DEFAULT_WORKSPACE; }
   }
+  function setTheme(name) {
+    const t = themeName(name);
+    if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
+    try { if (t === 'auto') localStorage.removeItem('volt.theme'); else localStorage.setItem('volt.theme', t); } catch (e) { /* works without it */ }
+    const b = $('theme-btn');
+    b.textContent = 'Theme: ' + t.charAt(0).toUpperCase() + t.slice(1);
+    b.dataset.theme = t;
+  }
+  function currentTheme() { return themeName(document.documentElement.getAttribute('data-theme')); }
+
   function setWorkspace(name, go) {
     S.ws = workspaceName(name);
     try { localStorage.setItem('volt.workspace', S.ws); } catch (e) { /* works without it */ }
@@ -2996,6 +3010,8 @@
     $('token-clear').addEventListener('click', () => { setToken(''); $('token-in').value = ''; $('token-dlg').close(); refresh(); });
     $('token-form').addEventListener('submit', () => { setToken($('token-in').value.trim()); $('token-in').value = ''; setTimeout(refresh, 0); });
     $('keys-btn').addEventListener('click', () => $('keys-dlg').showModal());
+    setTheme(currentTheme());
+    $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
     libInit();
     $('keys-close').addEventListener('click', () => $('keys-dlg').close());
     document.addEventListener('keydown', onKey);

@@ -61,6 +61,10 @@ Dark control room. One session, three proofs.
 
 The UI now follows one system: tokens and components in `operator.css`, a 38-icon sprite (24px grid, 1.75px round stroke), and three workspaces (Producer, Editor, Operator) in a shared shell; see [operator-ui.md](specs/operator-ui.md) and the [redesign design](superpowers/specs/2026-10-30-ui-redesign-design.md). These are direction frames, not spec. The next pass should be built in the CoreVideo widget sheet, not a separate web theme.
 
+## Light theme
+
+A light set exists for bright rooms and is chosen with the header's Theme control (Auto follows the operating system). Dark stays the default and the brand's home. In light, ground is `#F3F3F0`, panel `#FFFFFF`, text `#1A1A1A`. Suite blue stays `#1D6DC2` for fills (white text, 5.2:1); text and focus use `#14589F`. Signal amber stays `#F0B429` as a fill or bar with `#1A1200` text; amber used as text becomes `#8A5A00`. On-air red stays `#FF4D4D` as a fill; as text it becomes `#C01F1F`. Cleared green text becomes `#0B7A48`. Red is still only for a live path. Every pair is measured by a test, not judged by eye (see [operator-ui.md](specs/operator-ui.md)).
+
 ## Do not
 
 Lightning photography. Sports clipart. Gradients behind the wordmark. Red as a brand color. A second blue.
