@@ -109,6 +109,7 @@
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
   const EP = {
     state:       ['GET',  '/api/state'],
+    health:      ['GET',  '/api/health'],
     go:          ['POST', '/api/shows/{id}/go'],
     take:        ['POST', '/api/shows/{id}/take'],
     hold:        ['POST', '/api/shows/{id}/hold'],
@@ -205,7 +206,7 @@
     data: null, show: null, screen: 'show', epoch: 0, seq: false, busy: false,
     pending: new Set(), lastOk: 0, conn: 'connecting', selected: null, armed: null,
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
-    cmds: null, cmdsTried: 0,
+    cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
     build: { title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
@@ -344,14 +345,29 @@
   let whoamiFor = null;
   async function showWhoami() {
     const token = getToken();
-    if (!token) { whoamiFor = null; $('token-btn').textContent = 'Token'; return; }
+    if (!token) { whoamiFor = null; $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
     if (whoamiFor === token) return;
     whoamiFor = token;
     try {
       const res = await fetch('/api/whoami', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
       const who = res.ok ? await res.json() : null;
       $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
+      // The pill names the person and their access level; it stays hidden when the server does not say.
+      const pill = $('who');
+      pill.hidden = !(who && who.name);
+      if (!pill.hidden) pill.replaceChildren(icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }));
     } catch (e) { /* leave the button as it is */ }
+  }
+
+  // The footer names the server's version once, from the health report. Best effort: the footer stays blank without it.
+  let versionShown = false;
+  async function showVersion() {
+    if (versionShown) return;
+    versionShown = true;
+    try {
+      const { data } = await call('health');
+      if (data && data.version) $('foot-version').textContent = 'v' + data.version;
+    } catch (e) { versionShown = false; }
   }
 
   async function refresh() {
@@ -364,6 +380,7 @@
       S.lastOk = Date.now();
       setConn('ok');
       showWhoami();
+      showVersion();
       data.rundown = data.rundown ? parseRundown(data.rundown) : null;
       S.data = data;
       if (data.show && S.show !== data.show.id) S.show = data.show.id;
@@ -583,9 +600,31 @@
       sel.replaceChildren(...(shows.length ? shows.map((s) => el('option', { value: s.id, selected: s.id === S.show }, s.title + (s.held ? ' (held)' : ''))) : [el('option', { value: '' }, 'No shows')]));
       sel.value = S.show || '';
     }
+    const rail = railFor(S.ws, S.screen);
     for (const a of document.querySelectorAll('#screens a')) {
-      if (a.dataset.screen === S.screen) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+      const scr = a.dataset.screen;
+      a.hidden = !rail.screens.includes(scr) && scr !== rail.extra;
+      a.classList.toggle('off-rail', scr === rail.extra);
+      if (scr === S.screen) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
+    const items = S.data && S.data.rundown && S.data.rundown.items ? S.data.rundown.items : [];
+    const show = shows.find((x) => x.id === S.show);
+    $('foot-show').textContent = show ? show.title : 'No show';
+    $('foot-count').textContent = S.data ? items.length + (items.length === 1 ? ' item' : ' items') : '';
+  }
+
+  // The workspace is remembered per browser. Storage can be missing, blocked or hold junk: any of that means Operator.
+  function storedWorkspace() {
+    try { return workspaceName(localStorage.getItem('volt.workspace')); } catch (e) { return DEFAULT_WORKSPACE; }
+  }
+  function setWorkspace(name, go) {
+    S.ws = workspaceName(name);
+    try { localStorage.setItem('volt.workspace', S.ws); } catch (e) { /* works without it */ }
+    for (const w of Object.keys(WORKSPACES)) document.body.classList.toggle('ws-' + w, w === S.ws);
+    for (const b of document.querySelectorAll('#workspaces button')) b.setAttribute('aria-pressed', String(b.dataset.ws === S.ws));
+    // An explicit switch lands on the new workspace's first screen unless the screen already open belongs to it.
+    if (go && !railFor(S.ws, S.screen).screens.includes(S.screen)) { location.hash = '#' + defaultScreen(S.ws); return; }
+    render();
   }
 
   function flashNode(f) {
@@ -2842,11 +2881,13 @@
     });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (S.armed) { S.armed = null; render(); } else if (document.activeElement && document.activeElement !== document.body && !anyDialog()) document.activeElement.blur(); } });
     window.addEventListener('hashchange', () => setScreen(location.hash.slice(1)));
+    for (const b of document.querySelectorAll('#workspaces button')) b.addEventListener('click', () => setWorkspace(b.dataset.ws, true));
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); schedule(); } });
     const tick = () => { $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false }); };
     tick(); setInterval(tick, 1000);
     setConn('connecting');
-    setScreen(location.hash.slice(1));
+    setWorkspace(storedWorkspace(), false);
+    setScreen(location.hash.slice(1) || defaultScreen(S.ws));
     refresh().then(schedule);
   }
 

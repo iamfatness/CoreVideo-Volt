@@ -77,7 +77,9 @@ class Static(Api):
     def test_token_lives_in_session_storage_only(self):
         js = FILES["operator.js"]
         self.assertIn("sessionStorage", js)
-        self.assertNotIn("localStorage", js)
+        # The one per-browser convenience is the chosen workspace; the token never goes in localStorage.
+        self.assertEqual(set(re.findall(r"localStorage\.\w+Item\('([^']+)'", js)), {"volt.workspace"})
+        self.assertEqual(js.count("localStorage"), len(re.findall(r"localStorage\.\w+Item\('volt\.workspace'", js)))
         self.assertNotIn("document.cookie", js)
 
 
@@ -93,6 +95,10 @@ class Endpoints(Api):
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual(status, 200, tpl)
                 self.assertIn("rundown", payload)
+            elif tpl == "/api/health":  # the footer reads the server version from it
+                status, payload, _ = self.call("GET", path)
+                self.assertIn(status, (200, 503), tpl)
+                self.assertIn("version", payload)
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
@@ -121,7 +127,7 @@ class Library(Api):
 
     def test_the_fifth_screen_is_in_the_nav_and_the_page(self):
         html = FILES["index.html"]
-        self.assertIn('<a href="#library" data-screen="library">Library</a>', html)
+        self.assertIn('href="#library" data-screen="library"', html)
         self.assertIn('id="screen-library"', html)
         self.assertIn("'show', 'record', 'rights', 'publish', 'library'", FILES["operator.js"])
 
@@ -711,3 +717,28 @@ class Workspaces(unittest.TestCase):
     def test_default_screen_is_the_first_on_the_rail(self):
         self.assertEqual(_node(["defaultScreen", "editor"], ["defaultScreen", "operator"], ["defaultScreen", "producer"]),
                          ["library", "show", "show"])
+
+
+class Shell(unittest.TestCase):
+    HTML = FILES['index.html']
+
+    def test_ids_the_script_depends_on_survive(self):
+        for i in ('show-select', 'screens', 'workspaces', 'who', 'conn', 'token-btn', 'keys-btn', 'clock', 'main', 'banners',
+                  'foot-show', 'foot-count', 'foot-version'):
+            self.assertIn('id="%s"' % i, self.HTML, i)
+
+    def test_workspace_buttons_exist_for_all_three(self):
+        for w in ('producer', 'editor', 'operator'):
+            self.assertRegex(self.HTML, r'<button[^>]*data-ws="%s"[^>]*aria-pressed' % w)
+
+    def test_rail_links_keep_their_hash_and_data_screen_and_carry_an_icon(self):
+        for scr in ('show', 'record', 'rights', 'publish', 'library'):
+            self.assertRegex(self.HTML, r'<a href="#%s" data-screen="%s"[^>]*>\s*<svg class="ic"' % (scr, scr))
+        self.assertIn('<nav aria-label="Screens" id="screens" class="rail">', self.HTML)
+
+    def test_the_page_script_wires_the_workspace_and_survives_a_bad_store(self):
+        js = FILES['operator.js']
+        self.assertIn('function setWorkspace(', js)
+        self.assertIn('volt.workspace', js)
+        self.assertRegex(js, r'try \{[^}]*localStorage')
+

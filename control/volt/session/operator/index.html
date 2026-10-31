@@ -50,24 +50,33 @@
 </svg>
 <a class="skip" href="#main">Skip to the screen</a>
 <header class="top">
-  <div class="brand"><span class="mark" aria-hidden="true">////</span><strong>VOLT</strong></div>
+  <div class="brand"><svg class="ic mark" aria-hidden="true" focusable="false"><use href="#i-mark"/></svg><strong>VOLT</strong></div>
   <label class="showpick"><span class="vh">Show</span>
     <select id="show-select" aria-label="Show"></select>
   </label>
-  <nav aria-label="Screens" id="screens">
-    <a href="#show" data-screen="show">Show</a>
-    <a href="#record" data-screen="record">Record</a>
-    <a href="#rights" data-screen="rights">Rights</a>
-    <a href="#publish" data-screen="publish">Publish</a>
-    <a href="#library" data-screen="library">Library</a>
-  </nav>
+  <div id="workspaces" class="workspaces" role="group" aria-label="Workspace">
+    <button type="button" data-ws="producer" aria-pressed="false"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-rundown"/></svg><span>Producer</span></button>
+    <button type="button" data-ws="editor" aria-pressed="false"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-cut"/></svg><span>Editor</span></button>
+    <button type="button" data-ws="operator" aria-pressed="true"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-onair"/></svg><span>Operator</span></button>
+  </div>
   <div class="status">
+    <span id="who" class="pill" hidden></span>
     <span id="conn" class="conn" role="status"></span>
     <button type="button" id="token-btn" class="btn ghost small">Token</button>
     <button type="button" id="keys-btn" class="btn ghost small" aria-haspopup="dialog">Keys</button>
     <time id="clock" class="clock"></time>
   </div>
 </header>
+
+<div class="shell">
+  <nav aria-label="Screens" id="screens" class="rail">
+    <a href="#show" data-screen="show"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-rundown"/></svg><span>Show</span></a>
+    <a href="#record" data-screen="record"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-record"/></svg><span>Record</span></a>
+    <a href="#rights" data-screen="rights"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-rights"/></svg><span>Rights</span></a>
+    <a href="#publish" data-screen="publish"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-publish"/></svg><span>Publish</span></a>
+    <a href="#library" data-screen="library"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-library"/></svg><span>Library</span></a>
+  </nav>
+  <div class="stage">
 
 <div id="banners" class="banners"></div>
 <div id="live" class="vh" role="status" aria-live="polite"></div>
@@ -200,6 +209,15 @@
     </div>
   </section>
 </main>
+  </div>
+</div>
+
+<footer class="foot">
+  <span id="foot-show">No show</span>
+  <span id="foot-count"></span>
+  <span id="foot-version" class="muted"></span>
+</footer>
+
 
 <dialog id="token-dlg" aria-labelledby="token-h">
   <form method="dialog" id="token-form">

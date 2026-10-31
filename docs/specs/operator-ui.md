@@ -13,6 +13,8 @@ Run it against a fake room, no core needed: `cd control && python -m tests.opera
 
 ## Screens
 
+**Shell (slice 1 of the redesign, [design](superpowers/specs/2026-10-30-ui-redesign-design.md)).** A header (mark, show picker, workspace switcher, signed-in user from `/api/whoami`, connection, clock), an icon rail on the left, a footer (show, item count, server version). The three workspaces, Producer, Editor and Operator, are saved layouts: each picks which screens the rail lists and which opens first (Producer: Show, Rights, Publish, Library; Editor: Library, Publish, Rights; Operator: Show, Record). They are not permissions; the server still decides what a token may do, and every screen stays reachable by its hash (a screen outside the rail shows as one temporary dashed rail item). The choice is kept in `localStorage` under `volt.workspace` (the token never goes there); without storage the page opens in Operator. Icons come from one inline SVG sprite in `index.html` through `icon(name, cls)`; status is drawn by `stateChip(kind, word)` from one map (on air, ready, pending, failed, held), always icon, word and colour. Contrast is measured in [ui-slice-1-contrast.md](superpowers/plans/ui-slice-1-contrast.md).
+
 Show (take bar, rundown with as-run, cues, room), Record (start, lifecycle steps, stop and wrap), Rights (clear, legal hold), Publish (clips and shots with per-version status and URLs; a passage of speech is published by first marking it as a clip in the Library), Library (shots and clips of one asset). `#show`, `#record`, `#rights`, `#publish`, `#library`.
 
 ### Library
