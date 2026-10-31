@@ -948,3 +948,44 @@ class LibraryMarkup(unittest.TestCase):
         for hid in ("h-ingest", "h-player", "h-shots", "h-tray", "h-span"):
             self.assertNotIn("$('%s').textContent" % hid, js)
             self.assertNotIn("getElementById('%s').textContent" % hid, js)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class Shuttle(unittest.TestCase):
+    def run_keys(self, keys, state=None):
+        script = ("const m = require(process.argv[1]); let s = JSON.parse(process.argv[2]); const out = [];"
+                  "for (const k of JSON.parse(process.argv[3])) { s = m.shuttleNext(s, k); out.push([s.dir, s.speed]); }"
+                  "console.log(JSON.stringify(out));")
+        out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(state or {"dir": 0, "speed": 0}), json.dumps(keys)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_speed_ladder(self):
+        self.assertEqual(self.run_keys(list("lllll")), [[1, 1], [1, 2], [1, 4], [1, 8], [1, 8]])
+        self.assertEqual(self.run_keys(list("jjj")), [[-1, 1], [-1, 2], [-1, 4]])
+        self.assertEqual(self.run_keys(list("lj")), [[1, 1], [-1, 1]])
+        self.assertEqual(self.run_keys(list("jl")), [[-1, 1], [1, 1]])
+        self.assertEqual(self.run_keys(list("llk")), [[1, 1], [1, 2], [0, 0]])
+        self.assertEqual(self.run_keys(["k"]), [[0, 0]])
+
+    def test_keys_are_wired_and_ignore_repeat_and_fields(self):
+        js = FILES["operator.js"]
+        start = js.index("function libKey")
+        body = js[start:js.index("function stateGlyph", start)]
+        self.assertRegex(body, r"low === 'j'[^\n]*!e\.repeat")
+        self.assertRegex(body, r"low === 'l'[^\n]*!e\.repeat")
+        on_key = js[js.index("function onKey"):js.index("function onKey") + 600]
+        self.assertIn("input,select,textarea", on_key)   # typing jkl into a field never reaches libKey
+
+    def test_every_exit_stops_the_shuttle(self):
+        js = FILES["operator.js"]
+        for fn in ("function libLeave", "function stepFrames", "function jumpShot", "function togglePlay", "function setTab", "function proxyRelease"):
+            i = js.index(fn)
+            self.assertIn("shuttleStop(", js[i:i + 700], fn)
+
+    def test_documented(self):
+        md = (Path(serve.ROOT).parents[2] / "docs" / "specs" / "operator-ui.md").read_text(encoding="utf-8")
+        table = md[md.index("## Keys (Library screen)"):md.index("The Export tab has no keys")]
+        for key in ("`J`", "`K`", "`L`"):
+            self.assertIn(key, table)
