@@ -64,3 +64,32 @@ jobs:
       - name: Contract tests on Postgres
         working-directory: control
         run: python -m unittest discover -s tests -v
+
+  # Windows has no service containers, but the windows-latest image ships PostgreSQL (stopped). Start that
+  # service and run the same suite against it, so the Windows-specific paths (file locking, pg_dump.exe,
+  # temp directories) are exercised with Postgres as well as SQLite.
+  postgres-windows:
+    runs-on: windows-latest
+    env:
+      VOLT_TEST_PG_DSN: postgresql://postgres:root@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: FedericoCarboni/setup-ffmpeg@v3
+      - name: Start the preinstalled PostgreSQL
+        shell: pwsh
+        run: |
+          $svc = Get-Service -Name 'postgresql*' | Select-Object -First 1
+          Set-Service -InputObject $svc -StartupType Automatic
+          Start-Service -InputObject $svc
+          "$env:PGBIN" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$env:PGBIN\pg_isready.exe" -h localhost -p 5432
+          $env:PGPASSWORD = 'root'
+          & "$env:PGBIN\psql.exe" -h localhost -U postgres -Atc 'select version()'
+      - name: Install the Postgres drivers
+        run: python -m pip install "psycopg[binary]==3.3.6" "psycopg_pool==3.3.3"
+      - name: Contract tests on Postgres (Windows)
+        working-directory: control
+        run: python -m unittest discover -s tests -v
