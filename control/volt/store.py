@@ -138,7 +138,8 @@ CREATE TABLE IF NOT EXISTS show (
   title TEXT NOT NULL,
   created_at TEXT NOT NULL,
   hold_reason TEXT,
-  held_at TEXT
+  held_at TEXT,
+  slot_seconds INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS item (

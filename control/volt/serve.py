@@ -164,8 +164,9 @@ def get_room():
 # ---- state payloads -------------------------------------------------------
 
 def rundown_payload(store: Store, show_id: str) -> dict:
-    """The /rundown shape: {hold, items}. Raises KeyError for an unknown show."""
+    """The /rundown shape: {hold, items, slotSeconds}. Raises KeyError for an unknown show."""
     held = hold_state(store, show_id)
+    slot = store.conn.execute("SELECT slot_seconds FROM show WHERE id = ?", (show_id,)).fetchone()
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
@@ -175,7 +176,7 @@ def rundown_payload(store: Store, show_id: str) -> dict:
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
-            "items": items}
+            "items": items, "slotSeconds": slot[0] if slot else None}
 
 
 def asset_payload(store: Store, asset_id: str) -> dict:
@@ -302,6 +303,20 @@ def act_hold(store, show_id, body):
     already = hold_state(store, show_id) is not None
     hold(store, show_id, reason)
     return {"ok": True, "alreadyHeld": already, "rundown": rundown_payload(store, show_id)}
+
+
+def act_show_slot(store, show_id, body):
+    """Set or clear the show's planned length. {seconds: 1..86399 | null}; nothing else is accepted."""
+    _unknown_keys(body, {"seconds"})
+    if "seconds" not in body:
+        raise ApiError(422, "bad_input", "seconds is required (a whole number, or null to clear the slot)")
+    seconds = body["seconds"]
+    if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, int) or not 1 <= seconds <= 86399):
+        raise ApiError(422, "bad_input", "seconds must be a whole number from 1 to 86399, or null")
+    _show_exists(store, show_id)
+    store.conn.execute("UPDATE show SET slot_seconds = ? WHERE id = ?", (seconds, show_id))
+    store.conn.commit()
+    return {"ok": True, "rundown": rundown_payload(store, show_id)}
 
 
 def act_release(store, show_id, body):
@@ -796,6 +811,7 @@ def _public_user(store, name):
 ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/go$"), act_go),
     (re.compile(rf"^/api/shows/{_ID}/hold$"), act_hold),
+    (re.compile(rf"^/api/shows/{_ID}/slot$"), act_show_slot),
     (re.compile(rf"^/api/shows/{_ID}/release$"), act_release),
     (re.compile(rf"^/api/shows/{_ID}/take$"), act_take),
     (re.compile(rf"^/api/shows/{_ID}/reorder$"), act_reorder),
@@ -843,7 +859,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
-    "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
