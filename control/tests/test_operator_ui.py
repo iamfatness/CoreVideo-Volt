@@ -922,3 +922,29 @@ class LibraryState(unittest.TestCase):
         self.assertGreaterEqual(js.count("assetChips("), 3)   # the definition and both headers
         self.assertNotIn("chip(JOB_CHIP", js)
         self.assertNotIn("chip(VER_CHIP", js)
+
+
+class LibraryMarkup(unittest.TestCase):
+    HTML = FILES["index.html"]
+
+    def piece(self, start, end):
+        i = self.HTML.index(start)
+        return self.HTML[i:self.HTML.index(end, i)]
+
+    def test_headings_and_tabs_have_icons(self):
+        for hid, icon_name in (("h-ingest", "download"), ("h-player", "eye"), ("h-shots", "shot"), ("h-tray", "library"), ("h-span", "sliders")):
+            self.assertIn('href="#i-%s"' % icon_name, self.piece('id="%s"' % hid, "</h2>"), hid)
+        for tid, icon_name in (("lib-tab-shots", "shot"), ("lib-tab-words", "transcript"), ("lib-tab-export", "export")):
+            self.assertIn('href="#i-%s"' % icon_name, self.piece('id="%s"' % tid, "</button>"), tid)
+
+    def test_tab_attributes_survive(self):
+        for tid, ctl in (("lib-tab-shots", "lib-body"), ("lib-tab-words", "lib-words"), ("lib-tab-export", "lib-export")):
+            self.assertIn('aria-controls="%s"' % ctl, self.piece('id="%s"' % tid, "</button>"))
+        for tid in ("lib-tab-words", "lib-tab-export"):
+            self.assertIn('tabindex="-1"', self.piece('id="%s"' % tid, "</button>"))
+
+    def test_no_script_overwrites_a_heading_with_an_icon(self):
+        js = FILES["operator.js"]
+        for hid in ("h-ingest", "h-player", "h-shots", "h-tray", "h-span"):
+            self.assertNotIn("$('%s').textContent" % hid, js)
+            self.assertNotIn("getElementById('%s').textContent" % hid, js)
