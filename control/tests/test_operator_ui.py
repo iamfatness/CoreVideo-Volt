@@ -67,7 +67,6 @@ class Static(Api):
         for name, text in FILES.items():
             self.assertNotRegex(text, r"https?://", name)
             self.assertNotRegex(text, r"@import|url\(\s*['\"]?(?!data:)", name)
-        self.assertNotIn(" style=", html)
         self.assertNotRegex(html, r"<script(?![^>]*\bsrc=)")  # no inline script
         self.assertNotIn("<style", html)
         for ref in refs:
@@ -608,7 +607,7 @@ class CuePicker(unittest.TestCase):
 class TakingCopy(unittest.TestCase):
     def test_desk_words_taking_and_blocks_take(self):
         js = FILES["operator.js"]
-        self.assertIn("taking: ['taking'", js)
+        self.assertRegex(js, r"taking:\s+\{ icon: 'pending', word: 'Taking'")
         self.assertIn("taking: 'Taking'", js)
         block = js[js.index("function takeBlock"):js.index("function takeNow")]
         self.assertIn("taking", block)
@@ -683,12 +682,22 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["failed", "locked", "onair", "pending", "ready"])
+        self.assertEqual(sorted(state), ["aired", "failed", "killed", "locked", "next", "onair", "pending", "ready", "skipped", "taking"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
         self.assertEqual(state["onair"], {"icon": "onair", "word": "On air", "cls": "st air"})
         self.assertEqual(state["locked"]["word"], "Held")
+
+    def test_row_states(self):
+        next_, aired, killed, taking = _node(["stateChipSpec", "next"], ["stateChipSpec", "aired"], ["stateChipSpec", "killed"], ["stateChipSpec", "taking"])
+        self.assertEqual(next_, {"icon": "take", "word": "Next", "cls": "st next"})
+        self.assertEqual(aired, {"icon": "ready", "word": "Aired", "cls": "st done"})
+        self.assertEqual(killed, {"icon": "close", "word": "Killed", "cls": "st done"})
+        self.assertEqual(taking, {"icon": "pending", "word": "Taking", "cls": "st pend"})
+        self.assertEqual(_node(["itemStateKind", "on air", False], ["itemStateKind", "ready", True], ["itemStateKind", "skipped", False],
+                               ["cueStateKind", "armed"], ["cueStateKind", "fired"], ["cueStateKind", "unsupported"]),
+                         ["onair", "next", "skipped", ["pending", "Armed"], ["ready", "Fired"], ["locked", "Unsupported"]])
 
     def test_chip_spec_never_throws_on_an_unknown_kind(self):
         known, unknown, bare = _node(["stateChipSpec", "ready"], ["stateChipSpec", "future-state", "Sealed"], ["stateChipSpec", "nonsense"])
@@ -739,6 +748,153 @@ class Shell(unittest.TestCase):
         self.assertIn('function setWorkspace(', js)
         self.assertIn('volt.workspace', js)
         self.assertRegex(js, r'try \{[^}]*localStorage')
+
+
+
+
+class ItemTiming(Api):
+    """Each item's media carries its length and rate, so the page can total durations."""
+
+    def setUp(self):
+        super().setUp()
+        serve.OUT_DIR = Path(self.tmp.name) / "out"
+        serve.ROOM, self.show, self.spans = seed(self.store, "normal", media_dir=Path(self.tmp.name))
+        # The harness attaches clips to assets with no essence; give each a hi-res file at 25 fps so lengths can be counted.
+        for r in self.store.conn.execute("SELECT DISTINCT s.asset_id FROM item i JOIN span s ON s.id = i.span_id").fetchall():
+            self.store.add_essence(r["asset_id"], "hi-res", str(Path(self.tmp.name) / "x.mxf"), frame_rate="25", timecode_start="01:00:00:00")
+
+    def media(self):
+        _, state, _ = self.call("GET", "/api/state")
+        return state["media"]
+
+    def test_media_carries_frames_and_rate(self):
+        with_span = [m for m in self.media().values() if m.get("span")]
+        self.assertTrue(with_span)
+        for m in with_span:
+            self.assertIsInstance(m["frames"], int)
+            self.assertEqual(m["frames"], 50)  # the harness clips are two seconds at 25 fps
+            self.assertIsNotNone(timecode.parse_rate(m["rate"]))
+
+    def test_item_without_a_span_is_unchanged(self):
+        no_span = [m for m in self.media().values() if not m.get("span")]
+        for m in no_span:
+            self.assertEqual(m, {"span": None, "blockedBy": "no media"})
+
+    def test_unknown_rate_gives_nulls_and_state_still_answers(self):
+        self.store.conn.execute("UPDATE essence SET frame_rate = NULL")
+        self.store.conn.commit()
+        with_span = [m for m in self.media().values() if m.get("span")]
+        self.assertTrue(with_span)
+        for m in with_span:
+            self.assertEqual((m["frames"], m["rate"]), (None, None))
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class RundownTiming(unittest.TestCase):
+    T0 = 1_800_000_000_000
+
+    def iso(self, ms):
+        import datetime
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def items(self, *rows):
+        return [{"id": "i%d" % n, "status": st, "asRunIn": None if at is None else self.iso(self.T0 + at * 1000)}
+                for n, (st, at) in enumerate(rows)]
+
+    def test_item_seconds_uses_the_exact_rate(self):
+        got = _node(["itemSeconds", {"frames": 250, "rate": "25"}], ["itemSeconds", {"frames": 30000, "rate": "30000/1001"}],
+                    ["itemSeconds", {"frames": 10}], ["itemSeconds", None], ["itemSeconds", {"frames": 10, "rate": "abc"}])
+        self.assertEqual(got, [10, 1001, None, None, None])
+
+    def test_nothing_aired_gives_offsets_and_no_clock(self):
+        items = self.items(("ready", None), ("ready", None), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 60, "i1": None, "i2": 30}, self.T0])
+        self.assertEqual([x["offset"] for x in r["rows"]], [0, 60, 60])
+        self.assertEqual([x["startMs"] for x in r["rows"]], [None, None, None])
+        self.assertEqual((r["totalSec"], r["driftSec"]), (90, None))
+
+    def test_drift_is_actual_start_minus_planned_front(self):
+        for late, want in ((75, 15), (50, -10), (60, 0)):
+            items = self.items(("aired", 0), ("on air", late), ("ready", None))
+            (r,) = _node(["frontTimes", items, {"i0": 60, "i1": 30, "i2": 30}, self.T0 + 99_000])
+            self.assertEqual(r["rows"][1]["startMs"], self.T0 + 60_000)
+            self.assertEqual(r["driftSec"], want, late)
+            self.assertEqual(r["rows"][2]["startMs"], self.T0 + 90_000)
+
+    def test_killed_and_skipped_take_no_time(self):
+        items = self.items(("aired", 0), ("killed", None), ("skipped", None), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 60, "i1": 500, "i2": 500, "i3": 20}, self.T0])
+        self.assertEqual([x["offset"] for x in r["rows"]], [0, None, None, 60])
+        self.assertEqual(r["totalSec"], 80)
+
+    def test_first_item_skipped_still_anchors_on_the_first_that_aired(self):
+        items = self.items(("skipped", None), ("on air", 5), ("ready", None))
+        (r,) = _node(["frontTimes", items, {"i0": 40, "i1": 60, "i2": 10}, self.T0])
+        self.assertEqual((r["rows"][1]["offset"], r["driftSec"], r["rows"][2]["startMs"]), (0, 0, self.T0 + 65_000))
+
+    def test_formats(self):
+        self.assertEqual(_node(["fmtOffset", 3725], ["fmtOffset", 65], ["fmtOffset", None], ["fmtOffset", 0],
+                               ["fmtSigned", 15], ["fmtSigned", -10], ["fmtSigned", 0], ["fmtSigned", None]),
+                         ["1:02:05", "01:05", "--:--", "00:00", "+00:15", "-00:10", "00:00", ""])
+
+
+class RundownMarkup(unittest.TestCase):
+    def test_summary_and_columns_exist(self):
+        js, html = FILES["operator.js"], FILES["index.html"]
+        self.assertIn('id="rundown-sum"', html)
+        self.assertIn("frontTimes(", js[js.index("function renderShow"):])
+        for cls in ("dur", "front", "drift", "rhead"):
+            self.assertIn("class: '%s" % cls, js, cls)
+
+    def test_kill_is_set_apart(self):
+        rule = re.search(r"\.rrow \.sep\{([^}]*)\}", FILES["operator.css"])
+        self.assertIsNotNone(rule)
+        self.assertIn("var(--space-4)", rule.group(1))
+        self.assertIn("'sep'", FILES["operator.js"])
+
+    def test_current_row_has_a_bar_in_the_right_colour(self):
+        css = FILES["operator.css"]
+        self.assertRegex(css, r"\.rrow\.is-air\{[^}]*border-left-color:var\(--air\)")
+        self.assertRegex(css, r"\.rrow\.is-next\{[^}]*border-left-color:var\(--signal\)")
+
+    def test_no_inline_style_added(self):
+        self.assertNotIn("style=", FILES["index.html"])
+
+
+class ShowLayouts(unittest.TestCase):
+    def test_take_is_blue_and_has_the_take_icon(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        self.assertIn("icon('take'", js[js.index("function renderShow"):js.index("function renderShow") + 3000])
+        rule = re.search(r"\.btn\.take\{[^}]*\}|\.take\{[^}]*\}", css)
+        self.assertIsNotNone(rule)
+        self.assertNotIn("--ok", css[css.index(".take{"):css.index(".take{") + 400])
+
+    def test_operator_layout_hides_the_build_forms_not_the_dom(self):
+        css, html = FILES["operator.css"], FILES["index.html"]
+        self.assertRegex(css, r"\.ws-operator #build[^{]*\{[^}]*display:none")
+        self.assertRegex(css, r"\.ws-operator #cue-add[^{]*\{[^}]*display:none")
+        self.assertIn('id="build"', html)
+        self.assertIn('id="cue-add"', html)
+        self.assertRegex(css, r"\.ws-operator \.cols\{[^}]*grid-template-columns:\s*2fr 1fr")
+        self.assertRegex(css, r"\.ws-producer \.cols[^{]*\{[^}]*grid-template-columns:\s*3fr 2fr")
+
+    def test_panel_headings_have_icons(self):
+        html = FILES["index.html"]
+        for name in ("rundown", "cue", "room"):
+            self.assertIn('href="#i-%s"' % name, html[html.index('id="screen-show"'):html.index('id="screen-record"')], name)
+
+    def test_take_is_spaced_from_hold_and_advance(self):
+        self.assertRegex(FILES["operator.css"], r"\.transport \.acts\{[^}]*margin-left:\s*var\(--space-5\)")
+
+
+class RundownColumns(unittest.TestCase):
+    def test_rows_and_header_share_fixed_tracks(self):
+        css, js = FILES['operator.css'], FILES['operator.js']
+        track = re.search(r'\.rrow,\.rhead\{display:grid;grid-template-columns:([^;]+);', css).group(1)
+        self.assertNotIn('auto', track)   # an auto track is sized row by row and the columns drift apart
+        self.assertNotIn('em ', track.replace('rem', ''))   # em would shrink with the header's smaller font
+        head = js[js.index("class: 'rhead'"):]
+        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 6)
 
 
 if __name__ == "__main__":

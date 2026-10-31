@@ -71,6 +71,45 @@
     return { items, air, next, hold: rundown ? rundown.hold : null, taking };
   }
 
+  // ---- rundown timing: front time (when an item starts) and drift (actual start minus planned front) ----------
+  // Planned length of an item in seconds from the server's frame count and exact rate; null when either is unknown.
+  function itemSeconds(media) {
+    const r = media && media.frames != null ? parseRate(media.rate) : null;
+    return r ? media.frames * r.d / r.n : null;
+  }
+  // A killed or skipped item takes no time, so it is left out of the running sum. An item of unknown length adds zero.
+  // The clock is anchored on the first counted item that has started; before that only offsets are known.
+  function frontTimes(items, seconds, nowMs) {
+    let run = 0;
+    const rows = items.map((it) => {
+      if (it.status === 'killed' || it.status === 'skipped') return { id: it.id, offset: null, startMs: null };
+      const row = { id: it.id, offset: run, startMs: null };
+      run += seconds[it.id] || 0;
+      return row;
+    });
+    const at = (it) => (it.asRunIn ? Date.parse(it.asRunIn) : NaN);
+    const k = items.findIndex((it, i) => rows[i].offset !== null && !isNaN(at(it)));
+    let drift = null;
+    if (k >= 0) {
+      const anchor = at(items[k]) - rows[k].offset * 1000;
+      rows.forEach((r) => { if (r.offset !== null) r.startMs = anchor + r.offset * 1000; });
+      const cur = items.findIndex((it, i) => rows[i].offset !== null && (it.status === 'on air' || it.status === 'taking') && !isNaN(at(it)));
+      if (cur >= 0) drift = Math.round((at(items[cur]) - rows[cur].startMs) / 1000);
+    }
+    return { rows, totalSec: run, driftSec: drift };
+  }
+  function fmtOffset(sec) {
+    if (sec == null || isNaN(sec)) return '--:--';
+    const t = Math.max(0, Math.round(sec)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
+    const two = (n) => String(n).padStart(2, '0');
+    return h ? h + ':' + two(m) + ':' + two(x) : two(m) + ':' + two(x);
+  }
+  function fmtSigned(sec) {
+    if (sec == null || isNaN(sec)) return '';
+    const t = Math.round(sec);
+    return t === 0 ? '00:00' : (t > 0 ? '+' : '-') + fmtOffset(Math.abs(t));
+  }
+
   // The state language: one mapping, always icon + word + colour. Take is an action, not a state, so it is not here.
   const STATE = {
     onair:   { icon: 'onair',   word: 'On air',  cls: 'st air' },
@@ -78,7 +117,17 @@
     pending: { icon: 'pending', word: 'Pending', cls: 'st pend' },
     failed:  { icon: 'alert',   word: 'Failed',  cls: 'st fail' },
     locked:  { icon: 'lock',    word: 'Held',    cls: 'st hold' },
+    next:    { icon: 'take',    word: 'Next',    cls: 'st next' },
+    taking:  { icon: 'pending', word: 'Taking',  cls: 'st pend' },
+    aired:   { icon: 'ready',   word: 'Aired',   cls: 'st done' },
+    skipped: { icon: 'skip',    word: 'Skipped', cls: 'st done' },
+    killed:  { icon: 'close',   word: 'Killed',  cls: 'st done' },
+
   };
+  // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
+  const itemStateKind = (status, isNext) => (isNext ? 'next' : status === 'on air' ? 'onair' : status);
+  const CUE_STATE = { fired: ['ready', 'Fired'], failed: ['failed', 'Failed'], armed: ['pending', 'Armed'], stored: ['pending', 'Stored'], unsupported: ['locked', 'Unsupported'] };
+  const cueStateKind = (status) => CUE_STATE[status] || [status, String(status)];
   // A kind this page does not know (a future server state) renders its own word with the neutral pending icon.
   function stateChipSpec(kind, word) {
     const known = Object.prototype.hasOwnProperty.call(STATE, kind) ? STATE[kind] : null;
@@ -103,7 +152,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -187,14 +236,6 @@
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
-  };
-  const ITEM_CHIP = {
-    'on air': ['air', '●', 'On air'], taking: ['taking', '…', 'Taking'], ready: ['ready', '○', 'Ready'],
-    aired: ['aired', '✓', 'Aired'], skipped: ['skipped', '⤳', 'Skipped'], killed: ['killed', '✕', 'Killed'],
-  };
-  const CUE_CHIP = {
-    fired: ['fired', '✓', 'Fired'], failed: ['failed', '✕', 'Failed'], armed: ['armed', '▶', 'Armed'],
-    stored: ['stored', '○', 'Stored'], unsupported: ['unsupported', '?', 'Unsupported'],
   };
   const VER_CHIP = {
     done: ['done', '✓', 'Done'], failed: ['failed', '✕', 'Failed'], queued: ['queued', '…', 'Queued'],
@@ -564,6 +605,11 @@
     return el('span', { class: 'chip ' + m[0] + (extra ? ' ' + extra : '') }, el('span', { 'aria-hidden': 'true', text: m[1] }), m[2]);
   }
 
+  function cueChip(status) {
+    const [kind, word] = cueStateKind(status);
+    return stateChip(kind, word);
+  }
+
   function btn(label, o) {
     o = o || {};
     const dis = o.disabled || S.pending.has(o.key || '\0');
@@ -675,7 +721,7 @@
         el('span', { class: 'val', text: next ? '▶ ' + next.slug : 'End of show' })),
       el('span', { class: 'spacer' }),
       el('div', {}, btn(
-        [el('span', {}, takeBusy ? 'TAKING…' : 'TAKE'),
+        [el('span', { class: 'tk' }, icon('take'), takeBusy ? 'TAKING…' : 'TAKE'),
          el('small', {}, next ? next.slug + ' · ' + takeCues + (takeCues === 1 ? ' cue' : ' cues') : 'nothing to take'),
          el('small', { class: 'k' }, 'Key ', el('kbd', { text: 'T' }))],
         { key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
@@ -690,14 +736,26 @@
 
     const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
     S.selected = sel || null;
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq], () => {
+    const seconds = {};
+    for (const it of items) seconds[it.id] = itemSeconds(mediaOf(it.id));
+    const timing = frontTimes(items, seconds, Date.now());
+    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec], () => {
+      if (!S.data.show || !items.length) return null;
+      const d = timing.driftSec;
+      return [el('span', { text: 'Total ' + fmtOffset(timing.totalSec) + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+        d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
+          'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
+    });
+    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
-      return el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next)));
+      return [el('div', { class: 'rhead', 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
+          el('span', { text: 'Length' }), el('span', { text: 'Front' }), el('span')),
+        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id])))];
     });
 
     const sItem = items.find((i) => i.id === S.selected);
-    $('h-cues').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
+    $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
     paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
       if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown row.' });
       const cs = cuesOf(sItem.id);
@@ -705,7 +763,7 @@
       return [cs.map((c) => el('div', { class: 'cue' },
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
           el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
-        chip(CUE_CHIP, c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
+        cueChip(c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
         sItem.status === 'ready' && c.status !== 'fired' ? btn('Remove', { key: 'cue-rm:' + c.id, cls: 'ghost small', aria: 'Remove cue ' + (CUE_LABEL[c.command] || c.command),
           onclick: () => act('cueRemove', c.id, {}, { key: 'cue-rm:' + c.id, okTitle: 'Cue removed.', ok: () => '' }) }) : null)),
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
@@ -832,7 +890,7 @@
     });
   }
 
-  function rundownRow(it, idx, items, air, next) {
+  function rundownRow(it, idx, items, air, next, tm, secs) {
     const m = mediaOf(it.id);
     const isNext = next && next.id === it.id;
     const meta = [];
@@ -845,19 +903,23 @@
     const canUp = ready && prev && prev.status !== 'on air' && prev.status !== 'aired';
     const canDown = ready && idx < items.length - 1;
     const killKey = 'kill:' + it.id;
+    const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
     return el('li', { class: cls },
       el('span', { class: 'n', 'aria-hidden': 'true', text: String(idx + 1) }),
+      stateChip(itemStateKind(it.status, isNext)),
       el('button', { type: 'button', class: 'pick', 'data-fk': 'pick:' + it.id, 'aria-current': S.selected === it.id ? 'true' : null,
           onclick: () => { S.selected = it.id; render(); } },
         el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
         el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null)),
-      isNext ? chip({ next: ['next', '▶', 'Next'] }, 'next') : chip(ITEM_CHIP, it.status),
+      el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
+      el('span', { class: 'front mono', text: front }),
       el('span', { class: 'tools' },
         ready ? [
           btn('↑', { key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
           btn('↓', { key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
           btn('Skip', { key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
+          el('span', { class: 'sep', 'aria-hidden': 'true' }),
           btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
             aria: (S.armed === killKey ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }),
         ] : null));

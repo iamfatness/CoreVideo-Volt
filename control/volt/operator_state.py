@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 from volt.cues import cues
+from volt import shots
 from volt.rooms import LiveError
 from volt.store import Store
 
@@ -137,19 +138,38 @@ def item_media(store: Store, show_id: str) -> dict[str, dict]:
     """Per item: the span it plays and whether its asset may air. Items with no span map to {}."""
     out: dict[str, dict] = {}
     rows = store.conn.execute(
-        """SELECT i.id, i.span_id, s.tc_in, s.tc_out, s.text, a.cleared, a.legal_hold
+        """SELECT i.id, i.span_id, s.asset_id, s.tc_in, s.tc_out, s.frame_in, s.frame_out, s.text, a.cleared, a.legal_hold
            FROM item i LEFT JOIN span s ON s.id = i.span_id LEFT JOIN asset a ON a.id = s.asset_id
            WHERE i.show_id = ?""",
         (show_id,),
     ).fetchall()
+    facts_by_asset: dict = {}
     for r in rows:
         if r["span_id"] is None:
             out[r["id"]] = {"span": None, "blockedBy": "no media"}
         else:
+            if r["asset_id"] not in facts_by_asset:
+                facts_by_asset[r["asset_id"]] = shots.try_facts(store, r["asset_id"])
+            frames, rate = _span_length(facts_by_asset[r["asset_id"]], r)
             out[r["id"]] = {"span": r["span_id"], "tcIn": r["tc_in"], "tcOut": r["tc_out"],
-                            "text": r["text"],
+                            "text": r["text"], "frames": frames, "rate": rate,
                             "blockedBy": _blocked_by(bool(r["cleared"]), bool(r["legal_hold"]))}
     return out
+
+
+def _span_length(facts, row) -> tuple:
+    """(frames, rate text) of a span, or (None, None) when the asset has no usable rate or the length cannot be counted.
+    The same rule the MOS export uses (volt/mos.py): stored frame counts first, else the timecode labels."""
+    if facts is None:
+        return None, None
+    try:
+        if row["frame_in"] is not None and row["frame_out"] is not None:
+            frames = int(row["frame_out"]) - int(row["frame_in"])
+        else:
+            frames = facts.frames(row["tc_out"]) - facts.frames(row["tc_in"])
+    except shots.ShotError:
+        return None, None
+    return (frames, str(facts.rate)) if frames > 0 else (None, None)
 
 
 def room_state(room_factory) -> dict:
