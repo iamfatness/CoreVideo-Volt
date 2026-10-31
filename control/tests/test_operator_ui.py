@@ -743,3 +743,40 @@ class Shell(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ItemTiming(Api):
+    """Each item's media carries its length and rate, so the page can total durations."""
+
+    def setUp(self):
+        super().setUp()
+        serve.OUT_DIR = Path(self.tmp.name) / "out"
+        serve.ROOM, self.show, self.spans = seed(self.store, "normal", media_dir=Path(self.tmp.name))
+        # The harness attaches clips to assets with no essence; give each a hi-res file at 25 fps so lengths can be counted.
+        for r in self.store.conn.execute("SELECT DISTINCT s.asset_id FROM item i JOIN span s ON s.id = i.span_id").fetchall():
+            self.store.add_essence(r["asset_id"], "hi-res", str(Path(self.tmp.name) / "x.mxf"), frame_rate="25", timecode_start="01:00:00:00")
+
+    def media(self):
+        _, state, _ = self.call("GET", "/api/state")
+        return state["media"]
+
+    def test_media_carries_frames_and_rate(self):
+        with_span = [m for m in self.media().values() if m.get("span")]
+        self.assertTrue(with_span)
+        for m in with_span:
+            self.assertIsInstance(m["frames"], int)
+            self.assertEqual(m["frames"], 50)  # the harness clips are two seconds at 25 fps
+            self.assertIsNotNone(timecode.parse_rate(m["rate"]))
+
+    def test_item_without_a_span_is_unchanged(self):
+        no_span = [m for m in self.media().values() if not m.get("span")]
+        for m in no_span:
+            self.assertEqual(m, {"span": None, "blockedBy": "no media"})
+
+    def test_unknown_rate_gives_nulls_and_state_still_answers(self):
+        self.store.conn.execute("UPDATE essence SET frame_rate = NULL")
+        self.store.conn.commit()
+        with_span = [m for m in self.media().values() if m.get("span")]
+        self.assertTrue(with_span)
+        for m in with_span:
+            self.assertEqual((m["frames"], m["rate"]), (None, None))
