@@ -77,8 +77,8 @@ class Static(Api):
         js = FILES["operator.js"]
         self.assertIn("sessionStorage", js)
         # The one per-browser convenience is the chosen workspace; the token never goes in localStorage.
-        self.assertEqual(set(re.findall(r"localStorage\.\w+Item\('([^']+)'", js)), {"volt.workspace"})
-        self.assertEqual(js.count("localStorage"), len(re.findall(r"localStorage\.\w+Item\('volt\.workspace'", js)))
+        self.assertEqual(set(re.findall(r"localStorage\.\w+Item\('([^']+)'", js)), {"volt.workspace", "volt.theme"})
+        self.assertEqual(js.count("localStorage"), len(re.findall(r"localStorage\.\w+Item\('volt\.(workspace|theme)'", js)))
         self.assertNotIn("document.cookie", js)
 
 
@@ -1060,3 +1060,61 @@ class ScreensMarkup(unittest.TestCase):
         for hid in ("h-recstart", "h-lifecycle", "h-assets", "h-assets2", "h-clips"):
             i = js.index("el('h2', { id: '%s'" % hid)
             self.assertIn("icon(", js[i:i + 260], hid)
+
+
+def _tokens(block):
+    return dict(re.findall(r"--([a-z0-9-]+):\s*([^;]+);", block))
+
+
+class ThemeContrast(unittest.TestCase):
+    CSS = FILES["operator.css"]
+    DARK = _tokens(re.search(r":root\{(.*?)\n\}", CSS, re.S).group(1))
+    LIGHT = _tokens(re.search(r':root\[data-theme="light"\]\{(.*?)\n\}', CSS, re.S).group(1)) if ':root[data-theme="light"]{' in CSS else {}
+    AUTO = _tokens(re.search(r'@media\(prefers-color-scheme:light\)\{:root:not\(\[data-theme\]\)\{(.*?)\n\s*\}\}', CSS, re.S).group(1)) if "prefers-color-scheme:light" in CSS else {}
+
+    # (foreground, background, minimum): text 4.5, icons and control borders 3
+    PAIRS = [("text", "ground", 4.5), ("text", "panel", 4.5), ("text", "raise", 4.5), ("muted", "panel", 4.5), ("muted", "ground", 4.5),
+             ("blue-ink", "panel", 4.5), ("signal-ink", "panel", 4.5), ("air-ink", "panel", 4.5), ("ok-ink", "panel", 4.5),
+             ("signal-ink", "signal-bg", 4.5), ("air-ink", "air-bg", 4.5), ("ok-ink", "ok-bg", 4.5),
+             ("on-signal", "signal", 4.5), ("on-air", "air", 4.5), ("on-blue", "blue", 4.5),
+             ("off-fg", "off-bg", 4.5), ("text", "chip-bg", 4.5), ("text", "row-air", 4.5), ("text", "row-sel", 4.5),
+             ("ctl", "panel", 3.0)]
+
+    def check(self, tokens, label):
+        for fg, bg, need in self.PAIRS:
+            got = _ratio(tokens[fg], tokens[bg])
+            self.assertGreaterEqual(got, need, (label, fg, bg, round(got, 2)))
+
+    def test_dark_pairs(self):
+        self.check(self.DARK, "dark")
+
+    def test_light_pairs(self):
+        self.assertTrue(self.LIGHT, "no light token block")
+        self.check({**self.DARK, **self.LIGHT}, "light")
+
+    def test_every_dark_colour_token_has_a_light_one(self):
+        colours = {k for k, v in self.DARK.items() if v.strip().startswith("#")}
+        self.assertEqual(colours - set(self.LIGHT), set())
+
+    def test_the_os_following_set_is_the_same_as_the_chosen_set(self):
+        self.assertEqual(self.AUTO, self.LIGHT)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class ThemeChoice(Api):
+    get = Static.get
+
+    def test_names_and_cycle(self):
+        got = _node(["themeName", "dark"], ["themeName", "light"], ["themeName", "auto"], ["themeName", "sepia"], ["themeName", None],
+                    ["nextTheme", "auto"], ["nextTheme", "dark"], ["nextTheme", "light"])
+        self.assertEqual(got, ["dark", "light", "auto", "auto", "auto", "dark", "light", "auto"])
+
+    def test_the_early_script_and_the_button(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        self.assertRegex(html, r'(?s)<head>.*<script src="/operator/theme\.js"></script>.*</head>')
+        self.assertIn('id="theme-btn"', html)
+        self.assertEqual(self.get("/operator/theme.js")[0], 200)
+        early = (SESSION / "theme.js").read_text(encoding="utf-8")
+        self.assertIn("try", early)
+        self.assertNotRegex(early, r"https?://")
+        self.assertRegex(js, r"try \{[^}]*localStorage[^}]*volt\.theme")

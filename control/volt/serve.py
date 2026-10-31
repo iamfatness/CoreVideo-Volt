@@ -53,6 +53,7 @@ STATIC = {
     "/operator": ("operator/index.html", "text/html; charset=utf-8"),
     "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
     "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
+    "/operator/theme.js": ("operator/theme.js", "text/javascript; charset=utf-8"),
 }
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
 DB_PATH = os.environ.get("VOLT_DB") or str(package_root().parent / "volt.db")
