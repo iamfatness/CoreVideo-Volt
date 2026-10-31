@@ -1052,3 +1052,11 @@ class ScreensState(unittest.TestCase):
             src = _fn_source(js, fn)
             for ch in "✓✕⚑⚠▶":
                 self.assertNotIn(ch, src, (fn, ch))
+
+
+class ScreensMarkup(unittest.TestCase):
+    def test_headings_carry_icons(self):
+        js = FILES["operator.js"]
+        for hid in ("h-recstart", "h-lifecycle", "h-assets", "h-assets2", "h-clips"):
+            i = js.index("el('h2', { id: '%s'" % hid)
+            self.assertIn("icon(", js[i:i + 260], hid)

@@ -993,7 +993,7 @@
       const starting = S.pending.has('recordStart');
       const stopping = cur && S.pending.has('recordStop:' + cur.id);
       return [
-        el('section', { class: 'panel', 'aria-labelledby': 'h-recstart' }, el('h2', { id: 'h-recstart', text: 'Start a recording' }),
+        el('section', { class: 'panel', 'aria-labelledby': 'h-recstart' }, el('h2', { id: 'h-recstart' }, icon('record', 's'), 'Start a recording'),
           el('div', { class: 'form-row' },
             el('div', {}, el('label', { for: 'rec-camera', text: 'Camera or label (optional)' }),
               el('input', { id: 'rec-camera', type: 'text', maxlength: '100', autocomplete: 'off', value: S.recCamera || '', 'data-fk': 'rec-camera',
@@ -1002,7 +1002,7 @@
               onclick: () => act('recordStart', null, S.recCamera ? { camera: S.recCamera } : {}, { key: 'recordStart', okTitle: 'Recording.', ok: (d) => 'Asset ' + short(d.asset.id) + ' minted once the room showed output.' })}),
             el('span', { class: 'hint', text: room.configured ? 'Mints the asset only after the room shows a file being written.' : 'No room configured. Set VOLT_ROOM_URL on the server.' }))),
         el('section', { class: 'panel', 'aria-labelledby': 'h-lifecycle' },
-          el('h2', { id: 'h-lifecycle', text: 'Recording lifecycle' + (cur ? ' · ' + (cur.camera || short(cur.id)) : '') }),
+          el('h2', { id: 'h-lifecycle' }, icon('wave', 's'), 'Recording lifecycle' + (cur ? ' · ' + (cur.camera || short(cur.id)) : '')),
           el('ol', { class: 'steps', 'aria-label': 'Lifecycle steps' }, steps),
           el('dl', { class: 'kv' },
             el('dt', { text: 'State' }), el('dd', { text: room.reachable ? room.state + ' · ' + room.health : room.configured ? 'room unreachable' : 'no room' }),
@@ -1018,7 +1018,7 @@
               { key: 'recordStop:' + (cur ? cur.id : ''), disabled: !cur || !cur.open || S.seq,
                 onclick: () => stopRecording(cur.id) }),
             el('span', { class: 'hint', text: cur && cur.open ? 'Stops, then waits for completed and finalized from the room. Never wraps on a stop ack.' : 'Nothing open to stop.' }))),
-        el('section', { class: 'panel', 'aria-labelledby': 'h-assets' }, el('h2', { id: 'h-assets', text: 'Recordings' }),
+        el('section', { class: 'panel', 'aria-labelledby': 'h-assets' }, el('h2', { id: 'h-assets' }, icon('library', 's'), 'Recordings'),
           assetsTable(S.data.assets.filter((a) => a.sourceKey || a.open), true)),
       ];
     });
@@ -1046,7 +1046,7 @@
   function renderRights() {
     paint('rights', [S.data.assets, S.armed, [...S.pending]], () => {
       const list = S.data.assets;
-      return el('section', { class: 'panel', 'aria-labelledby': 'h-assets2' }, el('h2', { id: 'h-assets2', text: 'Assets' }),
+      return el('section', { class: 'panel', 'aria-labelledby': 'h-assets2' }, el('h2', { id: 'h-assets2' }, icon('rights', 's'), 'Assets'),
         el('p', { class: 'note', text: 'Take, go and publish refuse anything not cleared or on legal hold. The reason shows where the operator is blocked.' }),
         !list.length ? el('p', { class: 'empty', text: 'No assets yet.' }) :
         el('div', { class: 'tblwrap' }, el('table', {},
@@ -1117,7 +1117,7 @@
                 aria: (running ? 'Rendering' : label) + ' ' + (s.label || s.text || short(s.id)),
                 onclick: () => act('publish', s.id, {}, { key, span: s.id, okTitle: 'Published.', ok: (d) => d.versions.length + ' versions done.' }) })));
       });
-      return [head, el('section', { class: 'panel', 'aria-labelledby': 'h-clips' }, el('h2', { id: 'h-clips', text: 'Clips' }),
+      return [head, el('section', { class: 'panel', 'aria-labelledby': 'h-clips' }, el('h2', { id: 'h-clips' }, icon('publish', 's'), 'Clips'),
         rows.length ? el('div', { class: 'tblwrap' }, el('table', {},
           el('caption', { class: 'vh', text: 'Clips and their published versions' }),
           el('thead', {}, el('tr', {}, ['Clip', 'Versions', 'Action'].map((h) => el('th', { scope: 'col', text: h })))),
