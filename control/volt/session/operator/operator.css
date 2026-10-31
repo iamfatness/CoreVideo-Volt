@@ -168,7 +168,7 @@ dl.kv dd{margin:0;font-family:Consolas,"Cascadia Mono",monospace;overflow-wrap:a
 /* record */
 .steps{display:flex;flex-wrap:wrap;margin:0;padding:14px;list-style:none;gap:0}
 .step{flex:1;min-width:120px;padding:9px 10px;border:1px solid var(--hair);color:var(--muted);text-align:center;font-size:.8rem;text-transform:uppercase;letter-spacing:1px}
-.step .g{display:block;font-size:1rem;line-height:1.2}
+.step .g{display:block;line-height:1.2}.step .g .ic{display:block;margin:0 auto var(--space-1)}.blocked{display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;margin-bottom:var(--space-2)}
 .step.done{color:var(--text);border-color:var(--ok)}
 .step.now{background:var(--signal);color:#1a1200;border-color:var(--signal);font-weight:700}
 .step.fail{background:var(--air);color:#1a0000;border-color:var(--air);font-weight:700}

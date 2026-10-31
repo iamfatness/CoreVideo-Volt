@@ -137,6 +137,12 @@
     done:      { icon: 'ready',   word: 'Done',        cls: 'st ok' },
     queued:    { icon: 'pending', word: 'Queued',      cls: 'st pend' },
     withdrawn: { icon: 'close',   word: 'Withdrawn',   cls: 'st done' },
+    recording: { icon: 'record',  word: 'Recording',   cls: 'st air' },
+    wrapped:   { icon: 'ready',   word: 'Wrapped',     cls: 'st ok' },
+    fresh:     { icon: 'ready',   word: 'Fresh',       cls: 'st ok' },
+    stale:     { icon: 'alert',   word: 'Stale',       cls: 'st pend' },
+    canair:    { icon: 'ready',   word: 'Yes',         cls: 'st ok' },
+    blocked:   { icon: 'alert',   word: 'No',          cls: 'st fail' },
 
 
   };
@@ -977,13 +983,13 @@
       const idx = room.reachable ? REC_STEPS.indexOf(st) : -1;
       const dead = room.reachable && (room.state === 'failed' || room.state === 'interrupted');
       const steps = REC_STEPS.map((name, j) => {
-        let cls = 'step', glyph = '○';
-        if (idx >= 0 && (j < idx || (j === idx && name === 'completed' && room.finalized))) { cls += ' done'; glyph = '✓'; }
-        else if (idx >= 0 && j === idx) { cls += ' now'; glyph = '▶'; }
+        let cls = 'step', glyph = 'pending';
+        if (idx >= 0 && (j < idx || (j === idx && name === 'completed' && room.finalized))) { cls += ' done'; glyph = 'ready'; }
+        else if (idx >= 0 && j === idx) { cls += ' now'; glyph = 'record'; }
         return el('li', { class: cls, 'aria-current': cls.includes('now') ? 'step' : null },
-          el('span', { class: 'g', 'aria-hidden': 'true', text: glyph }), name);
+          el('span', { class: 'g', 'aria-hidden': 'true' }, icon(glyph)), name);
       });
-      if (dead) steps.push(el('li', { class: 'step fail', 'aria-current': 'step' }, el('span', { class: 'g', 'aria-hidden': 'true', text: '✕' }), room.state));
+      if (dead) steps.push(el('li', { class: 'step fail', 'aria-current': 'step' }, el('span', { class: 'g', 'aria-hidden': 'true' }, icon('alert')), room.state));
       const starting = S.pending.has('recordStart');
       const stopping = cur && S.pending.has('recordStop:' + cur.id);
       return [
@@ -1003,7 +1009,7 @@
             el('dt', { text: 'Asset' }), el('dd', { text: cur ? cur.id : 'none yet. It is minted once output is observed.' }),
             el('dt', { text: 'Session' }), el('dd', { text: room.sessionId || 'none' }),
             el('dt', { text: 'File' }), el('dd', { text: cur && cur.file ? cur.file + (cur.open ? ' · open' : ' · closed') : 'none' }),
-            el('dt', { text: 'Snapshot' }), el('dd', { text: room.reachable ? (room.stale ? '⚠ stale' : '✓ fresh') : 'none' }),
+            el('dt', { text: 'Snapshot' }), el('dd', {}, room.reachable ? stateChip(room.stale ? 'stale' : 'fresh') : 'none'),
             el('dt', { text: 'Finalized' }), el('dd', { text: room.reachable ? (room.finalized ? 'yes' : 'no') : 'unknown' }),
             el('dt', { text: 'Checksum' }), el('dd', { text: cur && cur.checksum ? cur.checksum : 'not wrapped' }),
             room.error ? [el('dt', { text: 'Room error' }), el('dd', { text: room.error })] : null),
@@ -1031,7 +1037,7 @@
       el('tbody', {}, list.map((a) => el('tr', {},
         el('td', { class: 'mono', text: short(a.id) }), el('td', { text: a.camera || '—' }),
         el('td', { class: 'mono', text: a.file || '—' }),
-        el('td', {}, a.open ? chip({ rec: ['warn', '●', 'Recording'] }, 'rec') : chip({ wrapped: ['ok', '✓', 'Wrapped'] }, 'wrapped')),
+        el('td', {}, stateChip(a.open ? 'recording' : 'wrapped')),
         el('td', { class: 'mono', text: a.checksum ? short(a.checksum) + '…' : '—' }),
         withStop ? el('td', {}, a.open ? btn('Stop and wrap', { key: 'recordStop:' + a.id, cls: 'ghost small', aria: 'Stop and wrap ' + (a.camera || short(a.id)), disabled: S.seq, onclick: () => stopRecording(a.id) }) : null) : null)))));
   }
@@ -1050,9 +1056,9 @@
             const lk = 'lift:' + a.id;
             return el('tr', {},
               el('td', { class: 'mono', text: short(a.id) }), el('td', { text: a.camera || a.show || '—' }),
-              el('td', { class: a.cleared ? 'ok' : 'no', text: a.cleared ? '✓ Cleared' : '✕ Not cleared' }),
-              el('td', { class: a.legalHold ? 'no' : '', text: a.legalHold ? '⚑ On hold' : 'No' }),
-              el('td', { class: a.blockedBy ? 'no' : 'ok', text: a.blockedBy ? '✕ No · ' + a.blockedBy : '✓ Yes' }),
+              el('td', {}, stateChip(a.cleared ? 'cleared' : 'uncleared')),
+              el('td', {}, a.legalHold ? stateChip('hold', 'On hold') : 'No'),
+              el('td', {}, a.blockedBy ? [stateChip('blocked'), ' ' + a.blockedBy] : stateChip('canair')),
               el('td', {}, el('div', { class: 'acts' },
                 btn(a.cleared ? 'Un-clear' : 'Clear', { key: 'cleared:' + a.id, cls: 'ghost small', aria: (a.cleared ? 'Un-clear ' : 'Clear ') + short(a.id),
                   onclick: () => act('cleared', a.id, { cleared: !a.cleared }, { okTitle: a.cleared ? 'Un-cleared.' : 'Cleared.', ok: () => 'Asset ' + short(a.id) }) }),
@@ -1105,7 +1111,7 @@
               url ? (/^https?:\/\//i.test(url) ? el('a', { class: 'url', href: url, rel: 'noopener', text: url }) : el('span', { class: 'url', text: url })) : el('span', { class: 'url muted', text: '' }));
           })), el('div', { class: 'muted', text: running ? 'Rendering…' : s.versions.length ? done + ' of 3 done' : '' })),
           el('td', {},
-            s.blockedBy ? el('div', { class: 'no' }, '✕ Blocked: ' + s.blockedBy, ' ', el('a', { href: '#rights', text: 'Fix on Rights' })) : null,
+            s.blockedBy ? el('div', { class: 'blocked' }, stateChip('blocked', 'Blocked'), ' ' + s.blockedBy + ' ', el('a', { href: '#rights', text: 'Fix on Rights' })) : null,
             btn(running ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' RENDERING…'] : label,
               { key, cls: s.blockedBy ? 'ghost' : '', disabled: !!s.blockedBy,
                 aria: (running ? 'Rendering' : label) + ' ' + (s.label || s.text || short(s.id)),
