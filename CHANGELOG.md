@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Operator UI redesign, slice 3: the Library on the shared system (icons on headings and tabs, state chips for cleared, legal hold and job status, a wider player in the Editor workspace) and a J/K/L shuttle on the proxy player: `L` forward, `J` reverse, `K` stop, repeated presses double the speed up to 8x. Front end only.
+
 - Operator UI redesign, slice 2: the Show screen. The rundown gains length and front-time columns, a total and a signed drift readout, the state language on every row and cue, and a divider before Kill; TAKE carries the take icon and sits apart from HOLD and Advance; the Operator workspace hides the build forms and widens the rundown. `/api/state` media entries gain `frames` and `rate` (additive).
 
 - Operator UI redesign, slice 1: spacing, radius and type tokens; a 38-icon SVG sprite and `icon()`; one state language (`stateChip`); and a new shell with a workspace switcher (Producer, Editor, Operator), an icon rail, a user pill and a footer. Front end only: no route, schema or key changed. The empty-state glyph helper in `operator.js` is renamed `stateGlyph`.
