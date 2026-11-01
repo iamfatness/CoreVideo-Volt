@@ -1206,3 +1206,25 @@ class SlotUi(unittest.TestCase):
         build = js[js.index("function renderBuild"):js.index("function renderBuild") + 2500]
         self.assertIn("build-slot", build)
         self.assertRegex(css, r"\.ws-operator #build[^{]*\{[^}]*display:none")   # read-only in the Operator layout
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class ScheduleUi(unittest.TestCase):
+    def test_chip_kinds(self):
+        got = _node(["scheduleChip", None, False], ["scheduleChip", None, True], ["scheduleChip", "claimed", True], ["scheduleChip", "fired", True],
+                    ["scheduleChip", "failed", True], ["scheduleChip", "missed", True], ["scheduleChip", "held", True],
+                    ["scheduleChip", "blocked", True], ["scheduleChip", "some-future-state", True])
+        self.assertEqual(got, [None, ["pending", "Scheduled"], ["pending", "Claimed"], ["ready", "Fired"], ["failed", "Failed"],
+                               ["failed", "Missed"], ["locked", "Held"], ["failed", "Blocked"], ["pending", "some-future-state"]])
+
+    def test_local_time_to_utc_text(self):
+        got = _node(["localToUtc", "2026-11-01T20:00"], ["localToUtc", ""], ["localToUtc", "nonsense"])
+        self.assertRegex(got[0], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(got[1:], [None, "bad"])
+
+    def test_wiring(self):
+        js = FILES["operator.js"]
+        self.assertIn("itemSchedule:", js)
+        self.assertIn("build-sched", js[js.index("function renderBuild"):js.index("function renderBuild") + 4500])
+        self.assertIn("scheduleState", js[js.index("function parseRundown"):js.index("function parseRundown") + 800])
+        self.assertIn("scheduleChip(", js[js.index("function rundownRow"):js.index("function rundownRow") + 3500])
