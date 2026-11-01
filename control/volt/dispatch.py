@@ -8,11 +8,12 @@ from typing import Callable, Optional
 
 from volt.cues import cues, record_failure
 from volt.live import start_recording
+from volt.roomreg import COREVIDEO, as_registry
 from volt.rooms import LiveError
 from volt.show_input import show_input_take
 from volt.store import Store
 
-ROOM = "corevideo.pro"
+ROOM = COREVIDEO
 
 
 @dataclass
@@ -73,6 +74,9 @@ HANDLERS = {
     "overlay.take": _overlay_take,
 }
 
+# Per room name, the commands that room has a verified handler for. A second room kind adds its table here.
+ROOM_HANDLERS = {COREVIDEO: HANDLERS}
+
 
 def dispatch_item(
     store: Store,
@@ -92,18 +96,21 @@ def dispatch_item(
     """
     ctx = {"owner": owner, "attempts": attempts, "interval": interval, "sleep": sleep,
            "show_input_actions": show_input_actions}
+    rooms = as_registry(room)  # a single room object is the CoreVideo Pro room
     results: list[Result] = []
     for cue in cues(store, item_id):
         if cue.status == "fired":
             continue
-        handler = HANDLERS.get(cue.command) if cue.room == ROOM else None
-        if handler is None:
-            detail = f"no verified adapter for {cue.room}/{cue.command}"
+        handler = ROOM_HANDLERS.get(cue.room, {}).get(cue.command)
+        client = rooms.get(cue.room)
+        if handler is None or client is None:
+            detail = (f"no verified adapter for {cue.room}/{cue.command}" if handler is None
+                      else f"room {cue.room} is not configured")
             record_failure(store, cue.id, "unsupported", detail)
             results.append(Result(cue.id, cue.command, "unsupported", detail))
             break
         try:
-            handler(store, room, cue, ctx)
+            handler(store, client, cue, ctx)
         except LiveError as exc:
             record_failure(store, cue.id, "failed", str(exc))
             results.append(Result(cue.id, cue.command, "failed", str(exc)))

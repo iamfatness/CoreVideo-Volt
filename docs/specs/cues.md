@@ -12,6 +12,10 @@ See [rooms](../rooms.md).
 
 This cue track is parallel to the MAM layer in [foundation](foundation.md#room-track-parallel). Foundation keeps the `show-input.take` evidence on this page; a CoreVideo Pro route action (#861) only changes `show_input_actions`, in a later plan, not the handler. `record.arm` and `audio.snapshot` stay unsupported. Until a live Program take is recorded in rooms, the Unproven list below stays.
 
+## Rooms
+
+A cue names its room, and dispatch looks the client up in a room registry (`volt/roomreg.py`). Today there is one room kind, `corevideo.pro`, whose verified commands are the table `dispatch.HANDLERS`; `dispatch.ROOM_HANDLERS` maps a room name to its table, so a second room kind is a registration plus a handler table, with no change to `take_item`, the clock or the server. Callers may still pass a single room object, which is treated as the CoreVideo Pro room. A cue whose room has no handler for its command is `unsupported` ("no verified adapter for room/command"); one whose room has a handler but no configured client is `unsupported` ("room X is not configured"). `volt run` starts the clock when `roomreg.configured()` says any room is configured (today: `VOLT_ROOM_URL`).
+
 ## show-input.take
 
 Put a source on Program and fire only when the core shows it there.

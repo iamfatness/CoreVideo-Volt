@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from volt import roomreg
+
 log = logging.getLogger("volt.run")
 
 EX_CONFIG = 78
@@ -159,8 +161,8 @@ def build_children(args, env: dict) -> list:
     if "runner" in wanted:
         children.append(Child("runner", base + ["runner"], env))
     if "clock" in wanted:
-        if env.get("VOLT_ROOM_URL"):
+        if roomreg.configured(env):
             children.append(Child("clock", base + ["clock"], env))
         else:
-            log.warning("clock not started: VOLT_ROOM_URL is not set")
+            log.warning("clock not started: no room is configured (set VOLT_ROOM_URL)")
     return children

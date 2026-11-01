@@ -264,7 +264,7 @@ def run_forever(store: Store, room, poll: float = 1.0, stop: Optional[threading.
 
 def main(argv: list[str]) -> int:
     import argparse
-    from volt.rooms import CoreVideoProRoom
+    from volt import roomreg
 
     ap = argparse.ArgumentParser(prog="python -m volt.clock", description="Take scheduled rundown items on time.")
     ap.add_argument("db", nargs="?", default=os.environ.get("VOLT_DB"), help="SQLite path or postgres:// DSN (or VOLT_DB)")
@@ -278,8 +278,7 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     if not args.db:
         ap.error("a database path or DSN is required")
-    url = os.environ.get("VOLT_ROOM_URL")
-    if not url:
+    if not roomreg.configured():
         ap.error("set VOLT_ROOM_URL (and VOLT_ROOM_TOKEN if the room needs one)")
     try:
         actions = configured_actions()
@@ -287,7 +286,7 @@ def main(argv: list[str]) -> int:
         print(f"volt clock: {exc}", file=sys.stderr)
         return 78
     logs.setup("clock")
-    room = CoreVideoProRoom(url, os.environ.get("VOLT_ROOM_TOKEN") or None)
+    room = roomreg.from_env()  # a registry; take and dispatch route each cue to its own room
     try:
         store = Store(args.db)
     except SchemaTooNewError as exc:  # a clock older than its database must not run
