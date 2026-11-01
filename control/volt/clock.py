@@ -468,8 +468,6 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     if not args.db:
         ap.error("a database path or DSN is required")
-    if not roomreg.configured():
-        ap.error("set VOLT_ROOM_URL (and VOLT_ROOM_TOKEN if the room needs one)")
     try:
         actions = configured_actions()
     except ValueError as exc:
@@ -477,6 +475,8 @@ def main(argv: list[str]) -> int:
         return 78
     logs.setup("clock")
     room = roomreg.from_env()  # a registry; take and dispatch route each cue to its own room
+    if not room:
+        log.warning("no room is configured (VOLT_ROOM_URL): scheduled items will not be taken; recurring shows are still made")
     try:
         store = Store(args.db)
     except SchemaTooNewError as exc:  # a clock older than its database must not run

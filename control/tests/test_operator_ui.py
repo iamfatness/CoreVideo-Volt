@@ -1228,3 +1228,18 @@ class ScheduleUi(unittest.TestCase):
         self.assertIn("build-sched", js[js.index("function renderBuild"):js.index("function renderBuild") + 4500])
         self.assertIn("scheduleState", js[js.index("function parseRundown"):js.index("function parseRundown") + 800])
         self.assertIn("scheduleChip(", js[js.index("function rundownRow"):js.index("function rundownRow") + 3500])
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class RepeatUi(unittest.TestCase):
+    def test_pure_text_and_chip(self):
+        got = _node(["ruleText", {"freq": "daily", "at": "20:00", "tz": "America/New_York"}],
+                    ["ruleText", {"freq": "weekly", "days": [0, 2], "at": "09:30", "tz": "UTC"}], ["ruleText", None],
+                    ["scheduleChip", None, False, "after_previous"], ["scheduleChip", None, True, "after_previous"], ["scheduleChip", "fired", False, "after_previous"])
+        self.assertEqual(got, ["Repeats daily at 20:00 America/New_York", "Repeats weekly on Mon, Wed at 09:30 UTC", "",
+                               ["pending", "After previous"], ["pending", "Scheduled"], ["ready", "Fired"]])
+
+    def test_wiring(self):
+        js = FILES["operator.js"]
+        for needle in ("showRecurrence:", "build-after", "build-rec-at", "build-rec-tz", "Stop repeating", "scheduleOffsetSeconds"):
+            self.assertIn(needle, js, needle)

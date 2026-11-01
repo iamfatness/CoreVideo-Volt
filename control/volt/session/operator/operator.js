@@ -121,11 +121,18 @@
   // ---- scheduling: when the clock takes an item --------------------------------------------------------------
   // The chip for an item's schedule: [state-language kind, word], or null when there is nothing to say. An outcome the
   // page does not know is shown by its own word.
-  function scheduleChip(state, hasTime) {
-    if (!state) return hasTime ? ['pending', 'Scheduled'] : null;
+  function scheduleChip(state, hasTime, mode) {
+    if (!state) return hasTime ? ['pending', 'Scheduled'] : mode === 'after_previous' ? ['pending', 'After previous'] : null;
     const known = { claimed: ['pending', 'Claimed'], fired: ['ready', 'Fired'], failed: ['failed', 'Failed'], missed: ['failed', 'Missed'],
       held: ['locked', 'Held'], blocked: ['failed', 'Blocked'] };
     return Object.prototype.hasOwnProperty.call(known, state) ? known[state] : ['pending', String(state)];
+  }
+  // "Repeats daily at 20:00 America/New_York" for a recurrence rule.
+  const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  function ruleText(rule) {
+    if (!rule) return '';
+    const when = rule.at + ' ' + rule.tz;
+    return rule.freq === 'weekly' ? 'Repeats weekly on ' + (rule.days || []).map((d) => DAY_NAMES[d]).join(', ') + ' at ' + when : 'Repeats daily at ' + when;
   }
   // A datetime-local value ("2026-11-01T20:00", the viewer's own clock) as UTC text for the server; '' is no schedule.
   function localToUtc(value) {
@@ -243,7 +250,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -255,6 +262,7 @@
     hold:        ['POST', '/api/shows/{id}/hold'],
     showSlot:    ['POST', '/api/shows/{id}/slot'],
     itemSchedule: ['POST', '/api/items/{id}/schedule'],
+    showRecurrence: ['POST', '/api/shows/{id}/recurrence'],
     release:     ['POST', '/api/shows/{id}/release'],
     reorder:     ['POST', '/api/shows/{id}/reorder'],
     skip:        ['POST', '/api/items/{id}/skip'],
@@ -339,7 +347,7 @@
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
     cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
-    build: { sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
+    build: { rec: { freq: 'daily', at: '20:00', tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } })(), days: [0] }, after: '', sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
 
   // ---- tiny DOM helper -----------------------------------------------------
@@ -388,9 +396,11 @@
     const items = (r.items || []).map((i) => ({
       id: i.id, slug: i.slug, status: i.status, urls: i.urls || [],
       scheduledAt: i.scheduledAt || null, scheduleState: i.scheduleState || null, scheduleNote: i.scheduleNote || null,
+      scheduleMode: i.scheduleMode || null, scheduleOffsetSeconds: Number.isInteger(i.scheduleOffsetSeconds) ? i.scheduleOffsetSeconds : null,
       asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
     }));
-    return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null };
+    return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null,
+      recurrence: r.recurrence && typeof r.recurrence === 'object' ? r.recurrence : null, recurrenceOf: r.recurrenceOf || null };
   }
 
   // ---- network -------------------------------------------------------------
@@ -848,10 +858,13 @@
     const slot = S.data.rundown ? S.data.rundown.slotSeconds : null;
     const back = backTimes(items, seconds, slot);
     const hasSlot = slot != null;
-    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec], () => {
+    const rule = S.data.rundown ? S.data.rundown.recurrence : null;
+    const repeatOf = S.data.rundown ? S.data.rundown.recurrenceOf : null;
+    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec, rule, repeatOf], () => {
       if (!S.data.show || !items.length) return null;
       const d = timing.driftSec, o = back.overSec;
       return [el('span', { text: 'Total ' + fmtOffset(hasSlot ? back.totalSec : timing.totalSec) + (hasSlot ? ' of ' + fmtOffset(slot) : '') + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
+        rule ? el('span', { class: 'repeat' }, icon('cue', 's'), ruleText(rule)) : repeatOf ? el('span', { class: 'repeat' }, icon('cue', 's'), 'A repeat of another show') : null,
         o == null ? null : el('span', { class: 'over' + (o > 0 ? ' behind' : '') }, icon(o > 0 ? 'alert' : 'ready', 's'),
           o > 0 ? 'Over ' + fmtOffset(o) : o < 0 ? 'Under ' + fmtOffset(-o) : 'On slot'),
         d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
@@ -926,6 +939,23 @@
   function clearSchedule(it) {
     act('itemSchedule', it.id, { at: null }, { key: 'item-schedule-clear', okTitle: 'Schedule cleared.', ok: () => '"' + it.slug + '" is taken by hand.' });
   }
+  function textIn2(id, obj, key, o) {
+    return el('input', Object.assign({ id, type: 'text', 'data-fk': id, value: obj[key], autocomplete: 'off', spellcheck: 'false', oninput: (e) => { obj[key] = e.target.value; } }, o || {}));
+  }
+  function afterPrevious(it) {
+    const n = Number(S.build.after);
+    if (S.build.after === '' || !Number.isInteger(n) || n < 0 || n > 86399) { setFlash({ kind: 'bad', title: 'Seconds not understood.', code: 'bad_input', reason: 'Write a whole number of seconds from 0 to 86399.' }); render(); return; }
+    act('itemSchedule', it.id, { mode: 'after_previous', offsetSeconds: n }, { key: 'item-after', okTitle: 'Scheduled.', ok: () => '"' + it.slug + '" follows the previous item by ' + n + ' s.' });
+  }
+  function setRepeat() {
+    const r = S.build.rec;
+    const rule = { freq: r.freq, at: r.at, tz: r.tz.trim() };
+    if (r.freq === 'weekly') rule.days = [...r.days].sort();
+    act('showRecurrence', S.show, { rule }, { key: 'show-repeat', okTitle: 'Repeat set.', ok: () => ruleText(rule) + '. The next copy appears 24 hours ahead.' });
+  }
+  function stopRepeat() {
+    act('showRecurrence', S.show, { rule: null }, { key: 'show-repeat-clear', okTitle: 'Repeat stopped.', ok: () => 'No more copies will be made.' });
+  }
   function setSlot() {
     const v = parseSlot(S.build.slot);
     if (v === 'bad') { setFlash({ kind: 'bad', title: 'Slot length not understood.', code: 'bad_input', reason: 'Write it as minutes and seconds, 15:00, or hours, 1:30:00. It must be between 0:01 and 23:59:59.' }); render(); return; }
@@ -977,7 +1007,7 @@
     const pending = [...S.pending];
     const rmKey = sItem ? 'remove:' + sItem.id : '';
     const slotNow = S.data.rundown ? S.data.rundown.slotSeconds : null;
-    paint('build', [S.data.show, sItem, sItem && [sItem.scheduledAt, sItem.scheduleState], m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
+    paint('build', [S.data.show, S.data.rundown && S.data.rundown.recurrence, b.rec.freq, sItem, sItem && [sItem.scheduledAt, sItem.scheduleState, sItem.scheduleMode], m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
       el('div', { class: 'body' },
         el('form', { 'aria-label': 'Set the slot length', onsubmit: (e) => { e.preventDefault(); setSlot(); } },
           formRow('Slot length (mm:ss or h:mm:ss)', 'build-slot', textIn('build-slot', 'slot', { maxlength: '9', disabled: !S.data.show, placeholder: slotNow != null ? fmtOffset(slotNow) : '15:00' })),
@@ -996,6 +1026,10 @@
                 oninput: (e) => { b.sched = e.target.value; } })),
               el('div', { class: 'bar flush' }, btn('Set schedule', { key: 'item-schedule', cls: 'ghost', onclick: () => scheduleItem(sItem) }),
                 sItem.scheduledAt ? btn('Clear schedule', { key: 'item-schedule-clear', cls: 'ghost', onclick: () => clearSchedule(sItem) }) : null)),
+            el('form', { 'aria-label': 'Take after the previous item', onsubmit: (e) => { e.preventDefault(); afterPrevious(sItem); } },
+              formRow('Or: seconds after the previous item has run', 'build-after', el('input', { id: 'build-after', type: 'number', min: '0', max: '86399', step: '1', 'data-fk': 'build-after',
+                value: b.after, oninput: (e) => { b.after = e.target.value; } })),
+              el('div', { class: 'bar flush' }, btn('Set after previous', { key: 'item-after', cls: 'ghost', onclick: () => afterPrevious(sItem) }))),
             formRow('Clip from the Library selection', 'build-pick', el('select', { id: 'build-pick', 'data-fk': 'build-pick', onchange: (e) => { b.pick = e.target.value; } },
               el('option', { value: '' }, sel.length ? 'Choose a clip' : 'Nothing selected in the Library'),
               sel.map((e) => el('option', { value: e.id, selected: b.pick === e.id }, e.name + ' · ' + e.tcIn)))),
@@ -1007,6 +1041,17 @@
                 aria: (S.armed === rmKey ? 'Confirm remove ' : 'Remove ') + sItem.slug, onclick: () => removeItem(sItem) })),
             el('small', { text: m.span ? 'Clip ' + (m.tcIn || '') + ' to ' + (m.tcOut || '') + '.' : 'No clip yet: this item cannot be taken until one is attached.' }),
           ] : el('small', { text: 'This item is ' + sItem.status + ' and cannot be edited.' })) : null,
+        el('details', { class: 'newshow' }, el('summary', { text: 'Repeat this show' }),
+          el('form', { 'aria-label': 'Repeat this show', onsubmit: (e) => { e.preventDefault(); setRepeat(); } },
+            formRow('How often', 'build-rec-freq', el('select', { id: 'build-rec-freq', 'data-fk': 'build-rec-freq', onchange: (e) => { b.rec.freq = e.target.value; render(); } },
+              el('option', { value: 'daily', selected: b.rec.freq === 'daily' }, 'Every day'), el('option', { value: 'weekly', selected: b.rec.freq === 'weekly' }, 'Every week on'))),
+            b.rec.freq === 'weekly' ? el('div', { class: 'days', role: 'group', 'aria-label': 'Days of the week' }, DAY_NAMES.map((d, n) => el('label', { class: 'day' },
+              el('input', { type: 'checkbox', checked: b.rec.days.includes(n), 'data-fk': 'build-day-' + n,
+                onchange: (e) => { b.rec.days = e.target.checked ? [...b.rec.days, n] : b.rec.days.filter((x) => x !== n); } }), ' ' + d))) : null,
+            formRow('At (24-hour time)', 'build-rec-at', el('input', { id: 'build-rec-at', type: 'time', 'data-fk': 'build-rec-at', value: b.rec.at, oninput: (e) => { b.rec.at = e.target.value; } })),
+            formRow('Time zone', 'build-rec-tz', textIn2('build-rec-tz', b.rec, 'tz', { maxlength: '60' })),
+            el('div', { class: 'bar flush' }, btn('Set repeat', { key: 'show-repeat', cls: 'ghost', disabled: !S.data.show, onclick: setRepeat }),
+              S.data.rundown && S.data.rundown.recurrence ? btn('Stop repeating', { key: 'show-repeat-clear', cls: 'ghost', onclick: stopRepeat }) : null))),
         el('details', { class: 'newshow' }, el('summary', { text: 'New show' }),
           el('form', { 'aria-label': 'Create a show', onsubmit: (e) => { e.preventDefault(); createShow(); } },
             formRow('Show name', 'build-title', textIn('build-title', 'title', { maxlength: '200' })),
@@ -1044,7 +1089,7 @@
     const canDown = ready && idx < items.length - 1;
     const killKey = 'kill:' + it.id;
     const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
-    const schedChip = scheduleChip(it.scheduleState, !!it.scheduledAt);
+    const schedChip = scheduleChip(it.scheduleState, !!it.scheduledAt, it.scheduleMode);
     const backText = !bk ? null : bk.backMs != null ? new Date(bk.backMs).toLocaleTimeString([], { hour12: false }) : (it.status === 'ready' ? '--:--' : '');
     return el('li', { class: cls + (bk ? ' hb' : '') },
       el('span', { class: 'n', 'aria-hidden': 'true', text: String(idx + 1) }),
@@ -1055,7 +1100,8 @@
         el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null,
           schedChip ? el('span', { class: 'sched' }, ' ', stateChip(schedChip[0], schedChip[1]),
-            it.scheduledAt ? ' ' + new Date(it.scheduledAt).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+            it.scheduledAt ? ' ' + new Date(it.scheduledAt).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              : it.scheduleMode === 'after_previous' ? ' +' + fmtOffset(it.scheduleOffsetSeconds || 0) : '',
             it.scheduleNote ? ' · ' + it.scheduleNote : '') : null)),
       el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
       el('span', { class: 'front mono', text: front }),
