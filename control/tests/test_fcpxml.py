@@ -85,7 +85,7 @@ class Builder(unittest.TestCase):
             nle.build_fcpxml([])
 
     def test_a_drive_path_and_a_unc_share_become_file_urls(self):
-        d = source(duration=1000, path="D:\iso\cam 1.mxf")
+        d = source(duration=1000, path=r"D:\iso\cam 1.mxf")
         u = source(duration=1000, path=r"\\nas\iso\cam1.mxf", asset="bbbbbbbb-2222")
         src = lambda s: parse(self.build(item(s, "01:00:00:00", "01:00:01:00")).content).find(".//media-rep").get("src")
         self.assertEqual(src(d), "file:///D%3a/iso/cam%201.mxf")
