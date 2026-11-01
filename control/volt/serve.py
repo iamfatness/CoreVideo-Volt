@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
-from volt.clock import set_schedule, to_utc_text
+from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
@@ -172,9 +172,10 @@ def _sched_text(value):
 def rundown_payload(store: Store, show_id: str) -> dict:
     """The /rundown shape: {hold, items, slotSeconds}. Raises KeyError for an unknown show."""
     held = hold_state(store, show_id)
-    slot = store.conn.execute("SELECT slot_seconds FROM show WHERE id = ?", (show_id,)).fetchone()
+    slot = store.conn.execute("SELECT slot_seconds, recurrence, recurrence_of FROM show WHERE id = ?", (show_id,)).fetchone()
     sched = {r["id"]: r for r in store.conn.execute(
-        "SELECT id, scheduled_at, schedule_state, schedule_note FROM item WHERE show_id = ?", (show_id,)).fetchall()}
+        "SELECT id, scheduled_at, schedule_state, schedule_note, schedule_mode, schedule_offset_seconds FROM item WHERE show_id = ?",
+        (show_id,)).fetchall()}
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
@@ -183,11 +184,14 @@ def rundown_payload(store: Store, show_id: str) -> dict:
          "asRunOutPrecise": row.as_run_out_precise or row.as_run_out,
          "scheduledAt": _sched_text(sched[row.id]["scheduled_at"]) if row.id in sched else None,
          "scheduleState": sched[row.id]["schedule_state"] if row.id in sched else None,
-         "scheduleNote": sched[row.id]["schedule_note"] if row.id in sched else None}
+         "scheduleNote": sched[row.id]["schedule_note"] if row.id in sched else None,
+         "scheduleMode": sched[row.id]["schedule_mode"] if row.id in sched else None,
+         "scheduleOffsetSeconds": sched[row.id]["schedule_offset_seconds"] if row.id in sched else None}
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
-            "items": items, "slotSeconds": slot[0] if slot else None}
+            "items": items, "slotSeconds": slot[0] if slot else None,
+            "recurrence": json.loads(slot[1]) if slot and slot[1] else None, "recurrenceOf": slot[2] if slot else None}
 
 
 def asset_payload(store: Store, asset_id: str) -> dict:
@@ -332,20 +336,54 @@ def act_show_slot(store, show_id, body):
 
 def act_item_schedule(store, item_id, body):
     """Set or clear when the clock takes an item. {at: ISO time with a UTC offset | null}. Only a ready item can be scheduled."""
-    _unknown_keys(body, {"at"})
-    if "at" not in body:
+    _unknown_keys(body, {"at", "mode", "offsetSeconds"})
+    mode = body.get("mode", "absolute")
+    if mode not in ("absolute", "after_previous", "none"):
+        raise ApiError(422, "bad_input", "mode must be absolute, after_previous or none")
+    offset = body.get("offsetSeconds")
+    if mode == "after_previous":
+        if "at" in body:
+            raise ApiError(422, "bad_input", "after_previous takes an offset, not a time")
+        offset = 0 if offset is None else offset
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 86399:
+            raise ApiError(422, "bad_input", "offsetSeconds must be a whole number from 0 to 86399")
+    elif mode == "none":
+        if "at" in body or offset is not None:
+            raise ApiError(422, "bad_input", "mode none takes no time and no offset")
+        body = {"at": None}
+    elif offset is not None:
+        raise ApiError(422, "bad_input", "offsetSeconds only applies to after_previous")
+    if mode != "after_previous" and "at" not in body:
         raise ApiError(422, "bad_input", "at is required (a time with a UTC offset, or null to clear the schedule)")
-    at = body["at"]
+    at = body.get("at")
     if at is not None and (not isinstance(at, str) or not at.strip()):
         raise ApiError(422, "bad_input", "at must be a time such as 2026-11-01T20:00:00Z, or null")
     show_id, status = _item_show(store, item_id)
     if status != "ready":
         raise ApiError(409, "not_schedulable", f"an item that is {status} cannot be scheduled; only a ready item can")
     try:
-        set_schedule(store, item_id, at)
-    except ValueError:
-        raise ApiError(422, "bad_input", "at must be a time with a UTC offset, such as 2026-11-01T20:00:00Z") from None
+        if mode == "after_previous":
+            set_relative(store, item_id, offset)
+        else:
+            set_schedule(store, item_id, at)
+    except ValueError as exc:
+        raise ApiError(422, "bad_input", str(exc) if mode == "after_previous" else "at must be a time with a UTC offset, such as 2026-11-01T20:00:00Z") from None
     return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
+
+
+def act_show_recurrence(store, show_id, body):
+    """Set or clear how a show repeats. {rule: {freq, days?, at, tz} | null}. The clock makes each next copy 24 hours ahead."""
+    _unknown_keys(body, {"rule"})
+    if "rule" not in body:
+        raise ApiError(422, "bad_input", "rule is required (an object, or null to stop repeating)")
+    _show_exists(store, show_id)
+    try:
+        set_recurrence(store, show_id, body["rule"])
+    except PermissionError as exc:
+        raise ApiError(409, "not_a_template", str(exc)) from None
+    except ValueError as exc:
+        raise ApiError(422, "bad_input", str(exc)) from None
+    return {"ok": True, "rundown": rundown_payload(store, show_id)}
 
 
 def act_release(store, show_id, body):
@@ -841,6 +879,7 @@ ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/go$"), act_go),
     (re.compile(rf"^/api/shows/{_ID}/hold$"), act_hold),
     (re.compile(rf"^/api/shows/{_ID}/slot$"), act_show_slot),
+    (re.compile(rf"^/api/shows/{_ID}/recurrence$"), act_show_recurrence),
     (re.compile(rf"^/api/shows/{_ID}/release$"), act_release),
     (re.compile(rf"^/api/shows/{_ID}/take$"), act_take),
     (re.compile(rf"^/api/shows/{_ID}/reorder$"), act_reorder),
@@ -889,7 +928,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
-    "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing

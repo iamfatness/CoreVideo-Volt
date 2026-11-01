@@ -497,7 +497,7 @@ class State(Api):
 
     def test_state_keeps_the_rundown_shape_and_adds_what_the_screens_need(self):
         s = self.state()
-        self.assertEqual(set(s["rundown"]), {"hold", "items", "slotSeconds"})
+        self.assertEqual(set(s["rundown"]), {"hold", "items", "recurrence", "recurrenceOf", "slotSeconds"})
         self.assertEqual(s["rundown"]["hold"]["reason"], "Waiting on the producer for the replay cue")
         self.assertEqual(s["show"]["id"], self.show)
         statuses = [i["status"] for i in s["rundown"]["items"]]
