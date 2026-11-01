@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Room registry: cues are routed to their own room through `volt/roomreg.py` and `dispatch.ROOM_HANDLERS`; the CoreVideo Pro behaviour is unchanged, and a single room object is still accepted everywhere. The groundwork for a second room kind.
+
 - Scheduling endpoint and UI: `POST /api/items/{id}/schedule`, `scheduledAt`/`scheduleState`/`scheduleNote` in `/rundown`, a schedule chip on the Show row and a "Take at" control in the build panel. Only a ready item can be scheduled.
 
 - Slot length and back time: migration 18 (`show.slot_seconds`), `POST /api/shows/{id}/slot`, `slotSeconds` in `/rundown`; the rundown shows total against slot, over or under, and a back-time column; the slot is set from the build panel.
