@@ -412,6 +412,14 @@ def _secs(frames: int, rate: Fraction) -> str:
     return f"{t.numerator}s" if t.denominator == 1 else f"{t.numerator}/{t.denominator}s"
 
 
+def _fcp_src(path: str) -> str:
+    """The asset's `src` URL. A drive path is file:///D%3a/...; a UNC share \\host\share is file://host/share/...."""
+    url = file_url(path)
+    if url.startswith("file://localhost//"):
+        return "file://" + url[len("file://localhost//"):]
+    return url.replace("file://localhost/", "file:///", 1)
+
+
 def build_fcpxml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None) -> Built:
     p = plan(items, start_tc)
     warnings = []
@@ -436,7 +444,7 @@ def build_fcpxml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] 
         if src.channels:
             attrs.update(hasAudio="1", audioSources="1", audioChannels=str(src.channels), audioRate=str(SAMPLE_RATE))
         asset = _el(res, "asset", **attrs)
-        _el(asset, "media-rep", kind="original-media", src=file_url(src.path).replace("file://localhost/", "file:///", 1))
+        _el(asset, "media-rep", kind="original-media", src=_fcp_src(src.path))
     lib = _el(root, "library")
     event = _el(lib, "event", name=clean(name, 200))
     project = _el(event, "project", name=clean(name, 200))
