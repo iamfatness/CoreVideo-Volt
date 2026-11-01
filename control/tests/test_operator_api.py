@@ -467,9 +467,9 @@ class Existing(Api):
         show, ids = _show(self.store)
         s, body, _ = self.call("GET", f"/rundown?show={show}")
         self.assertEqual((s, sorted(body)), (200, ["hold", "items", "slotSeconds"]))
-        # The millisecond as-run (migration 13) is the one addition; every older key is still there.
+        # Additions: the millisecond as-run (migration 13) and the schedule fields; every older key is still there.
         self.assertEqual(sorted(body["items"][0]), ["asRunIn", "asRunInPrecise", "asRunOut", "asRunOutPrecise",
-                                                    "id", "slug", "status", "urls"])
+                                                    "id", "scheduleNote", "scheduleState", "scheduledAt", "slug", "status", "urls"])
         self.assertEqual(self.call("GET", "/nope")[0], 404)
 
     def test_get_rundown_unknown_show_is_a_404_json_error(self):

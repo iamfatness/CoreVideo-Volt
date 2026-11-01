@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Scheduling endpoint and UI: `POST /api/items/{id}/schedule`, `scheduledAt`/`scheduleState`/`scheduleNote` in `/rundown`, a schedule chip on the Show row and a "Take at" control in the build panel. Only a ready item can be scheduled.
+
 - Slot length and back time: migration 18 (`show.slot_seconds`), `POST /api/shows/{id}/slot`, `slotSeconds` in `/rundown`; the rundown shows total against slot, over or under, and a back-time column; the slot is set from the build panel.
 
 - Light theme for the operator UI: a Theme control (Auto, Dark, Light), a pre-paint `theme.js`, every colour moved to a token with a measured light set, and a contrast test over both themes. The dark control border was lightened to meet 3:1. Front end only.

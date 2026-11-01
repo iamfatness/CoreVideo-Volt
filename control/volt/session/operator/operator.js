@@ -118,6 +118,29 @@
     return state.dir === dir ? { dir, speed: Math.min(8, state.speed * 2) } : { dir, speed: 1 };
   }
 
+  // ---- scheduling: when the clock takes an item --------------------------------------------------------------
+  // The chip for an item's schedule: [state-language kind, word], or null when there is nothing to say. An outcome the
+  // page does not know is shown by its own word.
+  function scheduleChip(state, hasTime) {
+    if (!state) return hasTime ? ['pending', 'Scheduled'] : null;
+    const known = { claimed: ['pending', 'Claimed'], fired: ['ready', 'Fired'], failed: ['failed', 'Failed'], missed: ['failed', 'Missed'],
+      held: ['locked', 'Held'], blocked: ['failed', 'Blocked'] };
+    return Object.prototype.hasOwnProperty.call(known, state) ? known[state] : ['pending', String(state)];
+  }
+  // A datetime-local value ("2026-11-01T20:00", the viewer's own clock) as UTC text for the server; '' is no schedule.
+  function localToUtc(value) {
+    const t = String(value == null ? '' : value).trim();
+    if (!t) return null;
+    const d = new Date(t);
+    return isNaN(d) ? 'bad' : d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+  function utcToLocal(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d)) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
   // ---- slot length: back time (when an item must start for the show to end on schedule) and over/under -------
   // "15:00" or "1:30:00". A bare number is refused (minutes or seconds?). Empty clears the slot. Returns seconds, null or 'bad'.
   function parseSlot(text) {
@@ -220,7 +243,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -231,6 +254,7 @@
     take:        ['POST', '/api/shows/{id}/take'],
     hold:        ['POST', '/api/shows/{id}/hold'],
     showSlot:    ['POST', '/api/shows/{id}/slot'],
+    itemSchedule: ['POST', '/api/items/{id}/schedule'],
     release:     ['POST', '/api/shows/{id}/release'],
     reorder:     ['POST', '/api/shows/{id}/reorder'],
     skip:        ['POST', '/api/items/{id}/skip'],
@@ -315,7 +339,7 @@
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
     cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
-    build: { slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
+    build: { sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
 
   // ---- tiny DOM helper -----------------------------------------------------
@@ -363,7 +387,7 @@
     const hold = r.hold ? { reason: r.hold.reason || '', heldAt: r.hold.heldAt || '' } : null;
     const items = (r.items || []).map((i) => ({
       id: i.id, slug: i.slug, status: i.status, urls: i.urls || [],
-      scheduledAt: i.scheduledAt || null,
+      scheduledAt: i.scheduledAt || null, scheduleState: i.scheduleState || null, scheduleNote: i.scheduleNote || null,
       asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
     }));
     return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null };
@@ -893,6 +917,15 @@
       return '"' + d.show.title + '" is open and has no items yet.';
     } });
   }
+  function scheduleItem(it) {
+    const at = localToUtc(S.build.sched);
+    if (at === 'bad') { setFlash({ kind: 'bad', title: 'Time not understood.', code: 'bad_input', reason: 'Pick a date and time.' }); render(); return; }
+    if (at === null) { setFlash({ kind: 'bad', title: 'Pick a time first.', code: 'bad_input', reason: 'Use Clear schedule to remove it.' }); render(); return; }
+    act('itemSchedule', it.id, { at }, { key: 'item-schedule', okTitle: 'Scheduled.', ok: () => '"' + it.slug + '" is taken by the clock at the time shown.' });
+  }
+  function clearSchedule(it) {
+    act('itemSchedule', it.id, { at: null }, { key: 'item-schedule-clear', okTitle: 'Schedule cleared.', ok: () => '"' + it.slug + '" is taken by hand.' });
+  }
   function setSlot() {
     const v = parseSlot(S.build.slot);
     if (v === 'bad') { setFlash({ kind: 'bad', title: 'Slot length not understood.', code: 'bad_input', reason: 'Write it as minutes and seconds, 15:00, or hours, 1:30:00. It must be between 0:01 and 23:59:59.' }); render(); return; }
@@ -938,13 +971,13 @@
     loadCmds();
     const b = S.build;
     const editable = !!sItem && sItem.status === 'ready';
-    if (sItem && b.renameId !== sItem.id) { b.renameId = sItem.id; b.rename = sItem.slug; }
+    if (sItem && b.renameId !== sItem.id) { b.renameId = sItem.id; b.rename = sItem.slug; b.sched = utcToLocal(sItem.scheduledAt); }
     const sel = typeof L !== 'undefined' ? L.sel : [];
     const m = sItem ? mediaOf(sItem.id) : {};
     const pending = [...S.pending];
     const rmKey = sItem ? 'remove:' + sItem.id : '';
     const slotNow = S.data.rundown ? S.data.rundown.slotSeconds : null;
-    paint('build', [S.data.show, sItem, m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
+    paint('build', [S.data.show, sItem, sItem && [sItem.scheduledAt, sItem.scheduleState], m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
       el('div', { class: 'body' },
         el('form', { 'aria-label': 'Set the slot length', onsubmit: (e) => { e.preventDefault(); setSlot(); } },
           formRow('Slot length (mm:ss or h:mm:ss)', 'build-slot', textIn('build-slot', 'slot', { maxlength: '9', disabled: !S.data.show, placeholder: slotNow != null ? fmtOffset(slotNow) : '15:00' })),
@@ -958,6 +991,11 @@
             el('form', { 'aria-label': 'Rename the selected item', onsubmit: (e) => { e.preventDefault(); renameItem(sItem); } },
               formRow('Name', 'build-rename', textIn('build-rename', 'rename', { maxlength: '200' })),
               el('div', { class: 'bar flush' }, btn('Rename', { key: 'item-rename', cls: 'ghost', onclick: () => renameItem(sItem) }))),
+            el('form', { 'aria-label': 'Schedule the selected item', onsubmit: (e) => { e.preventDefault(); scheduleItem(sItem); } },
+              formRow('Take at (your local time)', 'build-sched', el('input', { id: 'build-sched', type: 'datetime-local', 'data-fk': 'build-sched', step: '1', value: b.sched || '',
+                oninput: (e) => { b.sched = e.target.value; } })),
+              el('div', { class: 'bar flush' }, btn('Set schedule', { key: 'item-schedule', cls: 'ghost', onclick: () => scheduleItem(sItem) }),
+                sItem.scheduledAt ? btn('Clear schedule', { key: 'item-schedule-clear', cls: 'ghost', onclick: () => clearSchedule(sItem) }) : null)),
             formRow('Clip from the Library selection', 'build-pick', el('select', { id: 'build-pick', 'data-fk': 'build-pick', onchange: (e) => { b.pick = e.target.value; } },
               el('option', { value: '' }, sel.length ? 'Choose a clip' : 'Nothing selected in the Library'),
               sel.map((e) => el('option', { value: e.id, selected: b.pick === e.id }, e.name + ' · ' + e.tcIn)))),
@@ -1006,6 +1044,7 @@
     const canDown = ready && idx < items.length - 1;
     const killKey = 'kill:' + it.id;
     const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
+    const schedChip = scheduleChip(it.scheduleState, !!it.scheduledAt);
     const backText = !bk ? null : bk.backMs != null ? new Date(bk.backMs).toLocaleTimeString([], { hour12: false }) : (it.status === 'ready' ? '--:--' : '');
     return el('li', { class: cls + (bk ? ' hb' : '') },
       el('span', { class: 'n', 'aria-hidden': 'true', text: String(idx + 1) }),
@@ -1014,7 +1053,10 @@
           onclick: () => { S.selected = it.id; render(); } },
         el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
         el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
-          blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null)),
+          blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null,
+          schedChip ? el('span', { class: 'sched' }, ' ', stateChip(schedChip[0], schedChip[1]),
+            it.scheduledAt ? ' ' + new Date(it.scheduledAt).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '',
+            it.scheduleNote ? ' · ' + it.scheduleNote : '') : null)),
       el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
       el('span', { class: 'front mono', text: front }),
       backText == null ? null : el('span', { class: 'back mono', text: backText }),

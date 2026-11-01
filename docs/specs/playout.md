@@ -50,7 +50,7 @@ Hold: a held show does not advance. The due item is stored as `held` and reporte
 
 Out-of-order schedules: take advances in order, so the clock only takes an item that is the next ready item (killed ones are passed over and recorded skipped, as `go` does). If a predecessor is still ready, the item is `blocked` and stays due; it fires if the predecessor is taken inside the grace window, otherwise it is `missed`. The clock never airs a predecessor on a successor's behalf.
 
-Not built: recurring or relative ("after the previous item") schedules, a show-level start field, scheduling endpoints and UI (`serve.py` does not expose `scheduled_at`; `volt.clock.schedule_rows` reads it), a retry of a failed scheduled take. Not run: against a live core.
+Not built: recurring or relative ("after the previous item") schedules and a show-level start field. Also not built: a retry of a failed scheduled take. The scheduling endpoint and UI are built (`POST /api/items/{id}/schedule`, see operator-ui.md; `volt.clock.schedule_rows` reads the same column). Not run: against a live core.
 
 ## Kill racing go
 

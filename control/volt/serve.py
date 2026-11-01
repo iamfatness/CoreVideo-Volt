@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt.clock import set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
@@ -163,16 +164,26 @@ def get_room():
 
 # ---- state payloads -------------------------------------------------------
 
+def _sched_text(value):
+    """A stored schedule time as UTC `YYYY-MM-DDTHH:MM:SSZ` (Postgres hands back a datetime, SQLite the text)."""
+    return None if value is None else to_utc_text(value)
+
+
 def rundown_payload(store: Store, show_id: str) -> dict:
     """The /rundown shape: {hold, items, slotSeconds}. Raises KeyError for an unknown show."""
     held = hold_state(store, show_id)
     slot = store.conn.execute("SELECT slot_seconds FROM show WHERE id = ?", (show_id,)).fetchone()
+    sched = {r["id"]: r for r in store.conn.execute(
+        "SELECT id, scheduled_at, schedule_state, schedule_note FROM item WHERE show_id = ?", (show_id,)).fetchall()}
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
          # Millisecond as-run (migration 13). Rows stamped before it, or by a test clock, have none: the second.
          "asRunInPrecise": row.as_run_in_precise or row.as_run_in,
-         "asRunOutPrecise": row.as_run_out_precise or row.as_run_out}
+         "asRunOutPrecise": row.as_run_out_precise or row.as_run_out,
+         "scheduledAt": _sched_text(sched[row.id]["scheduled_at"]) if row.id in sched else None,
+         "scheduleState": sched[row.id]["schedule_state"] if row.id in sched else None,
+         "scheduleNote": sched[row.id]["schedule_note"] if row.id in sched else None}
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
@@ -317,6 +328,24 @@ def act_show_slot(store, show_id, body):
     store.conn.execute("UPDATE show SET slot_seconds = ? WHERE id = ?", (seconds, show_id))
     store.conn.commit()
     return {"ok": True, "rundown": rundown_payload(store, show_id)}
+
+
+def act_item_schedule(store, item_id, body):
+    """Set or clear when the clock takes an item. {at: ISO time with a UTC offset | null}. Only a ready item can be scheduled."""
+    _unknown_keys(body, {"at"})
+    if "at" not in body:
+        raise ApiError(422, "bad_input", "at is required (a time with a UTC offset, or null to clear the schedule)")
+    at = body["at"]
+    if at is not None and (not isinstance(at, str) or not at.strip()):
+        raise ApiError(422, "bad_input", "at must be a time such as 2026-11-01T20:00:00Z, or null")
+    show_id, status = _item_show(store, item_id)
+    if status != "ready":
+        raise ApiError(409, "not_schedulable", f"an item that is {status} cannot be scheduled; only a ready item can")
+    try:
+        set_schedule(store, item_id, at)
+    except ValueError:
+        raise ApiError(422, "bad_input", "at must be a time with a UTC offset, such as 2026-11-01T20:00:00Z") from None
+    return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
 
 
 def act_release(store, show_id, body):
@@ -816,6 +845,7 @@ ROUTES = [
     (re.compile(rf"^/api/shows/{_ID}/take$"), act_take),
     (re.compile(rf"^/api/shows/{_ID}/reorder$"), act_reorder),
     (re.compile(rf"^/api/items/{_ID}/skip$"), act_skip),
+    (re.compile(rf"^/api/items/{_ID}/schedule$"), act_item_schedule),
     (re.compile(rf"^/api/items/{_ID}/kill$"), act_kill),
     (re.compile(rf"^/api/items/{_ID}/attach$"), act_attach),
     (re.compile(r"^/api/record/start$()"), act_record_start),
@@ -859,7 +889,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
-    "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
