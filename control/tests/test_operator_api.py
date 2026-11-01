@@ -403,7 +403,7 @@ class Auth(Api):
         self.assertEqual(self.call("GET", f"/rundown?show={show}")[0], 401)
         self.assertEqual(self.call("GET", "/assets")[0], 401)
         s, body, _ = self.call("GET", f"/rundown?show={show}", token=TOKEN)
-        self.assertEqual((s, sorted(body)), (200, ["hold", "items"]))
+        self.assertEqual((s, sorted(body)), (200, ["hold", "items", "slotSeconds"]))
 
     def test_auth_precedes_routing(self):
         serve.TOKEN = TOKEN
@@ -466,7 +466,7 @@ class Existing(Api):
     def test_get_rundown_shape_is_unchanged(self):
         show, ids = _show(self.store)
         s, body, _ = self.call("GET", f"/rundown?show={show}")
-        self.assertEqual((s, sorted(body)), (200, ["hold", "items"]))
+        self.assertEqual((s, sorted(body)), (200, ["hold", "items", "slotSeconds"]))
         # The millisecond as-run (migration 13) is the one addition; every older key is still there.
         self.assertEqual(sorted(body["items"][0]), ["asRunIn", "asRunInPrecise", "asRunOut", "asRunOutPrecise",
                                                     "id", "slug", "status", "urls"])

@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS show (
   title TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   hold_reason TEXT,
-  held_at TIMESTAMPTZ
+  held_at TIMESTAMPTZ,
+  slot_seconds INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS item (

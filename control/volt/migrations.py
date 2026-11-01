@@ -105,6 +105,8 @@ MIGRATIONS = (
     # volt_user is a new table (base-table creation makes it), as in 4, 7 and 12: per-user tokens, stored as a
     # sha256 hash with a role (operator or admin). Named volt_user because USER is reserved on Postgres.
     Migration(17, "volt_user table"),
+    # The planned length of a show in seconds, for total-against-slot and back time. NULL means no slot is set.
+    Migration(18, "show slot length", columns=(("show", "slot_seconds", "INTEGER"),)),
 )
 
 LATEST = MIGRATIONS[-1].version

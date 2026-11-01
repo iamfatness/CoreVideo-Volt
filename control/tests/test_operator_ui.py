@@ -497,7 +497,7 @@ class State(Api):
 
     def test_state_keeps_the_rundown_shape_and_adds_what_the_screens_need(self):
         s = self.state()
-        self.assertEqual(set(s["rundown"]), {"hold", "items"})
+        self.assertEqual(set(s["rundown"]), {"hold", "items", "slotSeconds"})
         self.assertEqual(s["rundown"]["hold"]["reason"], "Waiting on the producer for the replay cue")
         self.assertEqual(s["show"]["id"], self.show)
         statuses = [i["status"] for i in s["rundown"]["items"]]
@@ -894,7 +894,7 @@ class RundownColumns(unittest.TestCase):
         self.assertNotIn('auto', track)   # an auto track is sized row by row and the columns drift apart
         self.assertNotIn('em ', track.replace('rem', ''))   # em would shrink with the header's smaller font
         head = js[js.index("class: 'rhead'"):]
-        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 6)
+        self.assertEqual(head[:head.index("items.map")].count("el('span'"), 7)   # six, plus Back when a slot is set
 
 
 if __name__ == "__main__":
@@ -1118,3 +1118,91 @@ class ThemeChoice(Api):
         self.assertIn("try", early)
         self.assertNotRegex(early, r"https?://")
         self.assertRegex(js, r"try \{[^}]*localStorage[^}]*volt\.theme")
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class BackTimes(unittest.TestCase):
+    T0 = 1_800_000_000_000
+
+    def iso(self, ms):
+        import datetime
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def items(self, *rows):
+        out = []
+        for n, row in enumerate(rows):
+            st, at = row[0], row[1]
+            it = {"id": "i%d" % n, "status": st, "asRunIn": None if at is None else self.iso(self.T0 + at * 1000), "asRunOut": None}
+            if len(row) > 2 and row[2] is not None:
+                it["asRunOut"] = self.iso(self.T0 + row[2] * 1000)
+            if len(row) > 3:
+                it["scheduledAt"] = self.iso(self.T0 + row[3] * 1000)
+            out.append(it)
+        return out
+
+    def run_back(self, items, seconds, slot):
+        return _node(["backTimes", items, seconds, slot])[0]
+
+    def test_back_time_counts_back_from_the_slot_end(self):
+        items = self.items(("aired", 0), ("ready", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60, "i2": 60}, 300)
+        self.assertEqual(r["slotEndMs"], self.T0 + 300_000)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, self.T0 + 180_000, self.T0 + 240_000])
+        self.assertEqual(r["overSec"], -120)   # 180 s planned against a 300 s slot: 120 s under
+
+    def test_over_is_positive(self):
+        items = self.items(("aired", 0), ("ready", None))
+        self.assertEqual(self.run_back(items, {"i0": 200, "i1": 200}, 300)["overSec"], 100)
+
+    def test_unknown_length_makes_the_rows_up_to_it_unknown(self):
+        items = self.items(("aired", 0), ("ready", None), ("ready", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60, "i2": None, "i3": 60}, 600)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, None, None, self.T0 + 540_000])
+
+    def test_killed_and_skipped_take_no_time(self):
+        items = self.items(("aired", 0), ("killed", None), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 500, "i2": 60}, 300)
+        self.assertEqual([x["backMs"] for x in r["rows"]], [None, None, self.T0 + 240_000])
+
+    def test_no_slot_gives_nothing(self):
+        items = self.items(("aired", 0), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60}, None)
+        self.assertEqual((r["slotEndMs"], r["overSec"], [x["backMs"] for x in r["rows"]]), (None, None, [None, None]))
+
+    def test_before_anything_airs_the_first_scheduled_time_anchors_it(self):
+        items = self.items(("ready", None, None, 1000), ("ready", None))
+        r = self.run_back(items, {"i0": 60, "i1": 60}, 300)
+        self.assertEqual(r["slotEndMs"], self.T0 + 1_000_000 + 300_000)
+        none = self.run_back(self.items(("ready", None), ("ready", None)), {"i0": 60, "i1": 60}, 300)
+        self.assertEqual((none["slotEndMs"], none["overSec"]), (None, -180))
+
+    def test_aired_items_count_by_their_actual_length(self):
+        items = self.items(("aired", 0, 70), ("ready", None))
+        self.assertEqual(self.run_back(items, {"i0": 60, "i1": 60}, 300)["overSec"], -170)   # 70 + 60 = 130 of 300
+
+    def test_parse_slot(self):
+        self.assertEqual(_node(["parseSlot", "15:00"], ["parseSlot", "1:30:00"], ["parseSlot", "90"], ["parseSlot", ""], ["parseSlot", "abc"],
+                               ["parseSlot", "0:00"], ["parseSlot", "24:00:00"], ["parseSlot", "12:75"]),
+                         [900, 5400, "bad", None, "bad", "bad", "bad", "bad"])   # a bare number is ambiguous, so it is refused
+
+
+class SlotUi(unittest.TestCase):
+    def test_the_narrow_layout_overrides_the_slot_columns(self):
+        css = FILES["operator.css"]
+        self.assertRegex(css, r"\.rrow,\.rrow\.hb\{grid-template-columns:1\.8rem 7\.5rem minmax\(0,1fr\) auto\}")
+
+    def test_the_page_wires_the_slot(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        self.assertIn("showSlot:", js)
+        self.assertIn("backTimes(", js[js.index("function renderShow"):])
+        self.assertIn("slotSeconds", js[js.index("function parseRundown"):js.index("function parseRundown") + 700])
+        for needle in ("'Over '", "'Under '", "'On slot'", "'Back'"):
+            self.assertIn(needle, js)
+        self.assertRegex(css, r"\.rrow\.hb,\.rhead\.hb\{grid-template-columns:[^}]*6\.5rem 6\.5rem 16rem\}")
+        self.assertNotIn("auto", re.search(r"\.rrow\.hb,\.rhead\.hb\{grid-template-columns:([^}]*)\}", css).group(1))
+
+    def test_the_slot_control_lives_in_the_build_panel_and_is_hidden_in_operator(self):
+        js, css = FILES["operator.js"], FILES["operator.css"]
+        build = js[js.index("function renderBuild"):js.index("function renderBuild") + 2500]
+        self.assertIn("build-slot", build)
+        self.assertRegex(css, r"\.ws-operator #build[^{]*\{[^}]*display:none")   # read-only in the Operator layout

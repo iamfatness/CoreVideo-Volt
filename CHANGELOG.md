@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Slot length and back time: migration 18 (`show.slot_seconds`), `POST /api/shows/{id}/slot`, `slotSeconds` in `/rundown`; the rundown shows total against slot, over or under, and a back-time column; the slot is set from the build panel.
+
 - Light theme for the operator UI: a Theme control (Auto, Dark, Light), a pre-paint `theme.js`, every colour moved to a token with a measured light set, and a contrast test over both themes. The dark control border was lightened to meet 3:1. Front end only.
 
 - Operator UI redesign, slice 4: Record, Rights and Publish on the shared system: state chips for recording, wrapped, snapshot, cleared, hold, can-air and blocked, icons on the recording lifecycle steps and on the panel headings. Front end only. The mockup PNGs 04-11 are re-shot.
