@@ -50,7 +50,13 @@ Hold: a held show does not advance. The due item is stored as `held` and reporte
 
 Out-of-order schedules: take advances in order, so the clock only takes an item that is the next ready item (killed ones are passed over and recorded skipped, as `go` does). If a predecessor is still ready, the item is `blocked` and stays due; it fires if the predecessor is taken inside the grace window, otherwise it is `missed`. The clock never airs a predecessor on a successor's behalf.
 
-Not built: recurring or relative ("after the previous item") schedules and a show-level start field. Also not built: a retry of a failed scheduled take. The scheduling endpoint and UI are built (`POST /api/items/{id}/schedule`, see operator-ui.md; `volt.clock.schedule_rows` reads the same column). Not run: against a live core.
+## Relative and recurring schedules (schema 19)
+
+**Relative.** `item.schedule_mode` is NULL or `absolute` (the `scheduled_at` above), `after_previous`, with `schedule_offset_seconds`. Set through `POST /api/items/{id}/schedule` with `{mode: "after_previous", offsetSeconds}` (the first item has no previous and is refused). Each tick, `materialise_relative` gives such an item its `scheduled_at` once the item before it (passing over killed and skipped ones) is on air or aired: that item's as-run **start**, plus its **planned length** (the clip's frames over its rate; zero when unknown), plus the offset. The as-run **end** is not the anchor because it is written only when the next item is taken. After that the normal rules apply unchanged: claim, grace window, hold, missed.
+
+**Recurring.** `show.recurrence` holds `{freq: daily|weekly, days (weekly, Monday 0), at: "HH:MM", tz: IANA zone}`; no end date. `POST /api/shows/{id}/recurrence` with `{rule}` or `{rule: null}`. Each tick `materialise_recurring` finds the next occurrence of every rule and, when it is within 24 hours, makes a copy of the show: ready items with their clips, cues (stored) and slot, the first item scheduled at the occurrence (later absolute times keep their offset from it). The copy carries `recurrence_of` and `occurrence_on`; a unique index on those two makes a second tick, or a second clock, a no-op, and a copy cannot itself recur. Wall-clock time in the zone: a time that does not exist (spring forward) moves forward, an ambiguous one (fall back) takes the first. Windows needs the `tzdata` package (declared as a dependency with a `win32` marker). The clock now always starts under `volt run`; with no room configured it only makes the copies and logs that it will take nothing.
+
+Not built: a show-level start field. Also not built: a retry of a failed scheduled take. The scheduling endpoint and UI are built (`POST /api/items/{id}/schedule`, see operator-ui.md; `volt.clock.schedule_rows` reads the same column). Not run: against a live core.
 
 ## Kill racing go
 

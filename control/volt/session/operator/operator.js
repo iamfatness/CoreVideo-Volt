@@ -347,7 +347,7 @@
     flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
     cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
-    build: { rec: { freq: 'daily', at: '20:00', tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } })(), days: [0] }, after: '', sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
+    build: { recOpen: false, rec: { freq: 'daily', at: '20:00', tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } })(), days: [0] }, after: '', sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
   };
 
   // ---- tiny DOM helper -----------------------------------------------------
@@ -1041,7 +1041,7 @@
                 aria: (S.armed === rmKey ? 'Confirm remove ' : 'Remove ') + sItem.slug, onclick: () => removeItem(sItem) })),
             el('small', { text: m.span ? 'Clip ' + (m.tcIn || '') + ' to ' + (m.tcOut || '') + '.' : 'No clip yet: this item cannot be taken until one is attached.' }),
           ] : el('small', { text: 'This item is ' + sItem.status + ' and cannot be edited.' })) : null,
-        el('details', { class: 'newshow' }, el('summary', { text: 'Repeat this show' }),
+        el('details', { class: 'newshow', open: b.recOpen, ontoggle: (e) => { b.recOpen = e.target.open; } }, el('summary', { text: 'Repeat this show' }),
           el('form', { 'aria-label': 'Repeat this show', onsubmit: (e) => { e.preventDefault(); setRepeat(); } },
             formRow('How often', 'build-rec-freq', el('select', { id: 'build-rec-freq', 'data-fk': 'build-rec-freq', onchange: (e) => { b.rec.freq = e.target.value; render(); } },
               el('option', { value: 'daily', selected: b.rec.freq === 'daily' }, 'Every day'), el('option', { value: 'weekly', selected: b.rec.freq === 'weekly' }, 'Every week on'))),
