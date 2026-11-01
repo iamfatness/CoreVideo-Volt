@@ -139,7 +139,10 @@ CREATE TABLE IF NOT EXISTS show (
   created_at TEXT NOT NULL,
   hold_reason TEXT,
   held_at TEXT,
-  slot_seconds INTEGER
+  slot_seconds INTEGER,
+  recurrence TEXT,
+  recurrence_of TEXT,
+  occurrence_on TEXT
 );
 
 CREATE TABLE IF NOT EXISTS item (
@@ -158,7 +161,9 @@ CREATE TABLE IF NOT EXISTS item (
   schedule_note TEXT,
   schedule_claimed_at TEXT,
   as_run_in_precise TEXT,
-  as_run_out_precise TEXT
+  as_run_out_precise TEXT,
+  schedule_mode TEXT,
+  schedule_offset_seconds INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS version (

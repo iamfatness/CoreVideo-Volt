@@ -9,3 +9,5 @@ psycopg_pool==3.3.3
 # azure-identity>=1.15
 # Optional. Only needed with VOLT_STORAGE=gcs; imported lazily.
 # google-cloud-storage>=2.16
+# Needed on Windows only (no system time-zone database); recurring shows read zones through it.
+tzdata; sys_platform == "win32"

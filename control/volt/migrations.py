@@ -107,6 +107,14 @@ MIGRATIONS = (
     Migration(17, "volt_user table"),
     # The planned length of a show in seconds, for total-against-slot and back time. NULL means no slot is set.
     Migration(18, "show slot length", columns=(("show", "slot_seconds", "INTEGER"),)),
+    # Relative schedules (item.schedule_mode: NULL or 'absolute' is the old scheduled_at, 'after_previous' is due at the
+    # previous item's start plus its length plus schedule_offset_seconds) and recurring shows (show.recurrence is a JSON rule;
+    # a clone carries recurrence_of and occurrence_on, and the unique index lets two clocks race to make it).
+    Migration(19, "relative and recurring schedules",
+              columns=(("item", "schedule_mode", "TEXT"), ("item", "schedule_offset_seconds", "INTEGER"),
+                       ("show", "recurrence", "TEXT"), ("show", "recurrence_of", "TEXT"), ("show", "occurrence_on", "TEXT")),
+              sqlite=("CREATE UNIQUE INDEX IF NOT EXISTS show_occurrence ON show (recurrence_of, occurrence_on)",),
+              postgres=("CREATE UNIQUE INDEX IF NOT EXISTS show_occurrence ON show (recurrence_of, occurrence_on)",)),
 )
 
 LATEST = MIGRATIONS[-1].version

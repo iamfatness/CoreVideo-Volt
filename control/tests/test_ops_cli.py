@@ -52,7 +52,7 @@ class Version(unittest.TestCase):
         import tomllib
         data = tomllib.loads((CONTROL / "pyproject.toml").read_text(encoding="utf-8"))
         project = data["project"]
-        self.assertEqual(project["dependencies"], [])
+        self.assertEqual(project["dependencies"], ["tzdata; sys_platform == 'win32'"])   # the only one: Windows has no time-zone database
         self.assertEqual(project["requires-python"], ">=3.12")
         self.assertTrue({"speech", "s3", "azure", "gcs", "postgres"} <= set(project["optional-dependencies"]))
         self.assertEqual(project["scripts"]["volt"], "volt.cli:main")
@@ -434,7 +434,7 @@ class SupervisorUnit(unittest.TestCase):
         args = type("A", (), dict(host="127.0.0.1", port=1234, access_log=True, only=None))()
         env = {"VOLT_DB": "postgresql://u:topsecret@h/d"}
         kids = supervisor.build_children(args, env)
-        self.assertEqual([k.name for k in kids], ["serve", "runner"])  # no VOLT_ROOM_URL: no clock
+        self.assertEqual([k.name for k in kids], ["serve", "runner", "clock"])  # the clock always runs: with no room it only makes recurring shows
         for k in kids:
             self.assertNotIn("topsecret", " ".join(k.argv))
             self.assertEqual(k.env["VOLT_DB"], env["VOLT_DB"])
@@ -534,10 +534,10 @@ class RunEndToEnd(unittest.TestCase):
         def runner_names():
             return {r["name"] for r in json.loads(self.get("/api/health")[1])["runners"]["runners"]}
         before = runner_names()
-        runner_pid = self._child_pids()[-1]  # started last: the runner
+        runner_pid = self._child_pids()[-2]  # serve, runner, clock: the runner is second to last
         os.kill(runner_pid, signal.SIGTERM)
         self.assertTrue(self.wait_for(lambda: "restarting in" in self.log_text("run.log")), self.log_text("run.log"))
-        self.assertTrue(self.wait_for(lambda: len(self._child_pids()) >= 3), self.log_text("run.log"))
+        self.assertTrue(self.wait_for(lambda: len(self._child_pids()) >= 4), self.log_text("run.log"))   # serve, runner, clock, then the new runner
         self.assertNotEqual(self._child_pids()[-1], runner_pid)
 
         def new_runner_beating():  # a runner the health report has not seen before, heartbeating now

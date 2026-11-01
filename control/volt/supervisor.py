@@ -161,8 +161,6 @@ def build_children(args, env: dict) -> list:
     if "runner" in wanted:
         children.append(Child("runner", base + ["runner"], env))
     if "clock" in wanted:
-        if roomreg.configured(env):
-            children.append(Child("clock", base + ["clock"], env))
-        else:
-            log.warning("clock not started: no room is configured (set VOLT_ROOM_URL)")
+        # Always started: with no room it only makes the next copy of recurring shows (it logs that it will take nothing).
+        children.append(Child("clock", base + ["clock"], env))
     return children

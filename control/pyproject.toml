@@ -9,7 +9,8 @@ description = "Volt control plane: library, rundown, runner and operator API for
 readme = "README.md"
 requires-python = ">=3.12"
 # The core is standard library only. Everything below is opt-in.
-dependencies = []
+# Windows has no system time-zone database; recurring shows need one (zoneinfo reads this package there).
+dependencies = ["tzdata; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 speech = ["faster-whisper>=1.0"]

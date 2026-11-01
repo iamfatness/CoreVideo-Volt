@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Relative and recurring schedules (migration 19): an item can follow the previous one by an offset (`mode: after_previous`), and a show can repeat daily or weekly in an IANA time zone; the clock makes the next copy 24 hours ahead, idempotently and safe with two clocks. `POST /api/shows/{id}/recurrence`. Needs the `tzdata` package on Windows. `volt run` now always starts the clock.
+
 - Room registry: cues are routed to their own room through `volt/roomreg.py` and `dispatch.ROOM_HANDLERS`; the CoreVideo Pro behaviour is unchanged, and a single room object is still accepted everywhere. The groundwork for a second room kind.
 
 - Scheduling endpoint and UI: `POST /api/items/{id}/schedule`, `scheduledAt`/`scheduleState`/`scheduleNote` in `/rundown`, a schedule chip on the Show row and a "Take at" control in the build panel. Only a ready item can be scheduled.
