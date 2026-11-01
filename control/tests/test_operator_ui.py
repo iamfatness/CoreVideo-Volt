@@ -1243,3 +1243,10 @@ class RepeatUi(unittest.TestCase):
         js = FILES["operator.js"]
         for needle in ("showRecurrence:", "build-after", "build-rec-at", "build-rec-tz", "Stop repeating", "scheduleOffsetSeconds"):
             self.assertIn(needle, js, needle)
+
+
+class FcpxmlUi(unittest.TestCase):
+    def test_the_export_tab_offers_fcpxml(self):
+        js = FILES["operator.js"]
+        self.assertIn("xRadio('fmt', 'fcpxml'", js)
+        self.assertIn("d.format === 'fcpxml' ? 'fcpxml'", js)
