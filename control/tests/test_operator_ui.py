@@ -682,7 +682,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
+        self.assertEqual(sorted(state), ["aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -1250,3 +1250,16 @@ class FcpxmlUi(unittest.TestCase):
         js = FILES["operator.js"]
         self.assertIn("xRadio('fmt', 'fcpxml'", js)
         self.assertIn("d.format === 'fcpxml' ? 'fcpxml'", js)
+
+
+class ArchiveUi(unittest.TestCase):
+    def test_wiring(self):
+        js = FILES["operator.js"]
+        for needle in ("assetArchive:", "assetRehydrate:", "function archiveBits(", "'Confirm archive'", "'Restore'"):
+            self.assertIn(needle, js, needle)
+        self.assertGreaterEqual(js.count("archiveBits(a)"), 2)   # both asset headers
+
+    @unittest.skipUnless(NODE, "node")
+    def test_states(self):
+        got = _node(["stateChipSpec", "archived"], ["stateChipSpec", "restoring"])
+        self.assertEqual(got, [{"icon": "library", "word": "Archived", "cls": "st done"}, {"icon": "pending", "word": "Restoring", "cls": "st pend"}])
