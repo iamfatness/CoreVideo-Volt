@@ -264,6 +264,7 @@
     take:        ['POST', '/api/shows/{id}/take'],
     hold:        ['POST', '/api/shows/{id}/hold'],
     showSlot:    ['POST', '/api/shows/{id}/slot'],
+    mosResolve:  ['POST', '/api/mos/{id}/resolve'],
     assetArchive: ['POST', '/api/assets/{id}/archive'],
     assetRehydrate: ['POST', '/api/assets/{id}/rehydrate'],
     itemSchedule: ['POST', '/api/items/{id}/schedule'],
@@ -916,7 +917,7 @@
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
     });
 
-    paint('room', S.data.room, () => roomPanel(S.data.room));
+    paint('room', [S.data.room, S.data.mos, [...S.pending]], () => [roomPanel(S.data.room), mosPanel(S.data.mos)]);
     renderBuild(sItem);
   }
 
@@ -1138,6 +1139,22 @@
           btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
             aria: (S.armed === killKey ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }),
         ] : null));
+  }
+
+  // MOS devices Volt sends running orders to (VOLT_MOS_DEVICES): connection state, the last refusal, and any show whose roCreate
+  // got no answer, which waits for the desk instead of being sent again blind.
+  const MOS_STATE = { up: ['ready', 'Connected'], connecting: ['pending', 'Connecting'], down: ['failed', 'Down'], refused: ['failed', 'Refused'] };
+  function mosPanel(devices) {
+    if (!devices || !devices.length) return null;
+    return devices.map((d) => {
+      const [kind, word] = MOS_STATE[d.state] || ['pending', String(d.state)];
+      return el('div', { class: 'mos' }, el('dl', { class: 'kv' }, el('dt', { text: 'MOS ' + d.name }), el('dd', {}, stateChip(kind, word), d.detail ? ' ' + d.detail : '')),
+        d.unconfirmed.map((show) => el('div', { class: 'note mos-wait' },
+          el('p', { text: 'The running order ' + short(show) + ' was sent to ' + d.name + ' and not acknowledged. It will not be sent again until you say whether the device has it.' }),
+          el('div', { class: 'acts' },
+            btn('It was created', { key: 'mos-ok:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'created' }, { key: 'mos-ok:' + d.name + show, okTitle: 'Noted.', ok: () => 'Later changes go to ' + d.name + ' as replacements.' }) }),
+            btn('Send it again', { key: 'mos-retry:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'retry' }, { key: 'mos-retry:' + d.name + show, okTitle: 'Will resend.', ok: () => 'The roCreate goes to ' + d.name + ' again.' }) }))))); 
+    });
   }
 
   function roomPanel(room) {

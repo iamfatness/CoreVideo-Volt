@@ -170,6 +170,28 @@ CREATE TABLE IF NOT EXISTS item (
   schedule_offset_seconds INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS mos_sync (
+  device TEXT NOT NULL,
+  show_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  acked_hash TEXT,
+  error TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (device, show_id)
+);
+
+CREATE TABLE IF NOT EXISTS mos_counter (
+  device TEXT PRIMARY KEY,
+  next_id INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mos_device (
+  device TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  detail TEXT,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS version (
   id TEXT PRIMARY KEY,
   asset_id TEXT NOT NULL REFERENCES asset(id),

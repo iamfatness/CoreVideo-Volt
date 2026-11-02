@@ -120,6 +120,15 @@ MIGRATIONS = (
     Migration(20, "archive tier",
               columns=(("essence", "tier", "TEXT"), ("essence", "archive_key", "TEXT"), ("essence", "archive_sha256", "TEXT"),
                        ("asset", "archived_at", "TIMESTAMP"))),
+    # The MOS sender (volt/mos_send.py): what each device last acknowledged per show, the per-device message counter, and the connection
+    # state the desk sees. All new tables, so SCHEMA makes them on a fresh database; these statements make them on an older one.
+    Migration(21, "mos sender tables",
+              sqlite=("CREATE TABLE IF NOT EXISTS mos_sync (device TEXT NOT NULL, show_id TEXT NOT NULL, state TEXT NOT NULL, acked_hash TEXT, error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (device, show_id))",
+              "CREATE TABLE IF NOT EXISTS mos_counter (device TEXT PRIMARY KEY, next_id INTEGER NOT NULL)",
+              "CREATE TABLE IF NOT EXISTS mos_device (device TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT, updated_at TEXT NOT NULL)",),
+              postgres=("CREATE TABLE IF NOT EXISTS mos_sync (device TEXT NOT NULL, show_id TEXT NOT NULL, state TEXT NOT NULL, acked_hash TEXT, error TEXT, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (device, show_id))",
+              "CREATE TABLE IF NOT EXISTS mos_counter (device TEXT PRIMARY KEY, next_id INTEGER NOT NULL)",
+              "CREATE TABLE IF NOT EXISTS mos_device (device TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT, updated_at TIMESTAMPTZ NOT NULL)",)),
 )
 
 LATEST = MIGRATIONS[-1].version
