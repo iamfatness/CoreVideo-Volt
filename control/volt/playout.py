@@ -17,6 +17,15 @@ class HeldError(PlayoutError):
     """The rundown is held. A machine-readable subtype so callers need not parse the message."""
 
 
+class StoryNotApproved(PlayoutError):
+    """VOLT_REQUIRE_APPROVAL=1 and the item's story is not approved at its current revision. Callers use `.item_id`; nothing was written."""
+
+    def __init__(self, item_id: str, story_status: str, rev: int):
+        super().__init__(f"the story for item {item_id} is {story_status} at revision {rev}, not approved at its current revision; "
+                         "approve it before it goes to air")
+        self.item_id, self.story_status, self.rev = item_id, story_status, rev
+
+
 class TakingError(PlayoutError):
     """Another item of the show is taking. Callers use `.item_id`; nothing was written."""
 

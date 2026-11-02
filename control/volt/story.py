@@ -16,6 +16,7 @@ golden fixture (tests/golden/script_markup.json) drives both, so they cannot dri
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -251,6 +252,99 @@ def set_script(store: Store, item_id: str, *, script: Optional[str] = None, slug
             _event(store, item_id, actor, "status", "approved", "ready", new_rev, "edited after approval")
         prune_revisions(store, item_id)
         return {"rev": new_rev, "changed": True, "storyStatus": "ready" if dropped else was}
+
+
+# ---- status and approval ----------------------------------------------------------------------------------
+
+STATUSES = ("draft", "ready", "approved", "killed")
+# Story status is independent of item.status: killing a story does not take an item off air, and a playout kill does
+# not kill the story. "any -> killed" means any other status.
+TRANSITIONS = {
+    "draft": {"ready", "killed"},
+    "ready": {"draft", "approved", "killed"},
+    "approved": {"ready", "killed"},
+    "killed": {"draft"},
+}
+_APPROVER_MOVES = {("ready", "approved"), ("approved", "ready")}
+
+
+def approvers() -> Optional[set]:
+    """The names VOLT_APPROVERS limits approval to, or None when it is unset or empty (any signed-in operator may approve)."""
+    names = {n.strip() for n in os.environ.get("VOLT_APPROVERS", "").split(",") if n.strip()}
+    return names or None
+
+
+def can_approve(principal, item_row) -> bool:
+    """May this principal approve (or take back the approval of) this story? The one seam the identity work fills.
+
+    With no VOLT_APPROVERS, any signed-in operator or admin. With it set, only a per-user token whose name is listed:
+    the shared VOLT_TOKEN (or open loopback) is refused, because its actor name is only a header anyone can write."""
+    allowed = approvers()
+    if allowed is None:
+        return True
+    if principal is None or getattr(principal, "legacy", False):
+        return False
+    return getattr(principal, "name", None) in allowed
+
+
+def require_approval() -> bool:
+    """VOLT_REQUIRE_APPROVAL=1: only an approved story, at its current revision, may go to air. Off by default."""
+    return os.environ.get("VOLT_REQUIRE_APPROVAL") == "1"
+
+
+def is_approved(row) -> bool:
+    return status_of(row) == "approved" and row["approved_rev"] == rev_of(row)
+
+
+def check_airable(store: Store, item_id: str) -> None:
+    """The air gate: raise playout.StoryNotApproved when the gate is on and this item's story is not approved at its
+    current revision. Called by rundown.take, the one place every path to air (go, take, the clock, cue arm) passes."""
+    if not require_approval():
+        return
+    row = _item_row(store, item_id)
+    if row is not None and not is_approved(row):
+        from volt.playout import StoryNotApproved
+        raise StoryNotApproved(item_id, status_of(row), rev_of(row))
+
+
+def set_status(store: Store, item_id: str, status: str, *, base_rev: int, actor: str, principal=None,
+               note: Optional[str] = None) -> dict:
+    """Move a story to `status` if the move is legal, quoting the revision it was decided on.
+
+    Approving, or taking an approval back, needs can_approve. Approving also needs an item that can still air (not killed
+    from air, skipped or aired). Leaving `approved` by any route clears the approval record. Every move writes a
+    story_event, so "who approved revision 7, and when" is one query."""
+    if status not in STATUSES:
+        raise StoryError(422, "bad_input", f"status must be one of {', '.join(STATUSES)}")
+    if note is not None and (not isinstance(note, str) or len(note) > 500):
+        raise StoryError(422, "bad_input", "note must be a string of at most 500 characters")
+    found = _need_item(store, item_id)
+    with store.transaction(show_lock(found["show_id"])):
+        row = _need_item(store, item_id)
+        rev = rev_of(row)
+        if base_rev != rev:
+            raise StaleScript(current_of(store, row))
+        was = status_of(row)
+        if status not in TRANSITIONS[was]:
+            raise StoryError(409, "bad_transition", f"a {was} story cannot become {status}",
+                             **{"from": was, "to": status, "allowed": sorted(TRANSITIONS[was])})
+        if status == "approved" and row["status"] in NOT_EDITABLE:
+            raise StoryError(409, "not_editable", f"cannot approve the story of a {row['status']} item")
+        if (was, status) in _APPROVER_MOVES and not can_approve(principal, row):
+            raise StoryError(403, "not_approver", "you are not on the list of people who can approve stories")
+        at = _now()
+        if status == "approved":
+            sets, params = "approved_by = ?, approved_at = ?, approved_rev = ?", (actor, at, rev)
+        else:
+            sets, params = "approved_by = NULL, approved_at = NULL, approved_rev = NULL", ()
+        cur = store.conn.execute(
+            f"UPDATE item SET story_status = ?, {sets} WHERE id = ? AND COALESCE(script_rev, 1) = ? "
+            "AND COALESCE(story_status, 'draft') = ?", (status, *params, item_id, rev, was))
+        if cur.rowcount != 1:
+            raise StaleScript(current_of(store, _need_item(store, item_id)))
+        _event(store, item_id, actor, "status", was, status, rev, note)
+        return {"rev": rev, "storyStatus": status, "approvedBy": actor if status == "approved" else None,
+                "approvedAt": at if status == "approved" else None, "approvedRev": rev if status == "approved" else None}
 
 
 def get_story(store: Store, item_id: str) -> dict:

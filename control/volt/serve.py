@@ -29,7 +29,7 @@ from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
-from volt.playout import HeldError, PlayoutError, TakingError, advance, hold, hold_state, release, skip
+from volt.playout import HeldError, PlayoutError, StoryNotApproved, TakingError, advance, hold, hold_state, release, skip
 from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
@@ -309,6 +309,8 @@ def _advance_errors(fn):
         raise ApiError(409, "held", str(exc)) from None
     except TakingError as exc:
         raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+    except StoryNotApproved as exc:
+        raise ApiError(409, "story_not_approved", str(exc), item=exc.item_id) from None
     except ArchivedError:
         raise ApiError(409, "archived", "the next item's media is archived; rehydrate the asset first") from None
     except NotClearedError:
@@ -841,6 +843,20 @@ def act_story_script(store, item_id, body):
     return {"ok": True, "item": item_id, **out, "stats": story.script_stats(text, story.wpm_of(store, row["show_id"]))}
 
 
+def act_story_status(store, item_id, body):
+    """Move a story between draft, ready, approved and killed, quoting `baseRev`. Never touches the item's playout status."""
+    _unknown_keys(body, {"status", "baseRev", "note"})
+    status = _str(body, "status", required=True, limit=20)
+    if status not in story.STATUSES:
+        raise ApiError(422, "bad_input", f"status must be one of {', '.join(story.STATUSES)}")
+    base = _base_rev(body)
+    note = _str(body, "note", limit=500)
+    _item_show(store, item_id)
+    actor, principal = _who()
+    out = _build_errors(lambda: story.set_status(store, item_id, status, base_rev=base, actor=actor, principal=principal, note=note))
+    return {"ok": True, "item": item_id, **out}
+
+
 def act_item_remove(store, item_id, body):
     _unknown_keys(body, set())
     _item_show(store, item_id)
@@ -1071,6 +1087,7 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/shows/{_ID}/delete$"), act_show_delete),
     (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
     (re.compile(rf"^/api/items/{_ID}/script$"), act_story_script),
+    (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1104,7 +1121,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_story_script": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_story_status": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",

@@ -85,6 +85,8 @@ def take(store: Store, item_id: str, status: str = "on air") -> None:
     if row is None or row["span_id"] is None:
         raise KeyError(item_id)
     with store.transaction(show_lock(row["show_id"])):
+        from volt import story   # imported here: story imports this module for show_lock
+        story.check_airable(store, item_id)   # VOLT_REQUIRE_APPROVAL: every way to air passes through here
         span = store.conn.execute(
             "SELECT asset_id FROM span WHERE id = ?", (row["span_id"],)
         ).fetchone()
