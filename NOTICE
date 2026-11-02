@@ -4,9 +4,12 @@ Third-party software used by Volt
 This NOTICE lists other software Volt may invoke, or that an installer may
 add with optional extras. It is not a license for Volt.
 
-Volt has no LICENSE file until the owner names an SPDX identifier. Nothing
-in this file, in the extras, or in the documentation grants a right to copy,
-modify, or redistribute Volt.
+Volt itself is proprietary: Copyright (c) 2026 John Wallace, all rights
+reserved (see LICENSE; SPDX identifier LicenseRef-Proprietary). Nothing in
+this file, in the extras, or in the documentation grants a right to copy,
+modify, or redistribute Volt. The licences below are those of other people's
+software, as each project states them at the time of writing; check the
+version you install. This is not legal advice.
 
 ffmpeg and ffprobe
 ------------------
@@ -27,7 +30,15 @@ The Volt control plane has no required Python dependencies. These packages
 are installed only with extras; honour each project's license when you
 install the extra.
 
-- boto3 (`s3` extra)
-- azure-storage-blob and azure-identity (`azure` extra)
-- google-cloud-storage (`gcs` extra)
-- psycopg and psycopg_pool (`postgres` extra)
+- boto3 (`s3` extra): Apache-2.0
+- azure-storage-blob and azure-identity (`azure` extra): MIT
+- google-cloud-storage (`gcs` extra): Apache-2.0
+- psycopg and psycopg_pool (`postgres` extra): LGPL-3.0. They are installed
+  by the user as separate packages and imported at run time; Volt does not
+  bundle or modify them. If you redistribute a bundle that includes them,
+  LGPL-3.0 obligations (notice, source of the library, the right to replace
+  it) apply to that bundle.
+- tzdata (installed on Windows only, for recurring shows): Apache-2.0
+
+faster-whisper is MIT; its speech models and the CTranslate2 runtime carry
+their own terms (the Whisper models are MIT).

@@ -12,4 +12,4 @@ The operations layer in [product-readiness.md](product-readiness.md) (start comm
 
 Room track: [next-bundle](next-bundle.md). Default pre-take is `input.assign` then `scene.route.set` (CoreVideo Pro #861 / [PR #953](https://github.com/iamfatness/CoreVideoPro/pull/953)). The live Program take is recorded (2026-10-28) and `show-input.take` is live-proven on the desk.
 
-A MOS sender (TCP 10540/10541) and the other MOS messages, and validation of the export against a real NCS. Hardware playout adapter. Archive tier with restore. A second NLE. Recurring and relative playout schedules. License SPDX (owner).
+A MOS sender (TCP 10540/10541) and the other MOS messages, and validation of the export against a real NCS. Hardware playout adapter. Archive tier with restore. A second NLE. Recurring and relative playout schedules. 
