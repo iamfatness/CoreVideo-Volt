@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import chunking, disk, logs, pg, publish as publish_mod, record, retention, shots, speech, storage
+from volt import archive as archive_mod, chunking, disk, logs, pg, publish as publish_mod, record, retention, shots, speech, storage
 from volt.migrations import SchemaTooNewError
 from volt.store import Store
 
@@ -127,6 +127,7 @@ class Config:
     out_dir: Optional[Path] = None            # VOLT_OUT: where thumbnails are cached (same default as the server)
     quarantine_dir: Optional[Path] = None     # VOLT_QUARANTINE_DIR: where watch-folder ingest copies cards (purge may delete there)
     purge_every: float = 0.0                  # VOLT_PURGE_EVERY seconds between purge passes; 0 = off (opt in)
+    archive_dir: Optional[Path] = None        # VOLT_ARCHIVE_DIR: a dedicated archive folder (else VOLT_STORAGE, else under publish_dir)
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -156,6 +157,7 @@ class Config:
             out_dir=path("VOLT_OUT"),
             quarantine_dir=path("VOLT_QUARANTINE_DIR"),
             purge_every=float(env.get("VOLT_PURGE_EVERY") or 0),
+            archive_dir=path("VOLT_ARCHIVE_DIR"),
         )
 
     def owned_roots(self) -> retention.OwnedRoots:
@@ -287,8 +289,35 @@ def default_handlers(config: Config, engine: Optional[speech.Engine] = None) -> 
         from volt.ingest import run_ingest
         run_ingest(store, job)
 
-    return {"proxy": proxy, "asr": asr, "publish": publish, shots.SPAN_FRAMES_TYPE: span_frames,
-            shots.DETECT_TYPE: detect_shots, "delete": delete, "ingest": ingest}
+    def archive_job(store: Store, job: Claimed) -> None:
+        try:
+            backend, cold = archive_mod.pick_backend(config.storage, config.archive_dir, config.publish_dir)
+            archive_mod.run_archive(store, job.asset_id, backend, cold)
+        except (archive_mod.ArchiveRefused, archive_mod.ArchiveFailed, storage.StorageConfigError) as exc:
+            raise Permanent(str(exc)) from exc
+        except archive_mod.Wait as exc:
+            raise Defer(str(exc), exc.delay) from exc
+
+    def restore_job(store: Store, job: Claimed) -> None:
+        try:
+            backend, _cold = archive_mod.pick_backend(config.storage, config.archive_dir, config.publish_dir)
+            archive_mod.run_restore(store, job.asset_id, backend)
+        except (archive_mod.ArchiveRefused, archive_mod.ArchiveFailed, storage.StorageConfigError) as exc:
+            raise Permanent(str(exc)) from exc
+        except archive_mod.Wait as exc:
+            raise Defer(str(exc), exc.delay) from exc
+
+    def needs_hi_res(handler: Handler) -> Handler:
+        """Work that reads the hi-res waits while it is archived: it is not failed, and uses no attempt."""
+        def guarded(store: Store, job: Claimed) -> None:
+            if archive_mod.is_cold(store, job.asset_id):
+                raise Defer("the hi-res is archived; rehydrate the asset to continue", 600.0)
+            handler(store, job)
+        return guarded
+
+    return {"proxy": needs_hi_res(proxy), "asr": needs_hi_res(asr), "publish": needs_hi_res(publish),
+            shots.SPAN_FRAMES_TYPE: needs_hi_res(span_frames), shots.DETECT_TYPE: needs_hi_res(detect_shots),
+            "delete": delete, "ingest": ingest, "archive": archive_job, "restore": restore_job}
 
 
 def cache_gc_task(config: Config) -> Callable[[Store], dict]:

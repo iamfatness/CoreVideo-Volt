@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS asset (
   camera TEXT,
   source_key TEXT UNIQUE,
   created_at TEXT NOT NULL,
-  deleted_at TEXT
+  deleted_at TEXT,
+  archived_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS essence (
@@ -59,7 +60,10 @@ CREATE TABLE IF NOT EXISTS essence (
   video_profile TEXT,
   pix_fmt TEXT,
   audio_codec TEXT,
-  audio_sample_rate INTEGER
+  audio_sample_rate INTEGER,
+  tier TEXT,
+  archive_key TEXT,
+  archive_sha256 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS span (
@@ -272,6 +276,10 @@ class _LiteConnection(sqlite3.Connection):
 
 class HoldError(Exception):
     pass
+
+
+class ArchivedError(Exception):
+    """The asset's hi-res is in the archive (or on its way back): it cannot air, publish, be proxied or be exported until it is restored."""
 
 
 class NotClearedError(Exception):
@@ -584,6 +592,9 @@ class Store:
         asset = self.get_asset(asset_id)
         if asset.legal_hold or not asset.cleared or asset.deleted_at:
             raise NotClearedError(asset_id)
+        if self.conn.execute("SELECT 1 FROM essence WHERE asset_id = ? AND role = 'hi-res' AND tier IN ('archived', 'restoring')",
+                             (asset_id,)).fetchone():
+            raise ArchivedError(asset_id)
 
     def append_audit(
         self,

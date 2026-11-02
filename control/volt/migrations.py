@@ -115,6 +115,11 @@ MIGRATIONS = (
                        ("show", "recurrence", "TEXT"), ("show", "recurrence_of", "TEXT"), ("show", "occurrence_on", "TEXT")),
               sqlite=("CREATE UNIQUE INDEX IF NOT EXISTS show_occurrence ON show (recurrence_of, occurrence_on)",),
               postgres=("CREATE UNIQUE INDEX IF NOT EXISTS show_occurrence ON show (recurrence_of, occurrence_on)",)),
+    # Archive tier. essence.tier is NULL or 'online' (the file is local), 'archiving', 'archived' (only the object under
+    # archive_key exists; archive_sha256 is what a restore must match) or 'restoring'. asset.archived_at is when it went cold.
+    Migration(20, "archive tier",
+              columns=(("essence", "tier", "TEXT"), ("essence", "archive_key", "TEXT"), ("essence", "archive_sha256", "TEXT"),
+                       ("asset", "archived_at", "TIMESTAMP"))),
 )
 
 LATEST = MIGRATIONS[-1].version

@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import archive, building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -37,7 +37,7 @@ from volt.rooms import CoreVideoProRoom, LiveError
 from volt.rundown import ItemNotReady, attach, kill, reorder
 from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
-from volt.store import NotClearedError, Store
+from volt.store import ArchivedError, NotClearedError, Store
 from volt.show_input import configured_actions
 from volt.take import take_item
 
@@ -294,6 +294,8 @@ def _advance_errors(fn):
         raise ApiError(409, "held", str(exc)) from None
     except TakingError as exc:
         raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+    except ArchivedError:
+        raise ApiError(409, "archived", "the next item's media is archived; rehydrate the asset first") from None
     except NotClearedError:
         raise ApiError(409, "not_cleared", "the next item's media is not cleared for air (or is on legal hold)") from None
     except KeyError:
@@ -538,6 +540,28 @@ def act_restore(store, asset_id, body):
     return {"ok": True, "asset": asset_payload(store, asset_id)}
 
 
+def _archive_call(fn, store, asset_id):
+    _asset_exists(store, asset_id)
+    try:
+        return fn(store, asset_id)
+    except archive.ArchiveRefused as exc:
+        raise ApiError(409, "archive_refused", str(exc), reasons=exc.reasons) from None
+
+
+def act_asset_archive(store, asset_id, body):
+    """Queue moving the hi-res to the archive store. The runner uploads, verifies, records, then deletes the local file."""
+    _unknown_keys(body, set())
+    job = _archive_call(archive.request_archive, store, asset_id)
+    return {"ok": True, "job": job, "asset": asset_payload(store, asset_id)}
+
+
+def act_asset_rehydrate(store, asset_id, body):
+    """Queue bringing an archived hi-res back to its own path. (/restore already means un-delete.)"""
+    _unknown_keys(body, set())
+    job = _archive_call(archive.request_restore, store, asset_id)
+    return {"ok": True, "job": job, "asset": asset_payload(store, asset_id)}
+
+
 def act_unpublish(store, version_id, body):
     """Withdraw one publish version and remove the object Volt stored for it. Idempotent; a failed storage delete is
     a 502 `storage_failed` with the version already withdrawn, and calling again retries just the delete."""
@@ -560,6 +584,8 @@ def act_publish(store, span_id, body):
         raise ApiError(404, "not_found", f"no such span: {span_id}")
     try:
         store.assert_publishable(span["asset_id"])
+    except ArchivedError:
+        raise ApiError(409, "archived", "the asset's hi-res is archived; rehydrate it first") from None
     except NotClearedError:
         raise ApiError(409, "not_cleared", "the asset is not cleared, or is on legal hold") from None
     versions = [{"id": v.id, "kind": v.kind, "status": v.status, "url": v.url}
@@ -893,6 +919,8 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/legal-hold$"), act_legal_hold),
     (re.compile(rf"^/api/assets/{_ID}/delete$"), act_delete),
     (re.compile(rf"^/api/assets/{_ID}/restore$"), act_restore),
+    (re.compile(rf"^/api/assets/{_ID}/archive$"), act_asset_archive),
+    (re.compile(rf"^/api/assets/{_ID}/rehydrate$"), act_asset_rehydrate),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
     (re.compile(rf"^/api/versions/{_ID}/unpublish$"), act_unpublish),
     (re.compile(rf"^/api/assets/{_ID}/spans$"), act_span_create),
@@ -928,7 +956,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
-    "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
