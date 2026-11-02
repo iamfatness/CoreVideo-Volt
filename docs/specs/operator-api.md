@@ -38,6 +38,11 @@ per-user token's audit actor is its user name; `X-Volt-Actor` and body `owner` d
 | `POST /api/session/start` | viewer, bearer only | `{}` -> `{ok, csrf}` and `Set-Cookie`. `401 bearer_required` without a user token (a cookie cannot mint a session), `409 not_a_user` for the legacy `VOLT_TOKEN`, `409 public_url_required` off loopback without `VOLT_PUBLIC_URL`. Audited as `login`. |
 | `POST /api/session/end` | viewer | Ends the caller's cookie session and clears the cookie (`{ok, ended}`; `ended` is false for a bearer). Audited as `logout`. |
 | `POST /api/users/{name}/end-sessions` | admin | `{ok, ended}`: how many sessions were removed. Audited as `session_end`. |
+| `GET /auth/providers` | none | `{ok, providers: [{id, label}]}`; `404` when `VOLT_OIDC_CONFIG` is not set. **Unvalidated against a real provider.** |
+| `GET /auth/login?provider=&next=` | none | `302` to the provider with PKCE (S256), `state`, `nonce`; sets the `volt_flow` cookie (HttpOnly, `SameSite=Lax`, `Path=/auth`, 10 minutes). `next` must be a same-site path, else `/`. `422 bad_provider`, `422 bad_input`, `503 oidc_unavailable`. Unvalidated against a real provider. |
+| `GET /auth/callback?code=&state=` | none | Success: `302` to `next` with the session cookie and `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Refusal: a fixed-text HTML error page (`400` flow_invalid, provider_error, oidc_token_invalid, oidc_alg_unsupported; `403` not_provisioned, user_disabled; `503` oidc_unavailable), no session, audited `login_failed`. Success is audited `login`. Unvalidated against a real provider. |
+| `POST /api/groups/{name}/claims` | admin | `{provider, value, remove?}`: map a provider group-claim value to this group (`404`, `422 bad_input`). Audited `group_claims`. `GET /api/groups` lists each group's `claims`. |
+| `POST /api/users/{name}/identity` | admin | `{email}` (null clears): the address sign-in links by. `409 email_taken` (compared without case), `404`, `422 bad_input`. Audited `user_identity`. |
 | `GET /api/users` | admin | `{ok, users: [{name, role, created_at, disabled_at}]}`; never tokens |
 | `POST /api/users` | admin | `{name, role}` -> `{ok, user, token}`; the token is shown only here |
 | `POST /api/users/{name}/disable` / `enable` | admin | disable is immediate; the last enabled admin is `409 last_admin` unless `VOLT_TOKEN` is set |

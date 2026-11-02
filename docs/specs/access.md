@@ -1,6 +1,6 @@
 # Roles, groups and the activity log
 
-Status: tasks 1 and 2 of [the identity plan](../superpowers/plans/2026-11-01-collaboration-identity.md) are built. Sign-in (OpenID Connect), sessions, edit leases, presence and comments are still to do; see the plan and [the design](../superpowers/specs/2026-11-01-collaboration-identity-design.md).
+Status: tasks 1 and 2 of [the identity plan](../superpowers/plans/2026-11-01-collaboration-identity.md) are built. Sessions and OIDC sign-in (task 5, unvalidated against a real provider; see operations.md) are built; edit leases, presence and comments are still to do; see the plan and [the design](../superpowers/specs/2026-11-01-collaboration-identity-design.md).
 
 ## Roles
 

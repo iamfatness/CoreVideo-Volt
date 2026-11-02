@@ -46,6 +46,7 @@
 <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
 <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></symbol>
 <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-signin" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5M15 12H3M14 4h5a2 2 0 012 2v12a2 2 0 01-2 2h-5"/></symbol>
 <symbol id="i-lower3" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 15h7M6 12h4"/></symbol>
 <symbol id="i-mark" viewBox="0 0 128 128"><rect width="128" height="128" rx="22" fill="#141414" stroke="none"/><g fill="currentColor" stroke="none"><rect x="28" y="34" width="6" height="60" rx="1" transform="rotate(-18 31 64)"/><rect x="46" y="34" width="6" height="60" rx="1" transform="rotate(-18 49 64)"/><rect x="64" y="34" width="6" height="60" rx="1" transform="rotate(-18 67 64)"/><rect x="82" y="34" width="6" height="60" rx="1" transform="rotate(-18 85 64)"/></g></symbol>
 </svg>
@@ -232,6 +233,11 @@
   <form method="dialog" id="token-form">
     <h2 id="token-h">Access token</h2>
     <p class="muted">Needed when this server is not on this machine. The server swaps it for a sign-in cookie that the page cannot read; where that is not possible the token is kept for this tab only and gone when the tab closes.</p>
+    <div id="token-providers" hidden>
+      <h3 id="token-providers-h">Sign in with your account</h3>
+      <p class="muted">Sign-in with Google or Microsoft is new and has not been checked against a real provider yet. The access token below always works.</p>
+      <ul class="providers" id="token-provider-list" aria-labelledby="token-providers-h"></ul>
+    </div>
     <label for="token-in">Token</label>
     <input id="token-in" type="password" autocomplete="off" spellcheck="false">
     <div class="bar">
