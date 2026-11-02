@@ -1,6 +1,6 @@
 # MOS export of the rundown
 
-Status: built (`volt/mos.py`, `GET /api/shows/{show}/mos`, `volt mos export`). Export only: Volt opens no socket and sends nothing.
+Status: the export is built (`volt/mos.py`, `GET /api/shows/{show}/mos`, `volt mos export`) and sends nothing. The sender is built too (`volt/mos_send.py`, see [The sender](#the-sender)) and is off unless `VOLT_MOS_DEVICES` is set.
 
 ## Conformance, stated plainly
 
@@ -19,8 +19,8 @@ Unknowns to settle against an NCS: the unit of `itemEdDur` (the spec text read d
 
 | MOS | Volt |
 | --- | --- |
-| `mosID` | this media object server: `--mos-id` / `mos_id`, default `volt.mos` |
-| `ncsID` | the receiving system: `--ncs-id` / `ncs_id`, default `ncs.unset` |
+| `mosID` | in MOS this is the MOS device's id. The export's defaults (`--mos-id`, default `volt.mos`; `--ncs-id`, default `ncs.unset`) were written with the roles the wrong way round: for a file meant for a device, pass the device's id as `--mos-id` and Volt's own id as `--ncs-id`. The sender does this itself (device name as `mosID`, `VOLT_MOS_NCS_ID` as `ncsID`). |
+| `ncsID` | the newsroom computer system's id: Volt, when Volt is the sender |
 | `messageID` | always `1` (nothing is sent, so there is no sequence) |
 | `roID`, `roSlug` | show id, show title |
 | `roEdDur` | `HH:MM:SS`: the exact sum of every attached span (`frames / rate`, as a rational), rounded half up once. Hours may exceed 99. Items with no media or no usable rate add nothing. |
@@ -40,9 +40,19 @@ The span length is `frame_out - frame_in` (half open, as the NLE export), or, fo
 
 Text is cleaned before it is written: characters illegal in XML (NUL, most C0 controls, lone surrogates, U+FFFE/U+FFFF) are dropped, slugs fold whitespace runs, scripts keep line breaks, and the XML library escapes `& < >` and attribute quotes. A hostile slug cannot add elements. `mos_id` and `ncs_id` are restricted to letters, digits and `_ . : -`. The export reads only; it writes no row, no audit entry, and moves no media.
 
-## Out of scope
+## The sender
 
-A TCP sender or listener (ports 10540/10541), `roReplace`, `roMetadataReplace`, `roStorySend`, `mosObj` publishing, and any ack handling. Those need an NCS to test against.
+Volt is the NCS here: it connects out to a MOS device and sends running orders. Read from the MOS 2.8.5 text (2026-11-01): the device accepts NCS connections on its **upper port, 10541** (the default here, overridable per device); the lower port 10540 is where an NCS accepts connections from devices, and 10542 carries the object-list family, neither of which the sender uses. Messages are Unicode, high-order byte first (UCS-2, written as UTF-16BE with no byte-order mark and no XML declaration), wrapped in `<mos><mosID/><ncsID/><messageID/>…</mos>`; the NCS waits for a `roAck` on the same socket; a `heartbeat` is answered with a `heartbeat`.
+
+**Turn it on** with `VOLT_MOS_DEVICES=name=host[:port],name2=host2` (the name is also the device's MOS id) and optionally `VOLT_MOS_NCS_ID` (default `volt.ncs`). Nothing set means nothing is sent. The runner steps the sender every two seconds; an unreachable device costs at most the 3-second connect timeout per backoff interval (2, 4, 8 … 60 s).
+
+**What it sends.** `roCreate` the first time a show is sent, then `roReplace` (the same body) whenever the show's message changes, and `roDelete` for a show that has gone; `heartbeat` every 30 seconds. A show is live while any item is ready, on air or taking, and stays synced after that. Nothing hooks the code that edits a rundown: each step the sender builds the message for each live show, hashes it (ignoring the message id) and compares it with the hash the device last acknowledged, so a lost connection loses nothing and a restart resumes from the database (`mos_sync`, `mos_counter` and `mos_device`; migration 21). Message ids come from a persisted per-device counter.
+
+**Acknowledgements.** A `roAck` with `roStatus` OK is success; anything else is a refusal. A refused `roCreate` created nothing, so it is retried after 15 seconds; a refused `roReplace` keeps the device's text and is retried. **A `roCreate` that is sent and gets no answer (timeout or a dropped connection) is never resent blind:** the show becomes `unconfirmed`, is shown on the Show screen's room panel, and waits for the desk: "It was created" (the next send is a `roReplace` that aligns the device) or "Send it again" (`POST /api/mos/{device}:{show}/resolve` with `{action: created|retry}`).
+
+**Not sent:** `roMetadataReplace`, `roStorySend` (the complete body of a story, an optional Profile 4 message) and the roReq/roList reconciliation; a whole-show `roReplace` carries every change. The legacy roStory* messages are dropped by newer MOS versions and are not used.
+
+**Unvalidated:** tested against a fake device socket server only (framing, acknowledgement matching, change detection, restart and reconnect, the unconfirmed rule). No real MOS device or newsroom system has accepted these messages.
 
 ## Tests
 

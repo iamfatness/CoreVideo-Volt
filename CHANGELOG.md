@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- MOS sender (migration 21; off unless `VOLT_MOS_DEVICES` is set): Volt as the NCS connects to a device's upper port (10541), sends `roCreate`, then `roReplace` on every change and `roDelete` for a gone show, answers heartbeats and matches `roAck`s; a `roCreate` with no answer is held for the desk, never resent blind. `POST /api/mos/{device}:{show}/resolve`. Unvalidated against a real device. See [mos.md](docs/specs/mos.md).
+
 - Archive tier (migration 20): `POST /api/assets/{id}/archive` uploads the hi-res to the archive store, verifies it, records it and then deletes the local file; `/rehydrate` brings it back and checks the digest. While cold the hi-res cannot air, publish, be proxied or exported, and background work waits. Backends gain `get_file`, `set_storage_class`, `restore`, `restore_state`; purge removes the archived object. See [archive.md](docs/specs/archive.md). Unproved against a live cloud account.
 
 - FCPXML 1.10 export (`format: "fcpxml"`, a third radio on the Export tab): exact rational times, drop-frame aware, same refusals as xmeml. Unvalidated against Final Cut Pro or Resolve, and labelled so.
