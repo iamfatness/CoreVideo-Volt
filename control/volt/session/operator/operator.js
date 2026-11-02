@@ -213,6 +213,9 @@
     done:      { icon: 'ready',   word: 'Done',        cls: 'st ok' },
     queued:    { icon: 'pending', word: 'Queued',      cls: 'st pend' },
     withdrawn: { icon: 'close',   word: 'Withdrawn',   cls: 'st done' },
+    archived:  { icon: 'library', word: 'Archived',    cls: 'st done' },
+    restoring: { icon: 'pending', word: 'Restoring',   cls: 'st pend' },
+    archiving: { icon: 'pending', word: 'Archiving',   cls: 'st pend' },
     recording: { icon: 'record',  word: 'Recording',   cls: 'st air' },
     wrapped:   { icon: 'ready',   word: 'Wrapped',     cls: 'st ok' },
     fresh:     { icon: 'ready',   word: 'Fresh',       cls: 'st ok' },
@@ -261,6 +264,8 @@
     take:        ['POST', '/api/shows/{id}/take'],
     hold:        ['POST', '/api/shows/{id}/hold'],
     showSlot:    ['POST', '/api/shows/{id}/slot'],
+    assetArchive: ['POST', '/api/assets/{id}/archive'],
+    assetRehydrate: ['POST', '/api/assets/{id}/rehydrate'],
     itemSchedule: ['POST', '/api/items/{id}/schedule'],
     showRecurrence: ['POST', '/api/shows/{id}/recurrence'],
     release:     ['POST', '/api/shows/{id}/release'],
@@ -704,6 +709,24 @@
   function chip(map, key, extra) {
     const m = map[key] || ['ready', '?', key];
     return el('span', { class: 'chip ' + m[0] + (extra ? ' ' + extra : '') }, el('span', { 'aria-hidden': 'true', text: m[1] }), m[2]);
+  }
+
+  // The archive state of an asset's hi-res, and the one control that fits it: Archive (two presses) when it is local and free to
+  // move, Restore when it is cold. A job in flight shows as Archiving or Restoring instead of a button.
+  function archiveBits(a) {
+    if (!a || !a.id) return [];
+    const busy = (a.jobs || []).find((j) => (j.type === 'archive' || j.type === 'restore') && j.status !== 'failed');
+    const key = 'archive:' + a.id;
+    if (a.tier === 'archived' || a.tier === 'restoring') {
+      return [stateChip(a.tier), a.tier === 'archived' && !busy ? btn('Restore', { key: 'rehydrate:' + a.id, cls: 'ghost small', aria: 'Restore the archived hi-res of ' + short(a.id),
+        onclick: () => act('assetRehydrate', a.id, {}, { key: 'rehydrate:' + a.id, okTitle: 'Restore queued.', ok: () => 'The hi-res of ' + short(a.id) + ' is coming back. It can air and publish again when it is online.' }) }) : null];
+    }
+    if (busy) return [stateChip('archiving', busy.type === 'restore' ? 'Restoring' : 'Archiving')];
+    if (a.open || a.legalHold || !a.file) return [];
+    return [btn(S.armed === key ? 'Confirm archive' : 'Archive', { key: 'archive-b:' + a.id, cls: 'ghost small' + (S.armed === key ? ' armed' : ''),
+      aria: (S.armed === key ? 'Confirm archive of ' : 'Archive ') + short(a.id),
+      onclick: () => armedAction(key, () => act('assetArchive', a.id, {}, { key: 'archive:' + a.id, okTitle: 'Archive queued.',
+        ok: () => 'The hi-res of ' + short(a.id) + ' is uploaded and checked, then the local file is removed. Playback of the proxy is unaffected.' })) })];
   }
 
   // The rights state of an asset: cleared or not, and legal hold when it is set. Both can show at once.
@@ -2253,10 +2276,10 @@
     const d = view.d;
     const assets = (S.data && S.data.assets) || [];
     const a = assets.find((x) => x.id === d.assetId) || {};
-    paint('lib-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
+    paint('lib-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy, a.tier, a.jobs, S.armed, [...S.pending]], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      assetChips(d),
+      assetChips(d), archiveBits(a),
       d.open ? el('span', { class: 'warn' }, el('span', { 'aria-hidden': 'true', text: '● ' }), 'Recording') : null,
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
@@ -2661,10 +2684,10 @@
   function paintWordsHead(view) {
     const d = view.d;
     const a = ((S.data && S.data.assets) || []).find((x) => x.id === d.assetId) || {};
-    paint('lib-w-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy], () => el('div', { class: 'asset' },
+    paint('lib-w-head', [d.assetId, a.camera, d.rate, d.start, d.durationFrames, d.open, d.cleared, d.legalHold, d.hasProxy, a.tier, a.jobs, S.armed, [...S.pending]], () => el('div', { class: 'asset' },
       kv('Asset', short(d.assetId), true), kv('Camera', a.camera || a.show || '—'), kv('Rate', fmtRate(view.rate), true), kv('Start', d.start, true),
       kv('Length', d.durationFrames ? lengthTc(d.durationFrames, view.rate) : (d.open ? 'growing' : 'unknown'), true),
-      assetChips(d),
+      assetChips(d), archiveBits(a),
       kv('Proxy', d.hasProxy ? 'ready' : 'none')));
   }
 
@@ -2815,7 +2838,7 @@
   const FORMAT_VERIFIED = false;
   const X = { format: 'xmeml', media: 'hi-res', name: '', nameSet: false, start: XPORT.DEFAULT_TC,
     dry: null, dryKey: null, err: null, load: 'idle', tok: 0, timer: 0, key: null, run: false, done: null };
-  Object.assign(ERR_LABEL, { mixed_rates: 'Mixed frame rates', not_local: 'Media not reachable',
+  Object.assign(ERR_LABEL, { archived: 'Hi-res archived', mixed_rates: 'Mixed frame rates', not_local: 'Media not reachable',
     proxy_mismatch: 'Proxy does not match', unsupported_rate: 'Frame rate not supported', bad_path_map: 'Server path map is broken' });
   const TC_SHAPE = /^\d\d:\d\d:\d\d[:;]\d\d$/;
 
@@ -2824,6 +2847,7 @@
     essence_open: ['A file is still being written.', 'The hi-res (or proxy) of one asset has not been wrapped. Wait for wrap, or export the proxy.'],
     not_local: ['The media is not a file an editor can open.', 'It is stored as an object-store key or a relative path. Export the proxy, or restore the file to disk.'],
     no_proxy: ['One asset has no proxy.', 'Pick Hi-res, or wait for the proxy job.'],
+    archived: ['A hi-res is in the archive.', 'Restore it on the Library header, or export the proxy instead.'],
     proxy_mismatch: ['A proxy does not line up with its hi-res.', 'It records a different frame rate or start timecode, so frames would land in the wrong place. Export the hi-res.'],
     outside_source: ['A span lies outside its file.', 'Trim it on the shot list so it sits inside the recording, or take it out of the selection.'],
     mixed_rates: ['The selection mixes frame rates.', 'One sequence has one rate. Export them in separate files.'],

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS asset (
   camera TEXT,
   source_key TEXT UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at TIMESTAMPTZ
+  deleted_at TIMESTAMPTZ,
+  archived_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS essence (
@@ -31,7 +32,10 @@ CREATE TABLE IF NOT EXISTS essence (
   video_profile TEXT,
   pix_fmt TEXT,
   audio_codec TEXT,
-  audio_sample_rate INTEGER
+  audio_sample_rate INTEGER,
+  tier TEXT,
+  archive_key TEXT,
+  archive_sha256 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS span (

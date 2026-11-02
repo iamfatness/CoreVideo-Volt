@@ -147,6 +147,13 @@ class OwnedRoots:
     out_dir: Optional[Path] = None          # thumbnail cache: <out_dir>/thumbs/<asset>
     backend: Optional[object] = None        # a storage.Backend, used only for published versions (allow_versions)
     backend_factory: Optional[Callable[[], object]] = None
+    archive_backend: Optional[object] = None    # where archived hi-res objects live (volt/archive.py)
+    archive_backend_factory: Optional[Callable[[], object]] = None
+
+    def get_archive_backend(self):
+        if self.archive_backend is None and self.archive_backend_factory is not None:
+            self.archive_backend = self.archive_backend_factory()
+        return self.archive_backend
 
     def get_backend(self):
         if self.backend is None and self.backend_factory is not None:
@@ -261,6 +268,20 @@ def purge_asset(store: Store, asset_id: str, roots: OwnedRoots, allow_versions: 
             result.failed.append(f"{row['role']} {row['location']}: {exc}")
             continue
         _audit(store, asset_id, "essence", outcome, row["id"], row["role"], row["location"])
+        result.removed += 1
+
+    for row in store.conn.execute(
+            "SELECT id, role, archive_key FROM essence WHERE asset_id = ? AND archive_key IS NOT NULL ORDER BY id", (asset_id,)).fetchall():
+        try:
+            backend = roots.get_archive_backend()
+            if backend is None:
+                raise RuntimeError("no archive store is configured")
+            backend.delete(row["archive_key"])
+        except Exception as exc:  # noqa: BLE001 - StorageError text is already secret-free
+            _audit(store, asset_id, "archive", "failed", row["id"], row["role"], row["archive_key"], str(exc)[:300])
+            result.failed.append(f"archived object {row['archive_key']}: {exc}")
+            continue
+        _audit(store, asset_id, "archive", "deleted", row["id"], row["role"], row["archive_key"])
         result.removed += 1
 
     if roots.out_dir:

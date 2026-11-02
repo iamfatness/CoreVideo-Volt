@@ -583,7 +583,7 @@ def _lookup(store: Store, span_id: str):
 
 def _essence(store: Store, asset_id: str, role: str):
     return store.conn.execute(
-        "SELECT location, frame_rate, timecode_start, duration_frames, audio_layout, open "
+        "SELECT location, frame_rate, timecode_start, duration_frames, audio_layout, open, tier "
         "FROM essence WHERE asset_id = ? AND role = ?", (asset_id, role)).fetchone()
 
 
@@ -621,6 +621,8 @@ def _source(store, asset_id, media, pairs, cache) -> tuple:
     except shots.ShotError as exc:
         raise NleError(422, "bad_input", exc.reason) from None
     hi = _essence(store, asset_id, "hi-res")
+    if media != "proxy" and hi is not None and hi["tier"] in ("archived", "restoring"):
+        raise NleError(409, "archived", f"the hi-res of asset {asset_id} is archived; restore it first, or export the proxy")
     chosen = hi
     if media == "proxy":
         chosen = _essence(store, asset_id, "proxy")

@@ -63,6 +63,8 @@ def build_proxy(store: Store, asset_id: str, proxy_dir: Path, owned: bool = Fals
     ).fetchone()
     if source is None:
         raise RecordError(f"no hi-res for {asset_id}")
+    from volt.archive import require_online
+    require_online(store, asset_id)   # an archived hi-res has no file to read: restore it first
     proxy_dir.mkdir(parents=True, exist_ok=True)
     dest = proxy_dir / f"{asset_id}.mp4"
     current = store.conn.execute(

@@ -17,12 +17,14 @@ from volt.store import Store
 SPAN_LIMIT = 200
 
 
-def _blocked_by(cleared: bool, legal_hold: bool) -> Optional[str]:
+def _blocked_by(cleared: bool, legal_hold: bool, archived: bool = False) -> Optional[str]:
     """Why the asset cannot air or publish, in the words the page shows. None when it can."""
     if legal_hold:
         return "legal hold"
     if not cleared:
         return "not cleared"
+    if archived:
+        return "archived"
     return None
 
 
@@ -36,7 +38,7 @@ def shows(store: Store) -> list[dict]:
 def assets(store: Store) -> list[dict]:
     rows = store.conn.execute(
         """SELECT a.id, a.owner, a.show_name, a.camera, a.cleared, a.legal_hold, a.source_key,
-                  a.created_at, e.location, e.checksum, e.open,
+                  a.created_at, e.location, e.checksum, e.open, e.tier,
                   EXISTS (SELECT 1 FROM essence p WHERE p.asset_id = a.id AND p.role = 'proxy') AS has_proxy
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
@@ -55,7 +57,8 @@ def assets(store: Store) -> list[dict]:
         out.append({
             "id": r["id"], "owner": r["owner"], "show": r["show_name"], "camera": r["camera"],
             "sourceKey": r["source_key"], "cleared": cleared, "legalHold": held,
-            "blockedBy": _blocked_by(cleared, held),
+            "blockedBy": _blocked_by(cleared, held, r["tier"] in ("archived", "restoring")),
+            "tier": r["tier"] or "online",
             "file": r["location"], "checksum": r["checksum"],
             "open": bool(r["open"]) if r["open"] is not None else False,
             "hasProxy": bool(r["has_proxy"]),
@@ -138,7 +141,8 @@ def item_media(store: Store, show_id: str) -> dict[str, dict]:
     """Per item: the span it plays and whether its asset may air. Items with no span map to {}."""
     out: dict[str, dict] = {}
     rows = store.conn.execute(
-        """SELECT i.id, i.span_id, s.asset_id, s.tc_in, s.tc_out, s.frame_in, s.frame_out, s.text, a.cleared, a.legal_hold
+        """SELECT i.id, i.span_id, s.asset_id, s.tc_in, s.tc_out, s.frame_in, s.frame_out, s.text, a.cleared, a.legal_hold,
+                  EXISTS (SELECT 1 FROM essence h WHERE h.asset_id = a.id AND h.role = 'hi-res' AND h.tier IN ('archived', 'restoring')) AS cold
            FROM item i LEFT JOIN span s ON s.id = i.span_id LEFT JOIN asset a ON a.id = s.asset_id
            WHERE i.show_id = ?""",
         (show_id,),
@@ -153,7 +157,7 @@ def item_media(store: Store, show_id: str) -> dict[str, dict]:
             frames, rate = _span_length(facts_by_asset[r["asset_id"]], r)
             out[r["id"]] = {"span": r["span_id"], "tcIn": r["tc_in"], "tcOut": r["tc_out"],
                             "text": r["text"], "frames": frames, "rate": rate,
-                            "blockedBy": _blocked_by(bool(r["cleared"]), bool(r["legal_hold"]))}
+                            "blockedBy": _blocked_by(bool(r["cleared"]), bool(r["legal_hold"]), bool(r["cold"]))}
     return out
 
 
