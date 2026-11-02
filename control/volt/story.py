@@ -297,14 +297,55 @@ def is_approved(row) -> bool:
 
 
 def check_airable(store: Store, item_id: str) -> None:
-    """The air gate: raise playout.StoryNotApproved when the gate is on and this item's story is not approved at its
-    current revision. Called by rundown.take, the one place every path to air (go, take, the clock, cue arm) passes."""
-    if not require_approval():
-        return
+    """Refuse an item that must not go to air. A floated story is never taken (PlayoutError). With VOLT_REQUIRE_APPROVAL=1
+    a story that is not approved at its current revision is refused too (playout.StoryNotApproved). Called by
+    rundown.take, the one place every path to air (go, take, the clock, cue arm) passes."""
     row = _item_row(store, item_id)
-    if row is not None and not is_approved(row):
-        from volt.playout import StoryNotApproved
+    if row is None:
+        return
+    from volt.playout import PlayoutError, StoryNotApproved
+    if row["floated"] and row["status"] == "ready":
+        raise PlayoutError(f"item {item_id} is floated, a backup story; un-float it before it can go to air")
+    if require_approval() and not is_approved(row):
         raise StoryNotApproved(item_id, status_of(row), rev_of(row))
+
+
+# ---- floating and reading pace ----------------------------------------------------------------------------
+
+def set_floated(store: Store, item_id: str, floated: bool, actor: str) -> dict:
+    """Mark an item as a backup story (or put it back). Only a ready item can be floated; un-floating is always allowed,
+    and the item returns to the position it kept. Returns {floated, changed}."""
+    if not isinstance(floated, bool):
+        raise StoryError(422, "bad_input", "floated must be true or false")
+    found = _need_item(store, item_id)
+    with store.transaction(show_lock(found["show_id"])):
+        row = _need_item(store, item_id)
+        was = bool(row["floated"])
+        if was == floated:
+            return {"floated": was, "changed": False}
+        if floated and row["status"] != "ready":
+            raise StoryError(409, "not_floatable", f"cannot float a {row['status']} item; only a ready item can be a backup")
+        cur = store.conn.execute("UPDATE item SET floated = ? WHERE id = ? AND COALESCE(floated, ?) = ?",
+                                 (floated, item_id, False, was))
+        if cur.rowcount != 1:
+            raise StoryError(409, "stale_state", "the item changed while it was being floated; reload and try again")
+        _event(store, item_id, actor, "float", "floated" if was else "unfloated", "floated" if floated else "unfloated",
+               rev_of(row))
+        return {"floated": floated, "changed": True}
+
+
+def set_pace(store: Store, show_id: str, wpm: Optional[int], actor: str) -> dict:
+    """Set or clear (None) the show's reading pace in words per minute. Returns {readWpm} (the pace now in effect)."""
+    if wpm is not None:
+        try:
+            check_wpm(wpm)
+        except ValueError as exc:
+            raise StoryError(422, "bad_input", str(exc)) from None
+    with store.transaction(show_lock(show_id)):
+        cur = store.conn.execute("UPDATE show SET read_wpm = ? WHERE id = ?", (wpm, show_id))
+        if cur.rowcount != 1:
+            raise StoryError(404, "not_found", f"no such show: {show_id}")
+    return {"readWpm": wpm or DEFAULT_WPM}
 
 
 def set_status(store: Store, item_id: str, status: str, *, base_rev: int, actor: str, principal=None,

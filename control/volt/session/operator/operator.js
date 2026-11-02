@@ -67,7 +67,7 @@
     const taking = items.find((i) => i.status === 'taking') || null;
     const air = taking || items.find((i) => i.status === 'on air') || null;
     const floor = air ? items.indexOf(air) : -1;
-    const next = taking ? null : (items.find((i, idx) => idx > floor && i.status === 'ready') || null);
+    const next = taking ? null : (items.find((i, idx) => idx > floor && i.status === 'ready' && !i.floated) || null);
     return { items, air, next, hold: rundown ? rundown.hold : null, taking };
   }
 
@@ -77,12 +77,22 @@
     const r = media && media.frames != null ? parseRate(media.rate) : null;
     return r ? media.frames * r.d / r.n : null;
   }
-  // A killed or skipped item takes no time, so it is left out of the running sum. An item of unknown length adds zero.
+  // Planned length of an item and where it came from. An item with media keeps its media length (null when that is unknown);
+  // one without media (an anchor read) uses its read time from the server's script count; one with neither has no length.
+  // An older server that sends no lengthSource is read as media, which is what it always was.
+  function itemPlan(item, media) {
+    const src = (item && item.lengthSource) || 'media';
+    if (src === 'read') return { seconds: Number.isFinite(item.readSeconds) ? item.readSeconds : null, source: 'read' };
+    if (src === 'none') return { seconds: null, source: 'none' };
+    return { seconds: itemSeconds(media), source: 'media' };
+  }
+  // A killed or skipped item takes no time, so it is left out of the running sum, and neither does a floated one (a backup
+  // that is not in the running order). An item of unknown length adds zero.
   // The clock is anchored on the first counted item that has started; before that only offsets are known.
   function frontTimes(items, seconds, nowMs) {
     let run = 0;
     const rows = items.map((it) => {
-      if (it.status === 'killed' || it.status === 'skipped') return { id: it.id, offset: null, startMs: null };
+      if (it.status === 'killed' || it.status === 'skipped' || it.floated) return { id: it.id, offset: null, startMs: null };
       const row = { id: it.id, offset: run, startMs: null };
       run += seconds[it.id] || 0;
       return row;
@@ -272,7 +282,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned, scriptStats };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -417,6 +427,12 @@
     return ms ? t + '.' + ms[1] : t;
   }
 
+  // The story summary every /rundown item carries (never the script text). An older server sends none: draft, rev 1, media length.
+  function storyFields(i) {
+    return { storyStatus: i.storyStatus || 'draft', scriptRev: Number.isInteger(i.scriptRev) ? i.scriptRev : 1,
+      words: Number.isInteger(i.words) ? i.words : 0, readSeconds: Number.isFinite(i.readSeconds) ? i.readSeconds : 0,
+      floated: i.floated === true, lengthSource: i.lengthSource || 'media' };
+  }
   // ---- the one place that knows the /rundown shape: {hold, items} ----------
   function parseRundown(raw) {
     const r = raw || {};
@@ -426,8 +442,9 @@
       scheduledAt: i.scheduledAt || null, scheduleState: i.scheduleState || null, scheduleNote: i.scheduleNote || null,
       scheduleMode: i.scheduleMode || null, scheduleOffsetSeconds: Number.isInteger(i.scheduleOffsetSeconds) ? i.scheduleOffsetSeconds : null,
       asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
+      ...storyFields(i),
     }));
-    return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null,
+    return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null, readWpm: Number.isInteger(r.readWpm) ? r.readWpm : 160,
       recurrence: r.recurrence && typeof r.recurrence === 'object' ? r.recurrence : null, recurrenceOf: r.recurrenceOf || null };
   }
 
@@ -949,7 +966,7 @@
     const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
     S.selected = sel || null;
     const seconds = {};
-    for (const it of items) seconds[it.id] = itemSeconds(mediaOf(it.id));
+    for (const it of items) seconds[it.id] = itemPlan(it, mediaOf(it.id)).seconds;
     const timing = frontTimes(items, seconds, Date.now());
     const slot = S.data.rundown ? S.data.rundown.slotSeconds : null;
     const back = backTimes(items, seconds, slot);

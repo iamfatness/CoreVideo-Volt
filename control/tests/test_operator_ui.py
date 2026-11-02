@@ -500,7 +500,7 @@ class State(Api):
 
     def test_state_keeps_the_rundown_shape_and_adds_what_the_screens_need(self):
         s = self.state()
-        self.assertEqual(set(s["rundown"]), {"hold", "items", "recurrence", "recurrenceOf", "slotSeconds"})
+        self.assertEqual(set(s["rundown"]), {"hold", "items", "readWpm", "recurrence", "recurrenceOf", "slotSeconds"})
         self.assertEqual(s["rundown"]["hold"]["reason"], "Waiting on the producer for the replay cue")
         self.assertEqual(s["show"]["id"], self.show)
         statuses = [i["status"] for i in s["rundown"]["items"]]
@@ -1216,7 +1216,7 @@ class SlotUi(unittest.TestCase):
         js, css = FILES["operator.js"], FILES["operator.css"]
         self.assertIn("showSlot:", js)
         self.assertIn("backTimes(", js[js.index("function renderShow"):])
-        self.assertIn("slotSeconds", js[js.index("function parseRundown"):js.index("function parseRundown") + 700])
+        self.assertIn("slotSeconds", js[js.index("function parseRundown"):js.index("function parseRundown") + 900])
         for needle in ("'Over '", "'Under '", "'On slot'", "'Back'"):
             self.assertIn(needle, js)
         self.assertRegex(css, r"\.rrow\.hb,\.rhead\.hb\{grid-template-columns:[^}]*6\.5rem 6\.5rem 16rem\}")

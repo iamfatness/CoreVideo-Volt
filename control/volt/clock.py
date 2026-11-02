@@ -153,11 +153,11 @@ def _next_ready(store: Store, show_id: str) -> Optional[str]:
     if current is not None:
         floor = store.conn.execute("SELECT position FROM item WHERE id = ?", (current,)).fetchone()["position"]
     for row in store.conn.execute(
-        """SELECT id, status FROM item WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
+        """SELECT id, status, floated FROM item WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
            ORDER BY position""",
         (show_id, floor),
     ).fetchall():
-        if row["status"] == "ready":
+        if row["status"] == "ready" and not row["floated"]:   # a floated (backup) story is passed over, as go does
             return row["id"]
     return None
 
@@ -356,7 +356,7 @@ def tick(
         return events
     stamp = lambda: now().astimezone(timezone.utc).strftime(_FMT)  # as-run comes from the same injected clock
     rows = store.conn.execute(
-        """SELECT id, show_id, status, scheduled_at, schedule_state FROM item
+        """SELECT id, show_id, status, scheduled_at, schedule_state, floated FROM item
            WHERE scheduled_at IS NOT NULL AND (schedule_state IS NULL OR schedule_state = 'held')
            ORDER BY scheduled_at, position"""
     ).fetchall()
@@ -383,6 +383,9 @@ def tick(
                 note = "was held when due; " + note
             if _transition(store, item_id, state, "missed", note):
                 events.append(Event(item_id, show_id, "missed", note))
+            continue
+        if row["floated"]:
+            events.append(Event(item_id, show_id, "blocked", "item is floated (a backup story); un-float it for the clock to take it"))
             continue
         held = hold_state(store, show_id)
         if held is not None:

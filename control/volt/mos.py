@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Optional
 
-from volt import shots, timecode
+from volt import shots, story, timecode
 from volt.nle import clean as clean_text
 from volt.store import Store
 
@@ -249,7 +249,8 @@ def load_stories(store: Store, show_id: str) -> list:
         "SELECT i.id, i.position, i.slug, i.script, i.status, i.span_id, s.asset_id, s.tc_in, s.tc_out, "
         "s.label, s.frame_in, s.frame_out, a.camera "
         "FROM item i LEFT JOIN span s ON s.id = i.span_id LEFT JOIN asset a ON a.id = s.asset_id "
-        "WHERE i.show_id = ? ORDER BY i.position, i.id", (show_id,)).fetchall()
+        # A floated (backup) story is not in the running order, so it is not exported.
+        "WHERE i.show_id = ? AND (i.floated IS NULL OR i.floated = ?) ORDER BY i.position, i.id", (show_id, False)).fetchall()
     cache: dict = {}
     out = []
     for r in rows:
@@ -257,7 +258,8 @@ def load_stories(store: Store, show_id: str) -> list:
         if r["span_id"] is not None and r["asset_id"] is not None:
             media = _media(store, {**dict(r), "span_id": r["span_id"]}, cache)
         cues = tuple(CueRef(c.room, c.command, c.payload, c.status) for c in cues_of(store, r["id"]))
-        out.append(Story(r["id"], r["position"], r["slug"], r["status"], r["script"] or "", media, cues))
+        # Private `//` notes never leave the editing screens: the story body the NCS gets has them taken out.
+        out.append(Story(r["id"], r["position"], r["slug"], r["status"], story.public_text(r["script"]), media, cues))
     return out
 
 

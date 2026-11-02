@@ -173,11 +173,13 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
         passed: list[str] = []
         target: Optional[str] = None
         for row in store.conn.execute(
-            """SELECT id, status FROM item
+            """SELECT id, status, floated FROM item
                WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
                ORDER BY position""",
             (show_id, floor),
         ).fetchall():
+            if row["status"] == "ready" and row["floated"]:
+                continue   # a backup story: passed over, left ready, not marked skipped
             if row["status"] == "killed":
                 passed.append(row["id"])
             else:
