@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from volt import cues as cue_mod
+from volt import story
 from volt.dispatch import HANDLERS
 from volt.disk import DiskLowError
 from volt.ingest import IngestError, request as ingest_request
@@ -97,7 +98,9 @@ def add_item(store: Store, show_id: str, slug: str, script: str = "",
     return new_id, True
 
 
-def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optional[str]) -> None:
+def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optional[str], actor: str = "desk") -> None:
+    """Set the slug and/or script of a ready item. The change goes through story.set_script (same revision history,
+    approval drop and limits as the script route), with no base revision: the old callers never sent one."""
     row = _item_row(store, item_id)
     if row is None:
         raise BuildError(404, "not_found", f"no such item: {item_id}")
@@ -106,9 +109,7 @@ def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optiona
         if row is None:
             raise BuildError(404, "not_found", f"no such item: {item_id}")
         _need_ready(row, "rename")
-        store.conn.execute(
-            "UPDATE item SET slug = ?, script = ? WHERE id = ? AND status = 'ready'",
-            (row["slug"] if slug is None else slug, row["script"] if script is None else script, item_id))
+        story.set_script(store, item_id, script=script, slug=slug, base_rev=None, actor=actor)
 
 
 _PLAYED = ("on air", "aired")
@@ -160,6 +161,7 @@ def remove_item(store: Store, item_id: str) -> str:
             (item_id,))
         if cur.rowcount != 1:
             raise BuildError(409, "not_removable", "the item changed while it was being removed")
+        story.forget(store, item_id)
         return row["show_id"]
 
 
@@ -182,6 +184,8 @@ def delete_show(store: Store, show_id: str) -> dict:
             raise BuildError(409, "show_not_deletable",
                              f"{len(played)} item(s) are on air or have aired; the as-run log keeps the show",
                              items=[{"id": r["id"], "status": r["status"]} for r in played])
+        store.conn.execute("DELETE FROM story_rev WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,))
+        store.conn.execute("DELETE FROM story_event WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,))
         cues = store.conn.execute(
             "DELETE FROM cue WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,)).rowcount
         items = store.conn.execute(

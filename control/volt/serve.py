@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, story, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -29,7 +29,7 @@ from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
 from volt import pg
 from volt.pg import is_dsn
-from volt.playout import HeldError, PlayoutError, TakingError, advance, hold, hold_state, release, skip
+from volt.playout import HeldError, PlayoutError, StoryNotApproved, TakingError, advance, hold, hold_state, release, skip
 from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
@@ -82,8 +82,16 @@ UNPUBLISH_BACKEND = None
 # a hold must land while a take is still waiting on the room.
 _SEQ = threading.Lock()
 _REC = threading.Lock()
-
+# Who is making the POST being handled. The action handlers take (store, match, body) only, so the request's actor
+# and principal ride here (one value per handler thread, set in do_POST and cleared after).
 _REQUEST = threading.local()
+
+
+def _who():
+    """(actor name, principal) of the POST being handled; ("desk", None) outside a request (a direct call from a test)."""
+    return getattr(_REQUEST, "actor", None) or LEGACY_ACTOR, getattr(_REQUEST, "principal", None)
+
+
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
 _ACTOR = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 _AUDIT_KIND = {
@@ -173,12 +181,16 @@ def _sched_text(value):
 
 
 def rundown_payload(store: Store, show_id: str) -> dict:
-    """The /rundown shape: {hold, items, slotSeconds}. Raises KeyError for an unknown show."""
+    """The /rundown shape: {hold, items, slotSeconds, readWpm}. Raises KeyError for an unknown show.
+
+    Each item also carries its story summary (storyStatus, scriptRev, words, readSeconds, floated, lengthSource) but never
+    the script text: this is polled every two seconds, and the text can hold private notes."""
     held = hold_state(store, show_id)
-    slot = store.conn.execute("SELECT slot_seconds, recurrence, recurrence_of FROM show WHERE id = ?", (show_id,)).fetchone()
+    slot = store.conn.execute("SELECT slot_seconds, recurrence, recurrence_of, read_wpm FROM show WHERE id = ?", (show_id,)).fetchone()
+    wpm = (slot["read_wpm"] if slot else None) or story.DEFAULT_WPM
     sched = {r["id"]: r for r in store.conn.execute(
-        "SELECT id, scheduled_at, schedule_state, schedule_note, schedule_mode, schedule_offset_seconds FROM item WHERE show_id = ?",
-        (show_id,)).fetchall()}
+        "SELECT id, scheduled_at, schedule_state, schedule_note, schedule_mode, schedule_offset_seconds, script, story_status, "
+        "script_rev, floated FROM item WHERE show_id = ?", (show_id,)).fetchall()}
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
@@ -189,12 +201,25 @@ def rundown_payload(store: Store, show_id: str) -> dict:
          "scheduleState": sched[row.id]["schedule_state"] if row.id in sched else None,
          "scheduleNote": sched[row.id]["schedule_note"] if row.id in sched else None,
          "scheduleMode": sched[row.id]["schedule_mode"] if row.id in sched else None,
-         "scheduleOffsetSeconds": sched[row.id]["schedule_offset_seconds"] if row.id in sched else None}
+         "scheduleOffsetSeconds": sched[row.id]["schedule_offset_seconds"] if row.id in sched else None,
+         **_story_summary(sched.get(row.id), row.span_id, wpm)}
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
             "items": items, "slotSeconds": slot[0] if slot else None,
-            "recurrence": json.loads(slot[1]) if slot and slot[1] else None, "recurrenceOf": slot[2] if slot else None}
+            "recurrence": json.loads(slot[1]) if slot and slot[1] else None, "recurrenceOf": slot[2] if slot else None,
+            "readWpm": wpm}
+
+
+def _story_summary(row, span_id, wpm: int) -> dict:
+    """The per-item story fields of /rundown. `lengthSource` says where the planned length comes from: the attached
+    media, the script's read time, or nothing (no media and nothing to read)."""
+    stats = story.script_stats(row["script"] if row is not None else "", wpm)
+    return {"storyStatus": (row["story_status"] if row is not None else None) or "draft",
+            "scriptRev": (row["script_rev"] if row is not None else None) or 1,
+            "words": stats["words"], "readSeconds": stats["readSeconds"],
+            "floated": bool(row["floated"]) if row is not None else False,
+            "lengthSource": "media" if span_id else ("read" if stats["words"] else "none")}
 
 
 def asset_payload(store: Store, asset_id: str) -> dict:
@@ -301,6 +326,8 @@ def _advance_errors(fn):
         raise ApiError(409, "held", str(exc)) from None
     except TakingError as exc:
         raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+    except StoryNotApproved as exc:
+        raise ApiError(409, "story_not_approved", str(exc), item=exc.item_id) from None
     except ArchivedError:
         raise ApiError(409, "archived", "the next item's media is archived; rehydrate the asset first") from None
     except NotClearedError:
@@ -750,7 +777,7 @@ def act_export_nle(store, _unused, body):
 def _build_errors(fn):
     try:
         return fn()
-    except building.BuildError as exc:
+    except (building.BuildError, story.StoryError) as exc:
         raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
 
 
@@ -801,9 +828,69 @@ def act_item_rename(store, item_id, body):
         if not slug:
             raise ApiError(422, "bad_input", "slug cannot be empty")
     show_id, _ = _item_show(store, item_id)
-    _build_errors(lambda: building.rename_item(store, item_id, slug, script))
+    _build_errors(lambda: building.rename_item(store, item_id, slug, script, _who()[0]))
     return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id),
             "orderVersion": building.order_version(store, show_id)}
+
+
+# ---- stories: the script save and the story read (docs/superpowers/specs/2026-11-01-newsroom-scripts-design.md) -----------
+# Rules live in volt/story.py; these handlers read the body, call it, and map StoryError to HTTP.
+
+def _base_rev(body: dict) -> int:
+    value = body.get("baseRev")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ApiError(422, "bad_input", "baseRev is required: the revision this edit is based on (a whole number, 1 or more)")
+    return value
+
+
+def act_story_script(store, item_id, body):
+    """Save an item's slug and/or script text, based on revision `baseRev`. A stale base is 409 with what is current."""
+    _unknown_keys(body, {"script", "slug", "baseRev"})
+    script = _str(body, "script", limit=story.MAX_SCRIPT)
+    slug = _str(body, "slug", limit=200)
+    if script is None and slug is None:
+        raise ApiError(422, "bad_input", "give slug, script or both")
+    if slug is not None and not slug.strip():
+        raise ApiError(422, "bad_input", "slug cannot be empty")
+    base = _base_rev(body)
+    _item_show(store, item_id)
+    out = _build_errors(lambda: story.set_script(store, item_id, script=script, slug=slug, base_rev=base, actor=_who()[0]))
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    text = store.conn.execute("SELECT script FROM item WHERE id = ?", (item_id,)).fetchone()["script"]
+    return {"ok": True, "item": item_id, **out, "stats": story.script_stats(text, story.wpm_of(store, row["show_id"]))}
+
+
+def act_item_float(store, item_id, body):
+    """Mark an item as a backup story, or put it back. {floated: bool}. Only a ready item can be floated."""
+    _unknown_keys(body, {"floated"})
+    floated = _bool(body, "floated")
+    show_id, _ = _item_show(store, item_id)
+    _build_errors(lambda: story.set_floated(store, item_id, floated, _who()[0]))
+    return {"ok": True, "item": item_id, "floated": floated, "rundown": rundown_payload(store, show_id)}
+
+
+def act_show_pace(store, show_id, body):
+    """Set or clear the show's reading pace. {wpm: 60..400 | null}; nothing else is accepted."""
+    _unknown_keys(body, {"wpm"})
+    if "wpm" not in body:
+        raise ApiError(422, "bad_input", "wpm is required (a whole number from 60 to 400, or null for the default pace)")
+    _show_exists(store, show_id)
+    _build_errors(lambda: story.set_pace(store, show_id, body["wpm"], _who()[0]))
+    return {"ok": True, "rundown": rundown_payload(store, show_id)}
+
+
+def act_story_status(store, item_id, body):
+    """Move a story between draft, ready, approved and killed, quoting `baseRev`. Never touches the item's playout status."""
+    _unknown_keys(body, {"status", "baseRev", "note"})
+    status = _str(body, "status", required=True, limit=20)
+    if status not in story.STATUSES:
+        raise ApiError(422, "bad_input", f"status must be one of {', '.join(story.STATUSES)}")
+    base = _base_rev(body)
+    note = _str(body, "note", limit=500)
+    _item_show(store, item_id)
+    actor, principal = _who()
+    out = _build_errors(lambda: story.set_status(store, item_id, status, base_rev=base, actor=actor, principal=principal, note=note))
+    return {"ok": True, "item": item_id, **out}
 
 
 def act_item_remove(store, item_id, body):
@@ -888,7 +975,14 @@ def devices_get(handler, store, path: str, query: dict) -> bool:
 
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
-    """GET /api/cue-commands and GET /api/items/{item}/cues. Returns True when it answered."""
+    """GET /api/cue-commands, GET /api/items/{item}/cues and GET /api/items/{item}/story. Returns True when it answered."""
+    s = re.fullmatch(rf"/api/items/{_ID}/story", path)
+    if s:
+        if query:
+            raise ApiError(422, "bad_input", "this route takes no parameters")
+        who = getattr(handler, "principal", None)
+        handler._json(200, _build_errors(lambda: story.get_story(store, s.group(1), include_notes=who is None or who.role != "viewer")))
+        return True
     m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
     if path != "/api/cue-commands" and not m:
         return False
@@ -1029,6 +1123,10 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/shows/{_ID}/items$"), act_item_add),
     (re.compile(rf"^/api/shows/{_ID}/delete$"), act_show_delete),
     (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
+    (re.compile(rf"^/api/items/{_ID}/script$"), act_story_script),
+    (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
+    (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
+    (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1062,7 +1160,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -1262,7 +1360,7 @@ class Handler(BaseHTTPRequestHandler):
                                f"{need} role required; {self.principal.name} is {self.principal.role}")
             body = self._read_json()
             actor = _actor(self.headers, body, self.principal)
-            _REQUEST.actor = actor                  # for the few actions that record who (safe mode)
+            _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body)
             status = 200
@@ -1280,6 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("unhandled error on POST %s", urlparse(self.path).path)
             self._error(ApiError(500, "internal", "internal error; nothing further was changed by this handler"))
         finally:
+            _REQUEST.actor = _REQUEST.principal = None
             if store is not None:
                 store.close()
 
