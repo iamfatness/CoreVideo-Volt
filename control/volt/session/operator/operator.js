@@ -343,6 +343,8 @@
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
+    'deck.play': 'Deck: play', 'deck.stop': 'Deck: stop', 'deck.goto': 'Deck: go to clip',
+    'deck.record.start': 'Deck: start record', 'deck.record.stop': 'Deck: stop record',
   };
   const REC_STEPS = ['requested', 'preparing', 'producing', 'stopping', 'finalizing', 'completed'];
   const REC_ALIAS = { starting: 'preparing', live: 'producing' };
@@ -1017,7 +1019,8 @@
   function addCue(it) {
     const payload = S.build.payload;
     S.build.payload = '';
-    act('cueAdd', it.id, { command: S.build.cmd, payload }, { key: 'cue-add', okTitle: 'Cue added.',
+    const info = cmdInfo(S.build.cmd);
+    act('cueAdd', it.id, Object.assign({ command: S.build.cmd, payload }, info && info.room ? { room: info.room } : {}), { key: 'cue-add', okTitle: 'Cue added.',
       ok: (d) => (CUE_LABEL[d.cue.command] || d.cue.command) + ' is on "' + it.slug + '".' + (d.warning ? ' ' + d.warning : '') });
   }
 
@@ -1091,7 +1094,7 @@
           onchange: (e) => { b.cmd = e.target.value; S.sigs['cue-add'] = null; render(); } },
           cmds.length ? cmds.map((c) => el('option', { value: c.command, selected: c.command === b.cmd },
             (CUE_LABEL[c.command] || c.command) + (c.verified ? '' : (c.adapter ? ' (not live-proven)' : ' (no verified adapter)')))) : el('option', { value: '' }, 'Loading commands'))),
-        formRow('Payload (optional)', 'cue-payload', textIn('cue-payload', 'payload', { maxlength: '2000' })),
+        formRow(info && info.room === 'hyperdeck' ? 'Deck and clip (A, A/3 or A/intro.mov)' : 'Payload (optional)', 'cue-payload', textIn('cue-payload', 'payload', { maxlength: '2000' })),
         info && !info.verified ? el('small', { class: 'no', text: info.adapter
           ? '? ' + info.command + ' has an adapter, but no live Program take is recorded yet. The cue is stored and a take will run it.'
           : '? No verified adapter for ' + info.command + ' yet. The cue is stored, but a take stops at it.' }) : null,

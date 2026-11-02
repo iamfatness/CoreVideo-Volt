@@ -22,6 +22,9 @@ class Result:
     command: str
     status: str  # fired | failed | unsupported
     detail: str = ""
+    # A failure in a room other than CoreVideo Pro (a deck) is shown red but never rewinds the take and never stops the cues after it:
+    # a deck cannot be un-played, so the item stays on air and the desk decides (owner ruling, 2026-10-31).
+    advisory: bool = False
 
 
 def _poll(check: Callable[[], bool], attempts: int, interval: float, sleep) -> bool:
@@ -75,7 +78,9 @@ HANDLERS = {
 }
 
 # Per room name, the commands that room has a verified handler for. A second room kind adds its table here.
-ROOM_HANDLERS = {COREVIDEO: HANDLERS}
+from volt import hyperdeck as _hyperdeck  # noqa: E402
+
+ROOM_HANDLERS = {COREVIDEO: HANDLERS, _hyperdeck.ROOM: _hyperdeck.HANDLERS}
 
 
 def dispatch_item(
@@ -107,13 +112,19 @@ def dispatch_item(
             detail = (f"no verified adapter for {cue.room}/{cue.command}" if handler is None
                       else f"room {cue.room} is not configured")
             record_failure(store, cue.id, "unsupported", detail)
-            results.append(Result(cue.id, cue.command, "unsupported", detail))
+            advisory = cue.room != COREVIDEO
+            results.append(Result(cue.id, cue.command, "unsupported", detail, advisory))
+            if advisory:
+                continue
             break
         try:
             handler(store, client, cue, ctx)
         except LiveError as exc:
             record_failure(store, cue.id, "failed", str(exc))
-            results.append(Result(cue.id, cue.command, "failed", str(exc)))
+            advisory = cue.room != COREVIDEO
+            results.append(Result(cue.id, cue.command, "failed", str(exc), advisory))
+            if advisory:
+                continue
             break
         store.conn.execute(
             "UPDATE cue SET status = 'fired', fail_status = NULL, fail_detail = NULL WHERE id = ?", (cue.id,))

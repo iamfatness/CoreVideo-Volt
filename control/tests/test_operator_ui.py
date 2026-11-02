@@ -1263,3 +1263,11 @@ class ArchiveUi(unittest.TestCase):
     def test_states(self):
         got = _node(["stateChipSpec", "archived"], ["stateChipSpec", "restoring"])
         self.assertEqual(got, [{"icon": "library", "word": "Archived", "cls": "st done"}, {"icon": "pending", "word": "Restoring", "cls": "st pend"}])
+
+
+class DeckCueUi(unittest.TestCase):
+    def test_deck_cues_have_labels_and_send_their_room(self):
+        js = FILES["operator.js"]
+        for c in ("deck.play", "deck.stop", "deck.goto", "deck.record.start", "deck.record.stop"):
+            self.assertIn("'%s':" % c, js, c)
+        self.assertIn("info && info.room ? { room: info.room } : {}", js)

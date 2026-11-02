@@ -44,7 +44,7 @@ def take_item(
         store, room, adv.target, owner=owner, attempts=attempts, interval=interval, sleep=sleep,
         show_input_actions=show_input_actions,
     )
-    if any(r.status != "fired" for r in results):
+    if any(r.status != "fired" and not r.advisory for r in results):   # a failed deck cue is advisory: it does not rewind the take
         rewind(store, adv)
         return TakeResult(False, adv.target, results)
     commit_take(store, adv, clock)

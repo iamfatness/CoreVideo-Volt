@@ -14,6 +14,8 @@ Built: a schedule clock (see Schedule clock below) that takes items at their tim
 
 `control/volt/take.py` `take_item` advances the rundown, arms the new item's cues and dispatches them. If every cue lands, the item is on air with its as-run in written. If any cue fails or is unsupported, the rundown is rewound: the new item is ready again with no as-run in, the outgoing item is back on air with no as-run out, and passed-over killed items are killed again. Cues that already fired stay fired, because they happened in the room. The failed cue stays armed, and taking again resumes there.
 
+If a cue in a room other than CoreVideo Pro (a deck) fails or is unsupported, the take is **not** rewound: the item goes on air, the cue stays armed with its failure shown, and the cues after it still run (see [hyperdeck.md](hyperdeck.md)).
+
 ## Hold
 
 An operator holds the rundown so nothing advances, then releases it.
