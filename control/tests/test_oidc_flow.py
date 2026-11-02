@@ -464,13 +464,43 @@ class Flow(unittest.TestCase):
 
     def test_login_failed_rows_are_rate_limited_with_a_count(self):
         _, cookie, q = self.start()
-        for _ in range(30):
-            with self.assertRaises(oidc.LoginError):
-                oidc.complete(self.store, self.cfg, {"code": "c", "state": "nope"}, cookie, self.t, self.http)
+        bad = {"code": "c", "state": "nope"}
+        base = oidc._wall()
+        with mock.patch.object(oidc, "_wall", lambda: base - 2):     # the whole burst falls inside one rate-limit window
+            for _ in range(30):
+                with self.assertRaises(oidc.LoginError):
+                    oidc.complete(self.store, self.cfg, bad, cookie, self.t, self.http)
         rows = self.audit("login_failed")
-        self.assertLessEqual(len(rows), 3)                       # one per second (the loop may straddle a second boundary)
-        total = sum(int(r["detail"].rsplit(" x", 1)[1]) if " x" in r["detail"] else 1 for r in rows)
-        self.assertEqual(total, 30)
+        self.assertEqual(len(rows), 1)                           # one row for 30 failures
+        # a later failure for the same reason is written again and says how many were skipped since the last row
+        with mock.patch.object(oidc, "_wall", lambda: base + 5):
+            with self.assertRaises(oidc.LoginError):
+                oidc.complete(self.store, self.cfg, bad, cookie, self.t, self.http)
+        rows = self.audit("login_failed")
+        counted = sum(int(re.search(r"\+(\d+) suppressed", r["detail"]).group(1)) for r in rows if "suppressed" in r["detail"])
+        self.assertEqual(len(rows) + counted, 31)               # every failure is either a row or counted in a later row
+        self.assertEqual((len(rows), counted), (2, 29))
+        self.assertTrue(any("+29 suppressed" in r["detail"] for r in rows))
+        # a different reason is not held back by the first
+        self.refused("flow_invalid", oidc.complete, self.store, self.cfg, {}, cookie, self.t, self.http)
+
+    def test_nothing_in_the_oidc_path_updates_or_deletes_an_audit_row(self):
+        self.user()
+        statements = []
+        self.store.conn.set_trace_callback(statements.append)
+        self.sign_in()
+        for _ in range(5):
+            with self.assertRaises(oidc.LoginError):
+                oidc.complete(self.store, self.cfg, {"code": "c", "state": "nope"}, "x", self.t, self.http)
+        self.google.bad_nonce = True
+        with self.assertRaises(oidc.LoginError):
+            self.sign_in()
+        self.store.conn.set_trace_callback(None)
+        self.assertTrue(any("INSERT INTO audit" in s for s in statements))
+        for sql in statements:
+            self.assertNotRegex(sql, r"(?i)\b(UPDATE|DELETE\s+FROM)\s+audit\b")
+        source = (Path(oidc.__file__)).read_text(encoding="utf-8")
+        self.assertNotRegex(source, r"(?i)(UPDATE|DELETE\s+FROM)\s+audit\b")
 
     # -- mapping claims to users --------------------------------------
     def test_unknown_identity_links_by_verified_email_only(self):

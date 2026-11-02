@@ -303,6 +303,7 @@ def reset_caches() -> None:
     with _LOCK:
         _DISCOVERY.clear()
         _JWKS.clear()
+        _SUPPRESSED.clear()
 
 
 def _discover(provider: Provider, http, now: float) -> dict:
@@ -435,22 +436,27 @@ class LoginResult:
     groups_overage: bool = False
 
 
+_wall = time.time              # the real clock, for the audit rate limit (audit rows carry real time); a test replaces it
+_SUPPRESSED: dict = {}         # (actor, reason) -> failures not written in the current window; process-local, lost on restart
+
+
 def _audit_failure(store, err: LoginError) -> None:
-    """One login_failed row per second at most, with a count: a hostile client cannot fill the table. Rows hold the provider and a fixed
-    reason code, never a state, code, cookie, token or provider text. (The count is written into the second's own row; nothing else of
-    an audit row is ever changed.)"""
+    """Write a login_failed row, INSERT only (the audit table is append-only: nothing in this module updates or deletes an audit row).
+    Spam limit: at most one row per second for the same provider and reason; the failures skipped in between are counted in memory and
+    the next row that is written says how many ("+N suppressed"). Rows hold the provider and a fixed reason code, never a state, code,
+    cookie, token or provider text."""
     try:
         actor = "oidc:" + err.provider if err.provider else "oidc"
-        detail = err.code + (":" + err.detail if err.detail else "")
-        last = store.conn.execute(
-            "SELECT id, at, detail FROM audit WHERE action = 'login_failed' ORDER BY at DESC, id DESC LIMIT 1").fetchone()
-        if last is not None and time.time() - sessions._epoch(last["at"]) < 1.0:
-            match = re.search(r" x(\d+)$", last["detail"] or "")
-            count, base = (int(match.group(1)) + 1, last["detail"][:match.start()]) if match else (2, last["detail"] or "")
-            store.conn.execute("UPDATE audit SET detail = ? WHERE id = ?", (f"{base} x{count}", last["id"]))
-            store.conn.commit()
+        reason = err.code + (":" + err.detail if err.detail else "")
+        key = (actor, reason)
+        recent = store.conn.execute(
+            "SELECT at FROM audit WHERE action = 'login_failed' AND actor = ? AND (detail = ? OR detail LIKE ?) ORDER BY at DESC LIMIT 1",
+            (actor, reason, reason + " %")).fetchone()
+        if recent is not None and _wall() - sessions._epoch(recent["at"]) < 1.0:
+            _SUPPRESSED[key] = _SUPPRESSED.get(key, 0) + 1
             return
-        store.append_audit(actor, "login_failed", "session", err.provider or "-", detail)
+        skipped = _SUPPRESSED.pop(key, 0)
+        store.append_audit(actor, "login_failed", "session", err.provider or "-", reason + (f" +{skipped} suppressed" if skipped else ""))
     except Exception:  # noqa: BLE001 - failing to record a refusal must not turn it into a crash or a success
         log.exception("could not write the login_failed audit row")
         try:
