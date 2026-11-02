@@ -6,7 +6,9 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
-- Identity, first two slices (migrations 22 and 23): a read-only `viewer` role, groups that raise a member's role (effective role read on every request), `POST /api/users/{name}/role`, `/api/groups...`, `volt user role|group-add|group-member`; and an audit view: `GET /api/audit` with filters, cursor paging and CSV for admins, an Activity screen. See [access.md](docs/specs/access.md). Sign-in, sessions, leases and comments are still to do.
+- Identity, first two slices (migrations 22 and 23): a read-only `viewer` role, groups that raise a member's role (effective role read on every request), `POST /api/users/{name}/role`, `/api/groups...`, `volt user role|group-add|group-member`; and an audit view: `GET /api/audit` with filters, cursor paging and CSV for admins, an Activity screen. See [access.md](docs/specs/access.md). Sign-in, leases and comments are still to do.
+
+- Identity, slice 3 (migration 26): server-side sessions behind an HttpOnly cookie. `POST /api/session/start` (bearer in, cookie and CSRF value out), `POST /api/session/end`, `POST /api/users/{name}/end-sessions`; cookie writes need an `Origin` matching `VOLT_PUBLIC_URL` and the per-session `X-Volt-Csrf`; idle and absolute limits (`VOLT_SESSION_IDLE`, `VOLT_SESSION_MAX`); the Token dialog now trades a token for a session. `/api/whoami` gains `effectiveRole`, `groups`, `via`, `displayName` and, for a session, `csrf`. Bearer tokens behave as before. See [access.md](docs/specs/access.md).
 
 - HyperDeck rooms: cues `deck.play`, `deck.stop`, `deck.goto`, `deck.record.start`, `deck.record.stop` drive Blackmagic HyperDecks over their Ethernet protocol (`VOLT_HYPERDECK_HOSTS`). A cue is fired only when the deck's transport state shows it; a failed deck cue is advisory and never rewinds a take. Unvalidated against a real deck. See [hyperdeck.md](docs/specs/hyperdeck.md).
 

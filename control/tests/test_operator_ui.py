@@ -1309,3 +1309,67 @@ class ActivityScreen(unittest.TestCase):
         got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])
         self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "activity"})
         self.assertEqual(got[1]["extra"], "activity")
+
+
+def _node_async(body):
+    """Run an async snippet under node with the page's exported functions as `m`; the snippet returns a JSON-able value."""
+    script = ("const m = require(process.argv[1]); (async () => { " + body + " })().then((v) => console.log(JSON.stringify(v)));")
+    out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js")], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class SessionSignIn(unittest.TestCase):
+    def test_headers_send_the_csrf_value_only_for_a_cookie_write(self):
+        got = _node(["authHeaders", "POST", "tok", "c1"], ["authHeaders", "POST", "", "c1"], ["authHeaders", "GET", "", "c1"],
+                    ["authHeaders", "POST", "", ""], ["authHeaders", "GET", "tok", ""])
+        self.assertEqual(got, [{"Authorization": "Bearer tok"}, {"X-Volt-Csrf": "c1"}, {}, {}, {"Authorization": "Bearer tok"}])
+
+    def test_a_token_is_traded_for_a_session_and_the_csrf_value_comes_back(self):
+        got = _node_async("""
+          const seen = [];
+          const ok = async (url, init) => { seen.push([url, init.method, init.headers]); return { ok: true, json: async () => ({ ok: true, csrf: 'CSRF1' }) }; };
+          const csrf = await m.beginSession(ok, 'tok');
+          return { csrf, seen };""")
+        self.assertEqual(got["csrf"], "CSRF1")
+        url, method, headers = got["seen"][0]
+        self.assertEqual((url, method), ("/api/session/start", "POST"))
+        self.assertEqual(headers, {"Authorization": "Bearer tok", "Content-Type": "application/json"})
+
+    def test_every_failure_keeps_the_legacy_token_path(self):
+        got = _node_async("""
+          const bad = (res) => async () => res;
+          const out = [];
+          out.push(await m.beginSession(bad({ ok: false, status: 409, json: async () => ({ ok: false }) }), 't'));
+          out.push(await m.beginSession(bad({ ok: false, status: 404, json: async () => ({}) }), 't'));
+          out.push(await m.beginSession(bad({ ok: true, json: async () => ({ ok: true }) }), 't'));
+          out.push(await m.beginSession(async () => { throw new Error('offline'); }, 't'));
+          out.push(await m.beginSession(bad({ ok: true, json: async () => { throw new Error('not json'); } }), 't'));
+          return out;""")
+        self.assertEqual(got, ["", "", "", "", ""])
+
+    def test_sign_out_sends_the_csrf_value_and_a_reload_recovers_it_from_whoami(self):
+        got = _node_async("""
+          const seen = [];
+          const f = async (url, init) => { seen.push([url, init.method || 'GET', init.headers || {}]);
+            return { ok: true, json: async () => url === '/api/whoami' ? { via: 'session', csrf: 'C9', name: 'a' } : { ok: true } }; };
+          const ended = await m.endSession(f, 'C9');
+          const csrf = await m.adoptSession(f);
+          const token = await m.adoptSession(async () => ({ ok: true, json: async () => ({ via: 'token', name: 'a' }) }));
+          const down = await m.adoptSession(async () => ({ ok: false }));
+          return { ended, csrf, token, down, seen };""")
+        self.assertEqual((got["ended"], got["csrf"], got["token"], got["down"]), (True, "C9", "", ""))
+        self.assertEqual(got["seen"][0], ["/api/session/end", "POST", {"Content-Type": "application/json", "X-Volt-Csrf": "C9"}])
+        self.assertEqual(got["seen"][1][0], "/api/whoami")
+
+    def test_the_page_wires_the_token_dialog_to_a_session_and_keeps_the_csrf_value_in_memory(self):
+        js = FILES["operator.js"]
+        self.assertIn("useSession(token)", js)
+        self.assertIn("const SESS = { csrf: '' }", js)
+        self.assertIn("authHeaders(method, getToken(), SESS.csrf)", js)
+        self.assertNotRegex(js, r"(session|local)Storage\.setItem\('[^']*csrf")      # never stored
+        self.assertNotIn("document.cookie", js)
+        for path in ("/api/session/start", "/api/session/end"):
+            self.assertIn(path, js)
+            self.assertTrue(any(p.match(path) for p, _ in serve.ROUTES), path)

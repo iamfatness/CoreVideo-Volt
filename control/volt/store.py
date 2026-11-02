@@ -405,6 +405,18 @@ CREATE TABLE IF NOT EXISTS group_member (
   source TEXT NOT NULL,
   PRIMARY KEY (group_name, user_name)
 );
+
+CREATE TABLE IF NOT EXISTS session (
+  id_hash TEXT PRIMARY KEY,
+  user_name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  csrf TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name);
 """
 
 

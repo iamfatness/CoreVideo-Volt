@@ -281,8 +281,42 @@
   }
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
+  // ---- sessions: a token is traded for an HttpOnly cookie, so the page stops holding it. A cookie write also sends the
+  // per-session X-Volt-Csrf value (kept in memory only); a bearer write sends neither. Any failure leaves the token path as it was.
+  function authHeaders(method, token, csrf) {
+    const h = {};
+    if (token) h.Authorization = 'Bearer ' + token;
+    else if (csrf && method === 'POST') h['X-Volt-Csrf'] = csrf;
+    return h;
+  }
+  async function beginSession(fetchFn, token) {
+    try {
+      const res = await fetchFn('/api/session/start', { method: 'POST', cache: 'no-store', body: '{}',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } });
+      if (!res.ok) return '';
+      const data = await res.json();
+      return data && data.ok === true && typeof data.csrf === 'string' ? data.csrf : '';
+    } catch (e) { return ''; }
+  }
+  async function endSession(fetchFn, csrf) {
+    try {
+      const res = await fetchFn('/api/session/end', { method: 'POST', cache: 'no-store', body: '{}',
+        headers: { 'Content-Type': 'application/json', 'X-Volt-Csrf': csrf } });
+      return res.ok;
+    } catch (e) { return false; }
+  }
+  // After a reload the cookie is still there but the page has lost the CSRF value: ask whoami for it.
+  async function adoptSession(fetchFn) {
+    try {
+      const res = await fetchFn('/api/whoami', { cache: 'no-store' });
+      if (!res.ok) return '';
+      const who = await res.json();
+      return who && who.via === 'session' && typeof who.csrf === 'string' ? who.csrf : '';
+    } catch (e) { return ''; }
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -379,6 +413,7 @@
   const REC_STEPS = ['requested', 'preparing', 'producing', 'stopping', 'finalizing', 'completed'];
   const REC_ALIAS = { starting: 'preparing', live: 'producing' };
 
+  const SESS = { csrf: '' };   // set while a cookie session is in use; memory only, never stored
   const S = {
     data: null, show: null, screen: 'show', epoch: 0, seq: false, busy: false,
     pending: new Set(), lastOk: 0, conn: 'connecting', selected: null, armed: null,
@@ -460,9 +495,7 @@
     let path = tpl.replace('{id}', encodeURIComponent(id || ''));
     if (kind === 'state' && S.show) path += '?show=' + encodeURIComponent(S.show);
     if (query) path += '?' + new URLSearchParams(query).toString();
-    const headers = {};
-    const token = getToken();
-    if (token) headers.Authorization = 'Bearer ' + token;
+    const headers = authHeaders(method, getToken(), SESS.csrf);
     const init = { method, headers, cache: 'no-store' };
     if (method === 'POST') { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body || {}); }
     const res = await fetch(path, init);
@@ -532,11 +565,12 @@
   let whoamiFor = null;
   async function showWhoami() {
     const token = getToken();
-    if (!token) { whoamiFor = null; $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
-    if (whoamiFor === token) return;
-    whoamiFor = token;
+    if (!token && !SESS.csrf) { whoamiFor = null; $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
+    const key = token || 'session:' + SESS.csrf;
+    if (whoamiFor === key) return;
+    whoamiFor = key;
     try {
-      const res = await fetch('/api/whoami', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+      const res = await fetch('/api/whoami', { headers: authHeaders('GET', token, ''), cache: 'no-store' });
       const who = res.ok ? await res.json() : null;
       $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
       // The pill names the person and their access level; it stays hidden when the server does not say.
@@ -562,7 +596,7 @@
     const epoch = S.epoch;
     try {
       const { status, data } = await call('state');
-      if (status === 401) { setConn('token'); if (!$('token-dlg').open) openToken(); return; }
+      if (status === 401) { SESS.csrf = ''; setConn('token'); if (!$('token-dlg').open) openToken(); return; }   // a session that expired is gone
       if (status !== 200 || !data) throw new Error('state ' + status);
       if (epoch !== S.epoch) return; // an action finished meanwhile; its own refresh follows
       S.lastOk = Date.now();
@@ -3283,6 +3317,16 @@
     }
   }
 
+  // Trade a token the user just entered for a cookie session. If the server cannot (an older one, the legacy VOLT_TOKEN, no
+  // public URL off loopback) the token simply stays in use, as before.
+  async function useSession(token) {
+    const csrf = await beginSession(fetch, token);
+    if (!csrf || getToken() !== token) return;
+    SESS.csrf = csrf; whoamiFor = null;
+    setToken('');   // the cookie carries the session from here; the page no longer holds the token
+    refresh();
+  }
+
   function init() {
     try { S.show = sessionStorage.getItem('volt.show') || new URLSearchParams(location.search).get('show'); } catch (e) { S.show = null; }
     S.show = S.show || new URLSearchParams(location.search).get('show');
@@ -3293,8 +3337,17 @@
     });
     $('token-btn').addEventListener('click', openToken);
     $('token-close').addEventListener('click', () => $('token-dlg').close());
-    $('token-clear').addEventListener('click', () => { setToken(''); $('token-in').value = ''; $('token-dlg').close(); refresh(); });
-    $('token-form').addEventListener('submit', () => { setToken($('token-in').value.trim()); $('token-in').value = ''; setTimeout(refresh, 0); });
+    $('token-clear').addEventListener('click', async () => {
+      const csrf = SESS.csrf;
+      SESS.csrf = ''; whoamiFor = null; setToken(''); $('token-in').value = ''; $('token-dlg').close();
+      if (csrf) await endSession(fetch, csrf);
+      refresh();
+    });
+    $('token-form').addEventListener('submit', () => {
+      const token = $('token-in').value.trim();
+      setToken(token); $('token-in').value = ''; setTimeout(refresh, 0);
+      if (token) useSession(token);
+    });
     $('keys-btn').addEventListener('click', () => $('keys-dlg').showModal());
     setTheme(currentTheme());
     $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
@@ -3315,7 +3368,8 @@
     setConn('connecting');
     setWorkspace(storedWorkspace(), false);
     setScreen(location.hash.slice(1) || defaultScreen(S.ws));
-    refresh().then(schedule);
+    // A reload keeps the cookie but loses the CSRF value, so ask for it before the first read when no token is held.
+    (getToken() ? Promise.resolve('') : adoptSession(fetch)).then((csrf) => { SESS.csrf = csrf; }).then(refresh).then(schedule);
   }
 
   init();

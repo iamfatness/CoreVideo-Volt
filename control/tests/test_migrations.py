@@ -381,7 +381,7 @@ class StoryMigration(unittest.TestCase):
 
     def test_the_registry_names_it(self):
         m = next(m for m in migrations.MIGRATIONS if m.name == "newsroom scripts")
-        self.assertEqual(m.version, migrations.LATEST)
+        self.assertEqual(m.version, 25)
         self.assertEqual({c for t, c, _ in m.columns if t == "item"}, STORY_ITEM_COLUMNS)
         self.assertIn(("show", "read_wpm", "INTEGER"), m.columns)
 
@@ -418,7 +418,7 @@ class StoryMigrationPostgres(PgCase):
         store.conn.execute("ALTER TABLE show DROP COLUMN read_wpm")
         for table in sorted(STORY_TABLES):
             store.conn.execute(f"DROP TABLE {table}")
-        store.conn.execute(f"DELETE FROM schema_version WHERE version = {migrations.LATEST}")
+        store.conn.execute(f"DELETE FROM schema_version WHERE version = 25")
         store.conn.commit()
         store.close()
         again = self.store()

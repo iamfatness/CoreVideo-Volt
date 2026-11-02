@@ -34,7 +34,10 @@ per-user token's audit actor is its user name; `X-Volt-Actor` and body `owner` d
 
 | Route | Role | Notes |
 |---|---|---|
-| `GET /api/whoami` | any | `{ok, name, role, legacy}` |
+| `GET /api/whoami` | any | `{ok, name, role, legacy, groups, effectiveRole, via, displayName}` plus `csrf` for a cookie session only. `via` is `legacy`, `token` or `session`; `role` and `effectiveRole` are the same value (direct role raised by groups). |
+| `POST /api/session/start` | viewer, bearer only | `{}` -> `{ok, csrf}` and `Set-Cookie`. `401 bearer_required` without a user token (a cookie cannot mint a session), `409 not_a_user` for the legacy `VOLT_TOKEN`, `409 public_url_required` off loopback without `VOLT_PUBLIC_URL`. Audited as `login`. |
+| `POST /api/session/end` | viewer | Ends the caller's cookie session and clears the cookie (`{ok, ended}`; `ended` is false for a bearer). Audited as `logout`. |
+| `POST /api/users/{name}/end-sessions` | admin | `{ok, ended}`: how many sessions were removed. Audited as `session_end`. |
 | `GET /api/users` | admin | `{ok, users: [{name, role, created_at, disabled_at}]}`; never tokens |
 | `POST /api/users` | admin | `{name, role}` -> `{ok, user, token}`; the token is shown only here |
 | `POST /api/users/{name}/disable` / `enable` | admin | disable is immediate; the last enabled admin is `409 last_admin` unless `VOLT_TOKEN` is set |

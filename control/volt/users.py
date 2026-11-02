@@ -139,6 +139,9 @@ def disable(store, name: str, legacy_admin: bool = False) -> dict:
     if row["disabled_at"] is None:
         store.conn.execute("UPDATE volt_user SET disabled_at = ? WHERE name = ?", (_stamp(), name))
         store.conn.commit()
+        from volt import sessions  # a cookie session is also refused per request (the user must be enabled); ending the rows is the tidy half
+
+        sessions.end_for_user(store, name)
     return _public(_row(store, name))
 
 
