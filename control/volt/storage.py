@@ -143,6 +143,38 @@ class LocalBackend:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+        self._marker(key).unlink(missing_ok=True)
+
+    # Cold storage, simulated: a marker file beside the object says it has been moved to a cold class. Restore is immediate.
+    cold_class = "cold"
+
+    def _marker(self, key: str) -> Path:
+        p = self._path(key)
+        return p.with_name(p.name + ".cold")
+
+    def get_file(self, key: str, dest) -> None:
+        """Copy the stored object to `dest` (the caller verifies it)."""
+        src = self._path(key)
+        if not src.is_file():
+            raise StorageError(f"no such object: {key}")
+        try:
+            shutil.copyfile(src, dest)
+        except OSError as exc:
+            raise StorageError(f"local copy failed: {exc}") from exc
+
+    def set_storage_class(self, key: str, cls: str) -> None:
+        if not self.exists(key):
+            raise StorageError(f"no such object: {key}")
+        self._marker(key).write_text(cls, encoding="utf-8")
+
+    def restore(self, key: str, days: int = 7) -> None:
+        self._marker(key).unlink(missing_ok=True)
+
+    def restore_state(self, key: str) -> str:
+        """online, archived or restoring."""
+        if not self.exists(key):
+            raise StorageError(f"no such object: {key}")
+        return "archived" if self._marker(key).is_file() else "online"
 
     def stat(self, key: str) -> Optional[ObjectInfo]:
         path = self._path(key)
@@ -156,7 +188,7 @@ class LocalBackend:
         if not self.root.is_dir():
             return
         for path in sorted(self.root.rglob("*")):
-            if path.is_file() and not path.name.endswith(".part"):
+            if path.is_file() and not path.name.endswith((".part", ".cold")):
                 yield path.relative_to(self.root).as_posix()
 
 
@@ -383,6 +415,53 @@ class S3Backend:
             raise
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"could not delete {key}: {self._explain(exc)}") from exc
+
+    # Cold storage: GLACIER / DEEP_ARCHIVE objects must be restored before they can be read.
+    cold_class = "DEEP_ARCHIVE"
+
+    def get_file(self, key: str, dest) -> None:
+        try:
+            self.client.download_file(self.config.bucket, self._object_key(key), str(dest))
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not download {key}: {self._explain(exc)}") from exc
+
+    def set_storage_class(self, key: str, cls: str) -> None:
+        """Move the object to `cls` in place (a managed copy, so objects over 5 GB work)."""
+        k = self._object_key(key)
+        try:
+            self.client.copy({"Bucket": self.config.bucket, "Key": k}, self.config.bucket, k,
+                             ExtraArgs={"StorageClass": cls, "MetadataDirective": "COPY"})
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not move {key} to {cls}: {self._explain(exc)}") from exc
+
+    def restore(self, key: str, days: int = 7) -> None:
+        try:
+            self.client.restore_object(Bucket=self.config.bucket, Key=self._object_key(key),
+                                       RestoreRequest={"Days": int(days), "GlacierJobParameters": {"Tier": "Standard"}})
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if "RestoreAlreadyInProgress" in str(exc) or "RestoreAlreadyInProgress" in repr(getattr(exc, "response", "")):
+                return   # asking twice is fine
+            raise StorageError(f"could not start a restore of {key}: {self._explain(exc)}") from exc
+
+    def restore_state(self, key: str) -> str:
+        try:
+            head = self.client.head_object(Bucket=self.config.bucket, Key=self._object_key(key))
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+        if head.get("StorageClass") not in ("GLACIER", "DEEP_ARCHIVE"):
+            return "online"
+        note = head.get("Restore") or ""
+        if 'ongoing-request="false"' in note:
+            return "online"
+        return "restoring" if 'ongoing-request="true"' in note else "archived"
 
 
 def _b64(raw: bytes) -> str:
@@ -686,6 +765,45 @@ class AzureBlobBackend:
                 return
             raise StorageError(f"could not delete {key}: {self._explain(exc)}") from exc
 
+    # Cold storage: the Archive access tier must be rehydrated before the blob can be read.
+    cold_class = "Archive"
+
+    def get_file(self, key: str, dest) -> None:
+        try:
+            with open(dest, "wb") as handle:
+                self._blob(self._object_key(key)).download_blob().readinto(handle)
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not download {key}: {self._explain(exc)}") from exc
+
+    def set_storage_class(self, key: str, cls: str) -> None:
+        try:
+            self._blob(self._object_key(key)).set_standard_blob_tier(cls)
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not move {key} to {cls}: {self._explain(exc)}") from exc
+
+    def restore(self, key: str, days: int = 7) -> None:
+        try:
+            self._blob(self._object_key(key)).set_standard_blob_tier("Hot", rehydrate_priority="Standard")
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not start a restore of {key}: {self._explain(exc)}") from exc
+
+    def restore_state(self, key: str) -> str:
+        try:
+            props = self._blob(self._object_key(key)).get_blob_properties()
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not look up {key}: {self._explain(exc)}") from exc
+        if str(getattr(props, "blob_tier", "") or "").lower() != "archive":
+            return "online"
+        return "restoring" if "rehydrate" in str(getattr(props, "archive_status", "") or "").lower() else "archived"
+
 
 # ---- Google Cloud Storage -----------------------------------------------------------------------
 
@@ -873,6 +991,31 @@ class GcsBackend:
             if _status_of(exc) == 404:
                 return
             raise StorageError(f"could not delete {key}: {self._explain(exc)}") from exc
+
+    # Cold storage: the ARCHIVE class is cheap to keep but reads stay immediate, so a restore has nothing to wait for.
+    cold_class = "ARCHIVE"
+
+    def get_file(self, key: str, dest) -> None:
+        try:
+            self._blob(self._object_key(key)).download_to_filename(str(dest))
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not download {key}: {self._explain(exc)}") from exc
+
+    def set_storage_class(self, key: str, cls: str) -> None:
+        try:
+            self._blob(self._object_key(key)).update_storage_class(cls)
+        except StorageError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"could not move {key} to {cls}: {self._explain(exc)}") from exc
+
+    def restore(self, key: str, days: int = 7) -> None:
+        return None
+
+    def restore_state(self, key: str) -> str:
+        return "online"
 
 
 def _file_crc32c(path: Path) -> int:
