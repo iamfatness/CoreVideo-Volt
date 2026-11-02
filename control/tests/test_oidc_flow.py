@@ -3,6 +3,7 @@
 UNVALIDATED against a real provider: every provider here is tests/oidc_fake.py behind the HTTP seam (`oidc.HTTP`), so nothing touches the
 network and the claims are only what Google and Microsoft are recalled to send. Time is a frozen clock passed in.
 """
+import contextlib
 import hashlib
 import json
 import logging
@@ -26,6 +27,40 @@ PUBLIC = "https://volt.example.test"
 GOOGLE_ISS = "https://idp.test/google"
 MS_ISS = "https://idp.test/ms/tenant-a/v2.0"
 SECRET = "s3cret-VALUE-9f2c1"
+
+
+class _Capture(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage() + " " + (self.formatter.formatException(record.exc_info) if record.exc_info and self.formatter else ""))
+
+
+@contextlib.contextmanager
+def volt_logs():
+    """Capture everything the `volt` loggers emit, whatever earlier tests did to logging (volt.logs.setup swaps handlers and turns
+    propagation off; dictConfig can disable loggers). The loggers are put back exactly as found."""
+    names = ["volt", "volt.oidc", "volt.sessions", "volt.serve"]
+    loggers = [logging.getLogger(n) for n in names]
+    saved = [(lg.handlers[:], lg.level, lg.propagate, lg.disabled) for lg in loggers]
+    prior_disable = logging.root.manager.disable
+    handler = _Capture()
+    try:
+        logging.disable(logging.NOTSET)
+        for lg in loggers:
+            lg.handlers, lg.disabled = [], False
+            lg.setLevel(logging.DEBUG)
+            lg.propagate = lg.name != "volt"
+        loggers[0].handlers = [handler]
+        loggers[0].propagate = False
+        yield handler.lines
+    finally:
+        for lg, (hs, lvl, prop, dis) in zip(loggers, saved):
+            lg.handlers, lg.propagate, lg.disabled = hs, prop, dis
+            lg.setLevel(lvl)
+        logging.disable(prior_disable)
 
 
 class Idp(FakeProvider):
@@ -669,12 +704,12 @@ class Flow(unittest.TestCase):
         self.user("sam", email="sam@example.test")
         self.make_groups()
         self.ms_login(["oid-producers"])
-        with self.assertLogs("volt.oidc", level="WARNING") as logs:
+        with volt_logs() as logs:
             res = self.ms_login(None, _claim_names={"groups": "src1"}, _claim_sources={"src1": {"endpoint": "https://graph.example/x"}})
         self.assertEqual(access.groups_of(self.store, "sam"), ("producers",))      # left as they were
         self.assertTrue(res.groups_overage)
-        self.assertIn("too large", " ".join(logs.output))
-        self.assertNotIn("graph.example", " ".join(logs.output))                   # the endpoint is never followed or logged
+        self.assertIn("too large", " ".join(logs))
+        self.assertNotIn("graph.example", " ".join(logs))                   # the endpoint is never followed or logged
         res = self.ms_login(["oid-producers"])
         self.assertFalse(res.groups_overage)
 
@@ -682,7 +717,7 @@ class Flow(unittest.TestCase):
     def test_client_secret_never_in_log_or_audit_or_any_table(self):
         self.user()
         self.google.claims["email"] = "dana@example.test"
-        with self.assertLogs(level="DEBUG") as logs:
+        with volt_logs() as logs:
             logging.getLogger("volt.oidc").debug("start")
             self.sign_in()
             self.http.token_error = {"error": "invalid_client", "error_description": "wrong secret " + SECRET}
@@ -694,7 +729,10 @@ class Flow(unittest.TestCase):
             _, cookie, q = self.start()
             with self.assertRaises(oidc.LoginError):
                 oidc.complete(self.store, self.cfg, {"code": "c", "state": q["state"]}, cookie, self.t, self.http)
-        self.assertNotIn(SECRET, "\n".join(logs.output))
+        self.assertIn("start", logs[0])                                                   # the capture works (not a vacuous pass)
+        self.assertTrue(any("token endpoint refused" in l for l in logs), logs)             # and saw the flow's own log lines
+        self.assertTrue(any("unreachable" in l for l in logs), logs)
+        self.assertNotIn(SECRET, "\n".join(logs))
         self.assertIn(SECRET, json.dumps(self.http.posts))                            # it was sent to the provider...
         dump = []
         for (name,) in self.store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
