@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import access as acl, archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -96,14 +96,15 @@ _AUDIT_KIND = {
     "ingest": "asset",
     "exports": "export",
     "users": "user",
+    "groups": "group",
 }
 
 
 class Principal:
     """Who a request is: a per-user token (name, role), or the legacy VOLT_TOKEN / open loopback (desk, admin)."""
 
-    def __init__(self, name: str, role: str, legacy: bool):
-        self.name, self.role, self.legacy = name, role, legacy
+    def __init__(self, name: str, role: str, legacy: bool, groups: tuple = ()):
+        self.name, self.role, self.legacy, self.groups = name, role, legacy, tuple(groups)
 
 
 LEGACY_ACTOR = "desk"
@@ -267,6 +268,10 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "delete_asset"
     if len(parts) >= 2 and parts[1] == "record":
         action = "record_" + parts[-1]
+    if len(parts) >= 2 and parts[1] == "groups":
+        action = "group_" + (parts[-1] if len(parts) > 2 else "create")
+        if not captured and isinstance(out.get("group"), dict):
+            captured = out["group"].get("name") or ""
     if len(parts) >= 2 and parts[1] == "users":
         action = "user_" + (parts[-1] if len(parts) > 2 else "add")
         if not captured and isinstance(out.get("user"), dict):
@@ -913,6 +918,50 @@ def act_user_rotate(store, name, body):
     return {"ok": True, "user": _public_user(store, name), "token": token}
 
 
+def _access_error(fn):
+    try:
+        return fn()
+    except acl.AccessError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason) from None
+    except users.UserError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason) from None
+
+
+def act_group_create(store, _unused, body):
+    _unknown_keys(body, {"name", "role"})
+    return {"ok": True, "group": _access_error(lambda: acl.create_group(store, body.get("name"), body.get("role")))}
+
+
+def act_group_members(store, name, body):
+    _unknown_keys(body, {"add", "remove"})
+    for key in ("add", "remove"):
+        if key in body and not (isinstance(body[key], list) and all(isinstance(x, str) for x in body[key])):
+            raise ApiError(422, "bad_input", f"{key} must be a list of user names")
+    try:
+        group = _access_error(lambda: acl.set_members(store, name, add=body.get("add") or (), remove=body.get("remove") or ()))
+    except ApiError as err:
+        if err.code == "no_such_group":
+            raise ApiError(404, "not_found", err.reason) from None
+        raise
+    return {"ok": True, "group": group}
+
+
+def act_group_delete(store, name, body):
+    _unknown_keys(body, set())
+    try:
+        _access_error(lambda: acl.delete_group(store, name))
+    except ApiError as err:
+        if err.code == "no_such_group":
+            raise ApiError(404, "not_found", err.reason) from None
+        raise
+    return {"ok": True, "deleted": name}
+
+
+def act_user_role(store, name, body):
+    _unknown_keys(body, {"role"})
+    return {"ok": True, "user": _access_error(lambda: acl.set_user_role(store, name, body.get("role"), legacy_admin=bool(TOKEN)))}
+
+
 def _public_user(store, name):
     return next(u for u in users.list_users(store) if u["name"] == name)
 
@@ -937,6 +986,10 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/restore$"), act_restore),
     (re.compile(rf"^/api/assets/{_ID}/archive$"), act_asset_archive),
     (re.compile(rf"^/api/mos/{_ID}/resolve$"), act_mos_resolve),
+    (re.compile(r"^/api/groups()$"), act_group_create),
+    (re.compile(rf"^/api/groups/{_ID}/members$"), act_group_members),
+    (re.compile(rf"^/api/groups/{_ID}/delete$"), act_group_delete),
+    (re.compile(rf"^/api/users/{_ID}/role$"), act_user_role),
     (re.compile(rf"^/api/assets/{_ID}/rehydrate$"), act_asset_rehydrate),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
     (re.compile(rf"^/api/versions/{_ID}/unpublish$"), act_unpublish),
@@ -973,6 +1026,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
+    "act_group_create": "admin", "act_group_members": "admin", "act_group_delete": "admin", "act_user_role": "admin",
     "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
@@ -1022,7 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
             log.exception("token lookup failed")
             raise ApiError(503, "auth_unavailable", "cannot check the token right now") from None
-        return Principal(user.name, user.role, False) if user else None
+        return Principal(user.name, user.role, False, user.groups) if user else None
 
     def _auth_configured(self) -> bool:
         """Is a token required? Yes with VOLT_TOKEN or any user row; otherwise this is the open loopback mode."""
@@ -1179,7 +1233,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(404, "not_found", "no such route")
             need = ROUTE_ROLES.get(fn.__name__, "admin")
-            if need == "admin" and self.principal.role != "admin":
+            if acl.RANK[need] > acl.RANK.get(self.principal.role, -1):
                 raise ApiError(403, "forbidden_role",
                                f"{need} role required; {self.principal.name} is {self.principal.role}")
             body = self._read_json()
@@ -1287,7 +1341,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/whoami":
             self._json(200, {"ok": True, "name": self.principal.name if self.principal else LEGACY_ACTOR,
                              "role": self.principal.role if self.principal else "admin",
-                             "legacy": self.principal is None or self.principal.legacy})
+                             "legacy": self.principal is None or self.principal.legacy,
+                             "groups": list(self.principal.groups) if self.principal else []})
+            return
+        if parsed.path == "/api/groups":
+            self._require_admin()
+            self._json(200, {"ok": True, "groups": acl.list_groups(STORE)})
             return
         if parsed.path == "/api/users":
             self._require_admin()

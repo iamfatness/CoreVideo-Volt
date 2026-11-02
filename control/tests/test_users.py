@@ -107,7 +107,7 @@ class Registry(unittest.TestCase):
     def test_every_post_route_has_an_explicit_role(self):
         names = {fn.__name__ for _p, fn in serve.ROUTES}
         self.assertEqual(names, set(serve.ROUTE_ROLES), "classify every new route in serve.ROUTE_ROLES")
-        self.assertTrue(set(serve.ROUTE_ROLES.values()) <= {"operator", "admin"})
+        self.assertTrue(set(serve.ROUTE_ROLES.values()) <= {"viewer", "operator", "admin"})
 
     def test_destructive_routes_are_admin(self):
         for name in ("act_delete", "act_show_delete", "act_detect", "act_unpublish", "act_user_add"):
