@@ -6,7 +6,7 @@
 
 **Architecture:** Markup and class changes only, plus small DOM-side helpers in `operator.js`. No server change, no new route, no key change. The Library already has its three tabs and the Export tab ("Selection to export"); this slice restyles them and does not move behaviour.
 
-**Tech Stack:** As slices 1 and 2 (`unittest` in `control/tests/test_operator_ui.py`, `_node`, `FILES`, `Icons.SPRITE_IDS`; harness `python -m tests.operator_harness library --port 8791`; axe-core 4.10.2 via a routed same-origin script). The harness serves static files read at start: restart it after editing, and load pages with the browser cache disabled (the server sends no cache headers).
+**Tech Stack:** As slices 1 and 2 (`unittest` in `control/tests/test_operator_ui.py`, `_node`, `FILES`, `Icons.SPRITE_IDS`; harness `python -m tests.operator_harness library --port 8791`; axe-core 4.10.2 via a routed same-origin script). The harness serves static files read at start: restart it after editing, and load pages in a fresh browser context (the server already sends `Cache-Control: no-store`; a shared automation context kept serving stale CSS).
 
 **Spec:** `docs/superpowers/specs/2026-10-30-ui-redesign-design.md` (Workspaces, Library, state language). Slice 2 shipped in PR #69; this plan is cut from that branch.
 
