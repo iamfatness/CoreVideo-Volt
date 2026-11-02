@@ -305,9 +305,11 @@ def _clone_show(store: Store, template_id: str, title: str, occ: datetime, day: 
                 when = None
             store.conn.execute(
                 """INSERT INTO item (id, show_id, position, slug, script, status, span_id, created_at, scheduled_at,
-                                     schedule_mode, schedule_offset_seconds) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?)""",
+                                     schedule_mode, schedule_offset_seconds, story_status, script_rev, floated)
+                   VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, 'draft', 1, ?)""",
+                # The text is carried; the editorial state is not: a clone starts at draft, revision 1, not approved, not floated.
                 (item_id, new_id, r["position"], r["slug"], r["script"], r["span_id"], _now(), when,
-                 r["schedule_mode"], r["schedule_offset_seconds"]))
+                 r["schedule_mode"], r["schedule_offset_seconds"], False))
             for c in store.conn.execute("SELECT position, room, command, payload FROM cue WHERE item_id = ? ORDER BY position", (r["id"],)).fetchall():
                 store.conn.execute(
                     "INSERT INTO cue (id, item_id, position, room, command, payload, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'stored', ?)",

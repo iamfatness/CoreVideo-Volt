@@ -372,5 +372,63 @@ class Version12ToThirteenPostgres(PgCase):
         self.assertEqual(again.conn.execute("SELECT as_run_in_precise FROM item").fetchone()[0], None)
 
 
+STORY_ITEM_COLUMNS = {"story_status", "script_rev", "approved_by", "approved_at", "approved_rev", "floated", "source_wire_id"}
+STORY_TABLES = {"story_rev", "story_event", "wire_story", "story_template", "story_archive"}
+
+
+class StoryMigration(unittest.TestCase):
+    """The newsroom-scripts migration: old rows keep working, the new columns read as NULL (draft, revision 1)."""
+
+    def test_the_registry_names_it(self):
+        m = next(m for m in migrations.MIGRATIONS if m.name == "newsroom scripts")
+        self.assertEqual(m.version, migrations.LATEST)
+        self.assertEqual({c for t, c, _ in m.columns if t == "item"}, STORY_ITEM_COLUMNS)
+        self.assertIn(("show", "read_wpm", "INTEGER"), m.columns)
+
+    def test_sqlite_old_rows_survive_and_read_as_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = sqlite3.connect(path)
+            conn.executescript(SHAPES[0][2])
+            conn.execute("INSERT INTO show (id, title, created_at) VALUES ('s1', 'Old', 'then')")
+            conn.execute("INSERT INTO item (id, show_id, position, slug, script, status, created_at) "
+                         "VALUES ('i1', 's1', 1, 'open', 'old words', 'ready', 'then')")
+            conn.commit()
+            conn.close()
+            store = Store(path)
+            try:
+                cols = sqlite_columns(store.conn)
+                self.assertTrue(STORY_ITEM_COLUMNS <= cols["item"])
+                self.assertIn("read_wpm", cols["show"])
+                self.assertTrue(STORY_TABLES <= set(cols))
+                row = store.conn.execute("SELECT slug, script, story_status, script_rev, floated, approved_by FROM item").fetchone()
+                self.assertEqual(tuple(row), ("open", "old words", None, None, None, None))
+                self.assertIsNone(store.conn.execute("SELECT read_wpm FROM show").fetchone()[0])
+            finally:
+                store.close()
+
+
+class StoryMigrationPostgres(PgCase):
+    def test_postgres_old_rows_survive_and_read_as_draft(self):
+        store = self.store()
+        store.conn.execute("INSERT INTO show (id, title) VALUES ('s', 'S')")
+        store.conn.execute("INSERT INTO item (id, show_id, position, slug, script, status) VALUES ('i', 's', 1, 'x', 'old', 'ready')")
+        for col in sorted(STORY_ITEM_COLUMNS):
+            store.conn.execute(f"ALTER TABLE item DROP COLUMN {col}")
+        store.conn.execute("ALTER TABLE show DROP COLUMN read_wpm")
+        for table in sorted(STORY_TABLES):
+            store.conn.execute(f"DROP TABLE {table}")
+        store.conn.execute(f"DELETE FROM schema_version WHERE version = {migrations.LATEST}")
+        store.conn.commit()
+        store.close()
+        again = self.store()
+        cols = PostgresForward.pg_columns(None, again.conn)
+        self.assertTrue(STORY_ITEM_COLUMNS <= cols["item"])
+        self.assertIn("read_wpm", cols["show"])
+        self.assertTrue(STORY_TABLES <= set(cols))
+        row = again.conn.execute("SELECT slug, script, story_status, script_rev, floated FROM item").fetchone()
+        self.assertEqual(tuple(row), ("x", "old", None, None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

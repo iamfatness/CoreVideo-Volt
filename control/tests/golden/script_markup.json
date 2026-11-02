@@ -1,0 +1,315 @@
+{
+ "cases": [
+  {
+   "name": "instruction_not_counted",
+   "text": "[SOT 0:23]",
+   "wpm": 160,
+   "stats": {
+    "words": 0,
+    "readSeconds": 0,
+    "instructions": 1,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "instruction",
+     "text": "[SOT 0:23]",
+     "para": 0
+    }
+   ],
+   "readText": ""
+  },
+  {
+   "name": "private_note_excluded",
+   "text": "// call the mayor",
+   "wpm": 160,
+   "stats": {
+    "words": 0,
+    "readSeconds": 0,
+    "instructions": 0,
+    "notes": 1,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "note",
+     "text": "// call the mayor",
+     "para": 0
+    }
+   ],
+   "readText": ""
+  },
+  {
+   "name": "unclosed_bracket_is_read_and_warned",
+   "text": "[CAM 1 hello there",
+   "wpm": 160,
+   "stats": {
+    "words": 4,
+    "readSeconds": 2,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": [
+     "unclosed_bracket"
+    ]
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "[CAM 1 hello there",
+     "para": 0
+    }
+   ],
+   "readText": "[CAM 1 hello there"
+  },
+  {
+   "name": "paragraphs",
+   "text": "One two.\nThree.\n\nFour five six.",
+   "wpm": 160,
+   "stats": {
+    "words": 6,
+    "readSeconds": 2,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "One two.",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "Three.",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "Four five six.",
+     "para": 1
+    }
+   ],
+   "readText": "One two.\nThree.\n\nFour five six."
+  },
+  {
+   "name": "read_seconds_rounds_to_a_minute",
+   "text": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+   "wpm": 160,
+   "stats": {
+    "words": 160,
+    "readSeconds": 60,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+     "para": 0
+    }
+   ],
+   "readText": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"
+  },
+  {
+   "name": "half_second_rounds_up",
+   "text": "Hi",
+   "wpm": 120,
+   "stats": {
+    "words": 1,
+    "readSeconds": 1,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "Hi",
+     "para": 0
+    }
+   ],
+   "readText": "Hi"
+  },
+  {
+   "name": "crlf_and_blank_lines",
+   "text": "A b\r\n\r\n\r\nC d\r\n",
+   "wpm": 120,
+   "stats": {
+    "words": 4,
+    "readSeconds": 2,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "A b",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "C d",
+     "para": 1
+    }
+   ],
+   "readText": "A b\n\nC d"
+  },
+  {
+   "name": "empty_script_is_zero",
+   "text": "",
+   "wpm": 160,
+   "stats": {
+    "words": 0,
+    "readSeconds": 0,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [],
+   "readText": ""
+  },
+  {
+   "name": "unicode_words_by_whitespace",
+   "text": "Caf\u00e9 na\u00efve \u6771\u4eac \u5e02",
+   "wpm": 60,
+   "stats": {
+    "words": 4,
+    "readSeconds": 4,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "Caf\u00e9 na\u00efve \u6771\u4eac \u5e02",
+     "para": 0
+    }
+   ],
+   "readText": "Caf\u00e9 na\u00efve \u6771\u4eac \u5e02"
+  },
+  {
+   "name": "spec_example",
+   "text": "[CAM 2 - ANCHOR]\nCouncil voted six to three last night to approve the new bridge.\n// Check the vote count with Dana before 6pm\n[SOT 0:23 - Mayor Ng]\nThe vote follows two years of debate over cost.",
+   "wpm": 160,
+   "stats": {
+    "words": 21,
+    "readSeconds": 8,
+    "instructions": 2,
+    "notes": 1,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "instruction",
+     "text": "[CAM 2 - ANCHOR]",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "Council voted six to three last night to approve the new bridge.",
+     "para": 0
+    },
+    {
+     "kind": "note",
+     "text": "// Check the vote count with Dana before 6pm",
+     "para": 0
+    },
+    {
+     "kind": "instruction",
+     "text": "[SOT 0:23 - Mayor Ng]",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "The vote follows two years of debate over cost.",
+     "para": 0
+    }
+   ],
+   "readText": "Council voted six to three last night to approve the new bridge.\nThe vote follows two years of debate over cost."
+  },
+  {
+   "name": "note_only_paragraph_does_not_merge_reads",
+   "text": "Read one.\n\n// private\n\nRead two.",
+   "wpm": 160,
+   "stats": {
+    "words": 4,
+    "readSeconds": 2,
+    "instructions": 0,
+    "notes": 1,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "Read one.",
+     "para": 0
+    },
+    {
+     "kind": "note",
+     "text": "// private",
+     "para": 1
+    },
+    {
+     "kind": "read",
+     "text": "Read two.",
+     "para": 2
+    }
+   ],
+   "readText": "Read one.\n\nRead two."
+  },
+  {
+   "name": "bracket_with_trailing_text_is_read",
+   "text": "[CAM 1] Hello there",
+   "wpm": 160,
+   "stats": {
+    "words": 4,
+    "readSeconds": 2,
+    "instructions": 0,
+    "notes": 0,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "read",
+     "text": "[CAM 1] Hello there",
+     "para": 0
+    }
+   ],
+   "readText": "[CAM 1] Hello there"
+  },
+  {
+   "name": "indented_note_and_instruction",
+   "text": "   // spaced note\n  [TWO-SHOT]  \nGo.",
+   "wpm": 160,
+   "stats": {
+    "words": 1,
+    "readSeconds": 0,
+    "instructions": 1,
+    "notes": 1,
+    "warnings": []
+   },
+   "blocks": [
+    {
+     "kind": "note",
+     "text": "// spaced note",
+     "para": 0
+    },
+    {
+     "kind": "instruction",
+     "text": "[TWO-SHOT]",
+     "para": 0
+    },
+    {
+     "kind": "read",
+     "text": "Go.",
+     "para": 0
+    }
+   ],
+   "readText": "Go."
+  }
+ ]
+}

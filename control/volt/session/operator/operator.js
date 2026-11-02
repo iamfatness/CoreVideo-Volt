@@ -98,6 +98,25 @@
     }
     return { rows, totalSec: run, driftSec: drift };
   }
+  // ---- script markup: the twin of volt/story.py script_stats (one golden fixture drives both) ------------------
+  // A line "[...]" is an instruction and "// ..." a private note; neither is read aloud or counted. An unclosed "[" is read text
+  // and warned. Read time is round(words / wpm * 60) with halves up, in integers, so it equals the server's answer.
+  function scriptStats(text, wpm) {
+    const rate = wpm === undefined ? 160 : wpm;
+    if (typeof rate !== 'number' || !Number.isInteger(rate) || rate < 60 || rate > 400) throw new Error('wpm must be a whole number from 60 to 400');
+    let words = 0, instructions = 0, notes = 0, unclosed = false;
+    for (const raw of String(text == null ? '' : text).split(/\r\n|\r|\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('//')) notes++;
+      else if (line.startsWith('[') && line.endsWith(']')) instructions++;
+      else {
+        if (line.startsWith('[') && line.indexOf(']') < 0) unclosed = true;
+        words += line.split(/\s+/).length;
+      }
+    }
+    return { words, readSeconds: Math.floor((words * 120 + rate) / (2 * rate)), instructions, notes, warnings: unclosed ? ['unclosed_bracket'] : [] };
+  }
   function fmtOffset(sec) {
     if (sec == null || isNaN(sec)) return '--:--';
     const t = Math.max(0, Math.round(sec)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
@@ -253,7 +272,7 @@
   const defaultScreen = (workspace) => WORKSPACES[workspaceName(workspace)][0];
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, frontTimes, fmtOffset, fmtSigned, scriptStats };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.

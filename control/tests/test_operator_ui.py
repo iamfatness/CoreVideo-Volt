@@ -841,6 +841,24 @@ class RundownTiming(unittest.TestCase):
                          ["1:02:05", "01:05", "--:--", "00:00", "+00:15", "-00:10", "00:00", ""])
 
 
+@unittest.skipUnless(NODE, "node is needed to run the page's scriptStats twin")
+class ScriptStatsTwin(unittest.TestCase):
+    """operator.js scriptStats gives what volt/story.py gives, over the same golden fixture."""
+
+    def test_script_stats_twin(self):
+        cases = json.loads((Path(__file__).parent / "golden" / "script_markup.json").read_text(encoding="utf-8"))["cases"]
+        got = _node(*[["scriptStats", c["text"], c["wpm"]] for c in cases])
+        for c, stats in zip(cases, got):
+            with self.subTest(case=c["name"]):
+                self.assertEqual(stats, c["stats"])
+
+    def test_wpm_out_of_range_throws(self):
+        script = ("const m = require(process.argv[1]); for (const w of [59, 401, 160.5, null, '160']) {"
+                  "try { m.scriptStats('hi', w); console.log('no'); } catch (e) { console.log('throws'); } }")
+        out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.split(), ["throws"] * 5, out.stderr)
+
+
 class RundownMarkup(unittest.TestCase):
     def test_summary_and_columns_exist(self):
         js, html = FILES["operator.js"], FILES["index.html"]

@@ -146,7 +146,8 @@ CREATE TABLE IF NOT EXISTS show (
   slot_seconds INTEGER,
   recurrence TEXT,
   recurrence_of TEXT,
-  occurrence_on TEXT
+  occurrence_on TEXT,
+  read_wpm INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS item (
@@ -167,7 +168,72 @@ CREATE TABLE IF NOT EXISTS item (
   as_run_in_precise TEXT,
   as_run_out_precise TEXT,
   schedule_mode TEXT,
-  schedule_offset_seconds INTEGER
+  schedule_offset_seconds INTEGER,
+  story_status TEXT,
+  script_rev INTEGER,
+  approved_by TEXT,
+  approved_at TEXT,
+  approved_rev INTEGER,
+  floated INTEGER,
+  source_wire_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS story_rev (
+  item_id TEXT NOT NULL,
+  rev INTEGER NOT NULL,
+  slug TEXT NOT NULL,
+  script TEXT,
+  actor TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (item_id, rev)
+);
+
+CREATE TABLE IF NOT EXISTS story_event (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  from_value TEXT,
+  to_value TEXT,
+  rev INTEGER,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS wire_story (
+  id TEXT PRIMARY KEY,
+  feed TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  headline TEXT NOT NULL,
+  body TEXT,
+  byline TEXT,
+  published_at TEXT,
+  received_at TEXT NOT NULL,
+  state TEXT NOT NULL,
+  item_id TEXT,
+  UNIQUE (feed, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS story_template (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS story_archive (
+  id TEXT PRIMARY KEY,
+  original_item_id TEXT,
+  show_title TEXT,
+  slug TEXT NOT NULL,
+  script TEXT,
+  story_status TEXT,
+  approved_by TEXT,
+  approved_at TEXT,
+  aired_at TEXT,
+  archived_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS mos_sync (

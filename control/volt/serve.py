@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, story, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -82,6 +82,14 @@ UNPUBLISH_BACKEND = None
 # a hold must land while a take is still waiting on the room.
 _SEQ = threading.Lock()
 _REC = threading.Lock()
+# Who is making the POST being handled. The action handlers take (store, match, body) only, so the request's actor
+# and principal ride here (one value per handler thread, set in do_POST and cleared after).
+_REQUEST = threading.local()
+
+
+def _who():
+    """(actor name, principal) of the POST being handled; ("desk", None) outside a request (a direct call from a test)."""
+    return getattr(_REQUEST, "actor", None) or LEGACY_ACTOR, getattr(_REQUEST, "principal", None)
 
 _REQUEST = threading.local()
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
@@ -750,7 +758,7 @@ def act_export_nle(store, _unused, body):
 def _build_errors(fn):
     try:
         return fn()
-    except building.BuildError as exc:
+    except (building.BuildError, story.StoryError) as exc:
         raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
 
 
@@ -801,9 +809,36 @@ def act_item_rename(store, item_id, body):
         if not slug:
             raise ApiError(422, "bad_input", "slug cannot be empty")
     show_id, _ = _item_show(store, item_id)
-    _build_errors(lambda: building.rename_item(store, item_id, slug, script))
+    _build_errors(lambda: building.rename_item(store, item_id, slug, script, _who()[0]))
     return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id),
             "orderVersion": building.order_version(store, show_id)}
+
+
+# ---- stories: the script save and the story read (docs/superpowers/specs/2026-11-01-newsroom-scripts-design.md) -----------
+# Rules live in volt/story.py; these handlers read the body, call it, and map StoryError to HTTP.
+
+def _base_rev(body: dict) -> int:
+    value = body.get("baseRev")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ApiError(422, "bad_input", "baseRev is required: the revision this edit is based on (a whole number, 1 or more)")
+    return value
+
+
+def act_story_script(store, item_id, body):
+    """Save an item's slug and/or script text, based on revision `baseRev`. A stale base is 409 with what is current."""
+    _unknown_keys(body, {"script", "slug", "baseRev"})
+    script = _str(body, "script", limit=story.MAX_SCRIPT)
+    slug = _str(body, "slug", limit=200)
+    if script is None and slug is None:
+        raise ApiError(422, "bad_input", "give slug, script or both")
+    if slug is not None and not slug.strip():
+        raise ApiError(422, "bad_input", "slug cannot be empty")
+    base = _base_rev(body)
+    _item_show(store, item_id)
+    out = _build_errors(lambda: story.set_script(store, item_id, script=script, slug=slug, base_rev=base, actor=_who()[0]))
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    text = store.conn.execute("SELECT script FROM item WHERE id = ?", (item_id,)).fetchone()["script"]
+    return {"ok": True, "item": item_id, **out, "stats": story.script_stats(text, story.wpm_of(store, row["show_id"]))}
 
 
 def act_item_remove(store, item_id, body):
@@ -888,7 +923,13 @@ def devices_get(handler, store, path: str, query: dict) -> bool:
 
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
-    """GET /api/cue-commands and GET /api/items/{item}/cues. Returns True when it answered."""
+    """GET /api/cue-commands, GET /api/items/{item}/cues and GET /api/items/{item}/story. Returns True when it answered."""
+    s = re.fullmatch(rf"/api/items/{_ID}/story", path)
+    if s:
+        if query:
+            raise ApiError(422, "bad_input", "this route takes no parameters")
+        handler._json(200, _build_errors(lambda: story.get_story(store, s.group(1))))
+        return True
     m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
     if path != "/api/cue-commands" and not m:
         return False
@@ -1029,6 +1070,7 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/shows/{_ID}/items$"), act_item_add),
     (re.compile(rf"^/api/shows/{_ID}/delete$"), act_show_delete),
     (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
+    (re.compile(rf"^/api/items/{_ID}/script$"), act_story_script),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1062,7 +1104,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -1264,6 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
             actor = _actor(self.headers, body, self.principal)
             _REQUEST.actor = actor                  # for the few actions that record who (safe mode)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+            _REQUEST.actor, _REQUEST.principal = actor, self.principal
             out = fn(store, m.group(1), body)
             status = 200
             if isinstance(out, dict) and out.get("httpStatus") == 202:
@@ -1280,6 +1323,7 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("unhandled error on POST %s", urlparse(self.path).path)
             self._error(ApiError(500, "internal", "internal error; nothing further was changed by this handler"))
         finally:
+            _REQUEST.actor = _REQUEST.principal = None
             if store is not None:
                 store.close()
 

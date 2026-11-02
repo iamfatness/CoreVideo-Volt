@@ -163,6 +163,16 @@ MIGRATIONS = (
                        ("cue", "due_at", "TIMESTAMP"), ("cue", "claimed_at", "TIMESTAMP"), ("cue", "preload_status", "TEXT"),
                        ("cue", "preload_detail", "TEXT"), ("cue", "preloaded_at", "TIMESTAMP")),
               sqlite=tuple(_device_tables("TEXT")), postgres=tuple(_device_tables("TIMESTAMPTZ"))),
+    # Newsroom scripts. The item gains its editorial side: story_status (NULL reads as draft), script_rev (NULL reads as 1), the approval
+    # record (approved_by/at/rev; approved means story_status 'approved' AND approved_rev = script_rev), floated (a backup story) and
+    # source_wire_id. The show gains read_wpm (NULL = the default pace). story_rev, story_event, wire_story, story_template and
+    # story_archive are new tables, so base-table creation makes them; this entry adds the one index "who approved revision 7" needs.
+    Migration(25, "newsroom scripts",
+              columns=(("item", "story_status", "TEXT"), ("item", "script_rev", "INTEGER"), ("item", "approved_by", "TEXT"),
+                       ("item", "approved_at", "TIMESTAMP"), ("item", "approved_rev", "INTEGER"), ("item", "floated", "BOOLEAN"),
+                       ("item", "source_wire_id", "TEXT"), ("show", "read_wpm", "INTEGER")),
+              sqlite=("CREATE INDEX IF NOT EXISTS story_event_item ON story_event (item_id, kind, rev)",),
+              postgres=("CREATE INDEX IF NOT EXISTS story_event_item ON story_event (item_id, kind, rev)",)),
 )
 
 LATEST = MIGRATIONS[-1].version
