@@ -39,17 +39,21 @@ def as_registry(room) -> RoomRegistry:
 
 
 def from_env(env=None) -> RoomRegistry:
-    """The rooms the environment configures: CoreVideo Pro from VOLT_ROOM_URL (and VOLT_ROOM_TOKEN)."""
+    """The rooms the environment configures: CoreVideo Pro from VOLT_ROOM_URL (and VOLT_ROOM_TOKEN), decks from VOLT_HYPERDECK_HOSTS."""
     env = os.environ if env is None else env
     reg = RoomRegistry()
     url = env.get("VOLT_ROOM_URL")
     if url:
         from volt.rooms import CoreVideoProRoom
         reg.register(COREVIDEO, CoreVideoProRoom(url, env.get("VOLT_ROOM_TOKEN") or None))
+    hosts = env.get("VOLT_HYPERDECK_HOSTS")
+    if hosts:
+        from volt import hyperdeck
+        reg.register(hyperdeck.ROOM, hyperdeck.HyperDeckRoom(hyperdeck.parse_hosts(hosts)))
     return reg
 
 
 def configured(env=None) -> bool:
     """True when the environment configures any room; `volt run` starts the clock only then."""
     env = os.environ if env is None else env
-    return bool(env.get("VOLT_ROOM_URL"))
+    return bool(env.get("VOLT_ROOM_URL") or env.get("VOLT_HYPERDECK_HOSTS"))

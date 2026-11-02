@@ -213,24 +213,35 @@ def detach_span(store: Store, item_id: str) -> tuple[str, bool]:
 # ---- cues -----------------------------------------------------------------------------------------------
 
 def cue_commands() -> list[dict]:
-    """Every command the corevideo.pro room accepts.
+    """Every command the corevideo.pro room accepts (and the hyperdeck commands when VOLT_HYPERDECK_HOSTS names a deck).
 
     `adapter` is whether dispatch has a handler. `verified` is whether that handler has been
     proven against a live core (rooms.md). A cue without an adapter can be stored and armed,
     but a take stops at it with `cue_unsupported`. A cue with an adapter that is not live-proven
     still runs on take; a command leaves this list only when rooms.md records a live run.
     """
-    return [{"room": CUE_ROOM, "command": c, "adapter": c in HANDLERS, "verified": c in LIVE_PROVEN}
-            for c in sorted(cue_mod.COREVIDEO_COMMANDS)]
+    import os
+    from volt import hyperdeck
+    out = [{"room": CUE_ROOM, "command": c, "adapter": c in HANDLERS, "verified": c in LIVE_PROVEN}
+           for c in sorted(cue_mod.COREVIDEO_COMMANDS)]
+    if os.environ.get("VOLT_HYPERDECK_HOSTS"):     # offered only where a deck is configured; a stored deck cue is accepted regardless
+        out += [{"room": hyperdeck.ROOM, "command": c, "adapter": True, "verified": False} for c in hyperdeck.DECK_COMMANDS]
+    return out
 
 
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> tuple[str, str, bool]:
     """Returns (cue id, show id, verified) — verified means live-proven, not merely that an adapter exists."""
-    if room != CUE_ROOM:
-        raise BuildError(422, "bad_input", f"room must be {CUE_ROOM}: it is the only room with a command list")
-    if command not in cue_mod.COREVIDEO_COMMANDS:
-        raise BuildError(422, "bad_command", f"unknown {CUE_ROOM} command: {command}",
-                         commands=sorted(cue_mod.COREVIDEO_COMMANDS))
+    from volt import hyperdeck
+    if room not in (CUE_ROOM, hyperdeck.ROOM):
+        raise BuildError(422, "bad_input", f"room must be {CUE_ROOM} or {hyperdeck.ROOM}: they are the rooms with a command list")
+    known = cue_mod.COREVIDEO_COMMANDS if room == CUE_ROOM else set(hyperdeck.DECK_COMMANDS)
+    if command not in known:
+        raise BuildError(422, "bad_command", f"unknown {room} command: {command}", commands=sorted(known))
+    if room == hyperdeck.ROOM:
+        try:
+            hyperdeck.parse_payload(payload)
+        except ValueError as exc:
+            raise BuildError(422, "bad_input", str(exc)) from None
     row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
     if row is None:
         raise BuildError(404, "not_found", f"no such item: {item_id}")
