@@ -430,5 +430,136 @@ class StoryMigrationPostgres(PgCase):
         self.assertEqual(tuple(row), ("x", "old", None, None, None))
 
 
+def _version(name: str) -> int:
+    """The number a named migration has now. Looked up so renumbering after a rebase cannot silently break these tests."""
+    return next(m.version for m in migrations.MIGRATIONS if m.name == name)
+
+
+class MetadataTablesMigration(unittest.TestCase):
+    """A database before the metadata migration gains the metadata tables and their indexes, keeping its rows."""
+
+    def test_sqlite_gains_the_metadata_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "v21.db")
+            store = Store(path)
+            store.mint_asset(owner="desk")
+            for stmt in ("DROP INDEX asset_meta_value_text", "DROP INDEX asset_meta_value_num", "DROP INDEX asset_meta_value_date",
+                         "DROP TABLE asset_meta_value", "DROP TABLE field_term", "DROP TABLE field_def",
+                         f"DELETE FROM schema_version WHERE version = {_version('metadata tables')}"):
+                store.conn.execute(stmt)
+            store.conn.commit()
+            store.close()
+            store = Store(path)
+            try:
+                self.assertTrue({"field_def", "field_term", "asset_meta_value"} <= set(sqlite_columns(store.conn)))
+                idx = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+                self.assertTrue({"asset_meta_value_text", "asset_meta_value_num", "asset_meta_value_date"} <= idx)
+                self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+                self.assertIn(_version("metadata tables"), {r[0] for r in store.conn.execute("SELECT version FROM schema_version")})
+            finally:
+                store.close()
+
+
+class MetadataTablesMigrationPostgres(PgCase):
+    def test_postgres_gains_the_metadata_tables(self):
+        store = self.store()
+        store.mint_asset(owner="desk")
+        for stmt in ("DROP TABLE asset_meta_value", "DROP TABLE field_term", "DROP TABLE field_def",
+                     f"DELETE FROM schema_version WHERE version = {_version('metadata tables')}"):
+            store.conn.execute(stmt)
+        store.conn.commit()
+        store.close()
+        again = self.store()
+        cols = PostgresForward.pg_columns(None, again.conn)
+        self.assertTrue({"field_def", "field_term", "asset_meta_value"} <= set(cols))
+        idx = {r[0] for r in again.conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")}
+        self.assertTrue({"asset_meta_value_text", "asset_meta_value_num", "asset_meta_value_date"} <= idx)
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+
+
+class SearchIndexMigration(unittest.TestCase):
+    """A database before the search-index migration gains search_doc's indexes and, when this SQLite has FTS5, the FTS table and triggers."""
+
+    def test_sqlite_gains_the_search_index_and_backfills_fts(self):
+        from volt import library, searchindex
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "v22.db")
+            store = Store(path)
+            a = store.mint_asset(owner="desk")
+            library.index_words(store, a.id, [("steal", "00:00:01:00", "00:00:01:10")])
+            for stmt in ("DROP TRIGGER IF EXISTS search_doc_ai", "DROP TRIGGER IF EXISTS search_doc_ad", "DROP TRIGGER IF EXISTS search_doc_au",
+                         "DROP TABLE IF EXISTS search_fts", "DROP INDEX search_doc_asset", "DROP INDEX search_doc_value",
+                         "DROP INDEX search_doc_person", f"DELETE FROM schema_version WHERE version = {_version('search index')}"):
+                store.conn.execute(stmt)
+            store.conn.commit()
+            store.close()
+            store = Store(path)
+            try:
+                idx = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+                self.assertTrue({"search_doc_asset", "search_doc_value", "search_doc_person"} <= idx)
+                self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM search_doc").fetchone()[0], 1)
+                if searchindex.sqlite_has_fts5():
+                    self.assertTrue(searchindex.fts_available(store))
+                    self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM search_fts WHERE search_fts MATCH 'steal'").fetchone()[0], 1)
+                    triggers = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+                    self.assertTrue({"search_doc_ai", "search_doc_ad", "search_doc_au"} <= triggers)
+                self.assertIn(_version("search index"), {r[0] for r in store.conn.execute("SELECT version FROM schema_version")})
+            finally:
+                store.close()
+
+
+class SearchIndexMigrationPostgres(PgCase):
+    def test_postgres_gains_the_search_index(self):
+        store = self.store()
+        for stmt in ("DROP TABLE search_doc", f"DELETE FROM schema_version WHERE version = {_version('search index')}"):
+            store.conn.execute(stmt)
+        store.conn.commit()
+        store.close()
+        again = self.store()
+        idx = {r[0] for r in again.conn.execute("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")}
+        self.assertTrue({"search_doc_asset", "search_doc_value", "search_doc_person", "search_doc_tsv"} <= idx)
+        self.assertIn("search_doc", PostgresForward.pg_columns(None, again.conn))
+
+
+class SavedSearchMigration(unittest.TestCase):
+    """A database before the saved-search migration gains the saved search and bin tables and their indexes, keeping its rows."""
+
+    def test_sqlite_gains_saved_searches_and_bins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "v23.db")
+            store = Store(path)
+            store.mint_asset(owner="desk")
+            for stmt in ("DROP TABLE bin_member", "DROP TABLE bin", "DROP TABLE saved_search",
+                         f"DELETE FROM schema_version WHERE version = {_version('saved searches and bins')}"):
+                store.conn.execute(stmt)
+            store.conn.commit()
+            store.close()
+            store = Store(path)
+            try:
+                self.assertTrue({"saved_search", "bin", "bin_member"} <= set(sqlite_columns(store.conn)))
+                idx = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+                self.assertTrue({"saved_search_owner", "bin_owner", "bin_member_bin", "bin_member_asset"} <= idx)
+                self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+                self.assertIn(_version("saved searches and bins"), {r[0] for r in store.conn.execute("SELECT version FROM schema_version")})
+            finally:
+                store.close()
+
+
+class SavedSearchMigrationPostgres(PgCase):
+    def test_postgres_gains_saved_searches_and_bins(self):
+        store = self.store()
+        store.mint_asset(owner="desk")
+        for stmt in ("DROP TABLE bin_member", "DROP TABLE bin", "DROP TABLE saved_search", f"DELETE FROM schema_version WHERE version = {_version('saved searches and bins')}"):
+            store.conn.execute(stmt)
+        store.conn.commit()
+        store.close()
+        again = self.store()
+        self.assertTrue({"saved_search", "bin", "bin_member"} <= set(PostgresForward.pg_columns(None, again.conn)))
+        idx = {r[0] for r in again.conn.execute("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")}
+        self.assertTrue({"saved_search_owner", "bin_owner", "bin_member_bin", "bin_member_asset"} <= idx)
+        self.assertEqual(again.conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

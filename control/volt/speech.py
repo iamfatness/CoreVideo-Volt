@@ -709,6 +709,8 @@ def transcribe(store: Store, asset_id: str, engine: Engine, vocabulary: Sequence
              json.dumps(list(vocabulary)), json.dumps(used), json.dumps(applied), len(rows),
              _run_time(store), json.dumps({"engine": info, **facts})))
         conn.execute("DELETE FROM asr_chunk WHERE job_id = ?", (job.id,))
+        from volt import searchindex   # the derived index follows the new transcript, in the same transaction
+        searchindex.rebuild_asset(store, asset_id)
     _release_slot(store, slot)
     if not owned:
         store.complete_job(job.id)

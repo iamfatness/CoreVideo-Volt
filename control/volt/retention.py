@@ -327,6 +327,9 @@ def purge_asset(store: Store, asset_id: str, roots: OwnedRoots, allow_versions: 
         c = store.conn
         counts = {}
         for table, sql in (
+            ("asset_meta_value", "DELETE FROM asset_meta_value WHERE asset_id = ?"),
+            ("bin_member", "DELETE FROM bin_member WHERE asset_id = ?"),
+            ("search_doc", "DELETE FROM search_doc WHERE asset_id = ?"),
             ("asr_chunk", "DELETE FROM asr_chunk WHERE job_id IN (SELECT id FROM job WHERE asset_id = ?)"),
             ("asr_run", "DELETE FROM asr_run WHERE asset_id = ?"),
             ("shot_run", "DELETE FROM shot_run WHERE asset_id = ?"),

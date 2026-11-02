@@ -38,6 +38,8 @@ def index_words(store: Store, asset_id: str, words: list[tuple[str, str, str]]) 
         store.add_span(asset_id, "transcript", tc_in, tc_out, text=text, origin="transcript",
                        frame_in=fi, frame_out=fo)
     store.complete_job(job.id)
+    from volt import searchindex   # the derived index follows the transcript
+    searchindex.rebuild_asset(store, asset_id)
     return len(words)
 
 

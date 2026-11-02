@@ -417,6 +417,87 @@ CREATE TABLE IF NOT EXISTS session (
 );
 
 CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name);
+
+CREATE TABLE IF NOT EXISTS field_def (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  type TEXT NOT NULL,
+  show_name TEXT,
+  required INTEGER NOT NULL DEFAULT 0,
+  multi INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL,
+  retired_at TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS field_term (
+  field_id TEXT NOT NULL REFERENCES field_def(id),
+  term TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  retired_at TEXT,
+  PRIMARY KEY (field_id, term)
+);
+
+CREATE TABLE IF NOT EXISTS asset_meta_value (
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  field_id TEXT NOT NULL REFERENCES field_def(id),
+  ord INTEGER NOT NULL,
+  v_text TEXT,
+  v_num REAL,
+  v_date TEXT,
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (asset_id, field_id, ord)
+);
+
+CREATE TABLE IF NOT EXISTS search_doc (
+  seq INTEGER PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  kind TEXT NOT NULL,
+  ref_id TEXT,
+  tc_in TEXT,
+  tc_out TEXT,
+  frame_in INTEGER,
+  frame_out INTEGER,
+  body TEXT NOT NULL,
+  weight REAL NOT NULL,
+  status TEXT,
+  person_id TEXT,
+  confidence REAL,
+  value_norm TEXT,
+  created_at TEXT NOT NULL,
+  tsv TEXT
+);
+
+CREATE TABLE IF NOT EXISTS saved_search (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  shared INTEGER NOT NULL DEFAULT 0,
+  query TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bin (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  shared INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bin_member (
+  bin_id TEXT NOT NULL REFERENCES bin(id),
+  asset_id TEXT NOT NULL REFERENCES asset(id),
+  span_id TEXT,
+  position INTEGER NOT NULL,
+  added_by TEXT NOT NULL,
+  added_at TEXT NOT NULL
+);
 """
 
 
