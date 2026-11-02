@@ -22,6 +22,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - uses: FedericoCarboni/setup-ffmpeg@v3
         if: runner.os != 'Linux'
+      - name: Time-zone data (Windows has none; recurring shows need it)
+        if: runner.os == 'Windows'
+        run: python -m pip install tzdata
       - name: Contract tests
         working-directory: control
         run: python -m unittest discover -s tests -v
@@ -88,8 +91,8 @@ jobs:
           & "$env:PGBIN\pg_isready.exe" -h localhost -p 5432
           $env:PGPASSWORD = 'root'
           & "$env:PGBIN\psql.exe" -h localhost -U postgres -Atc 'select version()'
-      - name: Install the Postgres drivers
-        run: python -m pip install "psycopg[binary]==3.3.6" "psycopg_pool==3.3.3"
+      - name: Install the Postgres drivers and the time-zone data
+        run: python -m pip install "psycopg[binary]==3.3.6" "psycopg_pool==3.3.3" tzdata
       - name: Contract tests on Postgres (Windows)
         working-directory: control
         run: python -m unittest discover -s tests -v
