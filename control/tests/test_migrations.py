@@ -418,7 +418,7 @@ class StoryMigrationPostgres(PgCase):
         store.conn.execute("ALTER TABLE show DROP COLUMN read_wpm")
         for table in sorted(STORY_TABLES):
             store.conn.execute(f"DROP TABLE {table}")
-        store.conn.execute(f"DELETE FROM schema_version WHERE version = {migrations.LATEST}")
+        store.conn.execute(f"DELETE FROM schema_version WHERE version = 25")
         store.conn.commit()
         store.close()
         again = self.store()
