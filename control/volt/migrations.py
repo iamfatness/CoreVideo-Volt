@@ -137,6 +137,12 @@ MIGRATIONS = (
                       "CREATE TABLE IF NOT EXISTS group_member (group_name TEXT NOT NULL, user_name TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (group_name, user_name))"),
               postgres=("CREATE TABLE IF NOT EXISTS volt_group (name TEXT PRIMARY KEY, role TEXT, created_at TIMESTAMPTZ NOT NULL)",
                         "CREATE TABLE IF NOT EXISTS group_member (group_name TEXT NOT NULL, user_name TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (group_name, user_name))")),
+    # The audit view filters by actor, action and time, newest first: indexes for those, on both backends.
+    Migration(23, "audit view indexes",
+              sqlite=("CREATE INDEX IF NOT EXISTS audit_at ON audit (at, id)", "CREATE INDEX IF NOT EXISTS audit_actor_at ON audit (actor, at)",
+                      "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)"),
+              postgres=("CREATE INDEX IF NOT EXISTS audit_at ON audit (at, id)", "CREATE INDEX IF NOT EXISTS audit_actor_at ON audit (actor, at)",
+                        "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)")),
 )
 
 LATEST = MIGRATIONS[-1].version

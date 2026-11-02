@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import access as acl, auditview, archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -1330,13 +1330,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/audit":
             query = parse_qs(parsed.query, keep_blank_values=True)
-            extra = sorted(set(query) - {"target"})
+            extra = sorted(set(query) - {"target", "actor", "action", "kind", "from", "to", "before", "limit", "format"})
             if extra:
                 raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
-            given = query.get("target")
-            if not given or len(given) != 1 or not given[0]:
-                raise ApiError(422, "bad_input", "target is required")
-            self._json(200, {"ok": True, "rows": STORE.list_audit(given[0])})
+
+            def one(name):
+                got = query.get(name)
+                if got is None:
+                    return None
+                if len(got) != 1 or not got[0]:
+                    raise ApiError(422, "bad_input", f"{name} must be given once and not empty")
+                return got[0]
+            target = one("target")
+            if target is not None and not any(one(n) for n in ("actor", "action", "kind", "from", "to", "before", "limit", "format") if n in query):
+                self._json(200, {"ok": True, "rows": STORE.list_audit(target)})   # the original call, for any operator
+                return
+            self._require_admin()
+            raw_limit = one("limit")
+            try:
+                limit = int(raw_limit) if raw_limit is not None else 100
+                rows, nxt = STORE.list_audit_page(actor=one("actor"), action=one("action"), kind=one("kind"), target=target,
+                                                  since=one("from"), until=one("to"), before=one("before"), limit=limit)
+            except ValueError as exc:
+                raise ApiError(422, "bad_input", str(exc)) from None
+            fmt = one("format")
+            if fmt not in (None, "json", "csv"):
+                raise ApiError(422, "bad_input", "format must be json or csv")
+            if fmt == "csv":
+                self._send(200, "text/csv; charset=utf-8", auditview.render_csv(rows).encode("utf-8"))
+                return
+            self._json(200, {"ok": True, "rows": rows, "next": nxt})
             return
         if parsed.path == "/api/whoami":
             self._json(200, {"ok": True, "name": self.principal.name if self.principal else LEGACY_ACTOR,

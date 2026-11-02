@@ -98,6 +98,9 @@ class Endpoints(Api):
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (200, 503), tpl)
                 self.assertIn("version", payload)
+            elif tpl == "/api/audit":   # needs a target or the admin role: refused, never a missing route
+                status, payload, _ = self.call("GET", path)
+                self.assertIn(status, (200, 401, 403, 422), tpl)
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
@@ -1271,3 +1274,20 @@ class DeckCueUi(unittest.TestCase):
         for c in ("deck.play", "deck.stop", "deck.goto", "deck.record.start", "deck.record.stop"):
             self.assertIn("'%s':" % c, js, c)
         self.assertIn("info && info.room ? { room: info.room } : {}", js)
+
+
+class ActivityScreen(unittest.TestCase):
+    def test_the_screen_exists_is_reachable_and_builds_rows_without_innerhtml(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        self.assertIn('id="screen-activity"', html)
+        self.assertIn("'activity'", js[js.index("const SCREENS"):js.index("const SCREENS") + 120])
+        body = js[js.index("function renderActivity"):js.index("function renderChrome")]
+        self.assertNotIn("innerHTML", body)
+        self.assertIn("scope: 'col'", body)
+        self.assertIn("icon('wave'", body)
+        self.assertIn("download: 'volt-activity.csv'", js)   # the CSV is fetched with the token, not a plain link
+
+    def test_the_rail_accepts_activity_only_as_an_extra(self):
+        got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])
+        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "activity"})
+        self.assertEqual(got[1]["extra"], "activity")

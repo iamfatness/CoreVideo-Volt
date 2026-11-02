@@ -652,6 +652,42 @@ class Store:
         self.conn.commit()
         return row_id
 
+    def list_audit_page(self, actor=None, action=None, kind=None, target=None, since=None, until=None, before=None, limit: int = 100):
+        """Filtered audit rows, newest first, in pages. Returns (rows, next_cursor); the cursor is the `at|id` of the last row and the
+        next call passes it as `before`. Ordering is (at, id) so rows with equal times neither repeat nor go missing. Raises ValueError
+        for a limit outside 1..500 or a cursor that is not one of ours."""
+        if not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise ValueError("limit must be 1 to 500")
+        where, params = [], []
+        for column, value in (("actor", actor), ("action", action), ("target_kind", kind), ("target_id", target)):
+            if value is not None:
+                where.append(f"{column} = ?")
+                params.append(value)
+        if since is not None:
+            where.append("at >= ?")
+            params.append(since)
+        if until is not None:
+            where.append("at <= ?")
+            params.append(until)
+        if before is not None:
+            at, sep, row_id = before.rpartition("|")
+            if not sep or not at or not row_id:
+                raise ValueError("before is not a cursor")
+            where.append("(at < ? OR (at = ? AND id < ?))")
+            params += [at, at, row_id]
+        sql = ("SELECT id, at, actor, action, target_kind, target_id, detail FROM audit"
+               + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY at DESC, id DESC LIMIT ?")
+        fetched = self.conn.execute(sql, params + [limit + 1]).fetchall()
+        rows = []
+        for row in fetched[:limit]:
+            at = row["at"]
+            if not isinstance(at, str):
+                at = at.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(at, "strftime") else str(at)
+            rows.append({"id": row["id"], "at": at, "actor": row["actor"], "action": row["action"],
+                         "target_kind": row["target_kind"], "target_id": row["target_id"], "detail": row["detail"]})
+        cursor = f"{rows[-1]['at']}|{rows[-1]['id']}" if len(fetched) > limit and rows else None
+        return rows, cursor
+
     def list_audit(self, target_id: str, limit: int = 200) -> list:
         """Newest-first rows for one target_id, capped at `limit` (the HTTP route uses 200)."""
         order = "at DESC, id DESC" if self.postgres else "rowid DESC"
