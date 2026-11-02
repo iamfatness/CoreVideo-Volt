@@ -75,7 +75,7 @@ One finding from running: `python -m volt.serve --help` does not print help. `se
 | Developer docs | present | Read: seven areas, thirteen specs, honest "proven / not proven" sections. |
 | Operator docs | absent | Read: `start-here.md` is a build order; `README.md` and `control/README.md` give a dev run. No install guide, no day-of checklist, no recovery runbook. |
 | **Legal** | | |
-| License | absent | Read: no LICENSE file, no license field. |
+| License | present | LICENSE (proprietary, all rights reserved, 2026-11-01) and a `license` field in `pyproject.toml`; third-party terms in NOTICE. Was: no LICENSE file. |
 | Third-party notices | absent | Read: none. ffmpeg (LGPL or GPL by build), faster-whisper models and the optional SDKs carry terms a distributor must honour. |
 | **Release** | | |
 | Versioning | absent | Read: no `__version__` (`volt/__init__.py` has none); `git tag` in this clone lists none. |

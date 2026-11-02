@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "volt-control"
 dynamic = ["version"]
 description = "Volt control plane: library, rundown, runner and operator API for live production."
+license = {text = "LicenseRef-Proprietary"}
+authors = [{name = "John Wallace"}]
 readme = "README.md"
 requires-python = ">=3.12"
 # The core is standard library only. Everything below is opt-in.

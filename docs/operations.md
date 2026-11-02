@@ -55,8 +55,7 @@ allows the bind address, whether the port is free, and free disk against the flo
 A laptop without a room stays quiet. It never prints a token or a database password. `volt check --json` is for
 scripts; `--env-file` checks the same settings a service will use.
 
-Third-party terms for ffmpeg, faster-whisper, and the optional SDKs are in `NOTICE`. There is no LICENSE for
-Volt until the owner names an SPDX id.
+Third-party terms for ffmpeg, faster-whisper, and the optional SDKs are in `NOTICE`. Volt itself is proprietary: see `LICENSE`. (Before 2026-11-01 there was no LICENSE.)
 
 ## Configure
 
@@ -317,9 +316,10 @@ is not blocked from starting.
 
 ## Not done yet (decisions and work outside this page)
 
-- **License.** There is no LICENSE file: the owner has not chosen one. Until then nobody outside the owner has a
-  right to install or redistribute Volt. `NOTICE` lists ffmpeg, faster-whisper, and the optional SDKs; it is not
-  a grant for Volt.
+- **License.** Decided 2026-11-01: proprietary, all rights reserved (`LICENSE`, SPDX `LicenseRef-Proprietary`). Nobody
+  outside the owner has a right to install or redistribute Volt without a written agreement. `NOTICE` lists ffmpeg,
+  faster-whisper, the optional SDKs and their licences; it is not a grant for Volt. Still open: a customer licence
+  agreement and, if a bundle ships psycopg, the LGPL-3.0 steps in `NOTICE`.
 - **Auth.** Per-user tokens with two roles (operator, admin; see "Users and tokens" above), plus the legacy shared
   `VOLT_TOKEN` as an admin named `desk`. Writes append to `audit` with the token's user as the actor;
   `GET /api/audit?target=` is the read. No passwords, SSO or finer roles.
