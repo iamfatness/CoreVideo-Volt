@@ -176,6 +176,18 @@ def _ingest_roots(env) -> list:
     return [Result("ingest roots", OK, f"{len(roots)} folder(s)")]
 
 
+def _search_index(db: str) -> Result:
+    """Text search needs FTS5 in SQLite (Postgres has tsvector built in). Without it search still works, with LIKE, more slowly."""
+    from volt import pg, searchindex
+
+    if pg.is_dsn(db):
+        return Result("search index", OK, "Postgres full-text search (tsvector)")
+    if searchindex.sqlite_has_fts5():
+        return Result("search index", OK, "SQLite FTS5 available")
+    return Result("search index", WARN, "this SQLite was built without FTS5: library search falls back to LIKE "
+                                        "(no ranking, accents not folded, smaller pages); use a SQLite with FTS5 or Postgres")
+
+
 def _backup_tools(db: str) -> Result:
     from volt import backup, pg
 
@@ -228,6 +240,7 @@ def run_checks(env=None, db: Optional[str] = None, host: Optional[str] = None, p
     results.extend(_retention(env))
     results.extend(_ingest_roots(env))
     results.append(_backup_tools(db))
+    results.append(_search_index(db))
 
     if not env.get("VOLT_PROXY_DIR"):
         results.append(Result("runner", WARN, "VOLT_PROXY_DIR is not set: proxy jobs will fail until it is"))

@@ -28,6 +28,8 @@ _TYPES = {
     "INTEGER": ("INTEGER", "INTEGER"),
     "BOOLEAN": ("INTEGER", "BOOLEAN"),
     "TIMESTAMP": ("TEXT", "TIMESTAMPTZ"),
+    "REAL": ("REAL", "DOUBLE PRECISION"),
+    "BLOB": ("BLOB", "BYTEA"),
 }
 # pg._ADDED_COLUMNS is written with Postgres type names; map them back for SQLite.
 _PG_TO_NEUTRAL = {"TIMESTAMPTZ": "TIMESTAMP"}
@@ -56,6 +58,27 @@ def _device_tables(ts: str) -> list:
         "CREATE TABLE IF NOT EXISTS macro_step (macro_id TEXT NOT NULL, version INTEGER NOT NULL, position INTEGER NOT NULL, room TEXT NOT NULL, command TEXT NOT NULL, payload TEXT NOT NULL, offset_ms INTEGER NOT NULL, group_key TEXT, PRIMARY KEY (macro_id, version, position))",
         f"CREATE TABLE IF NOT EXISTS device_confirm (id TEXT PRIMARY KEY, cue_id TEXT NOT NULL, requested_by TEXT NOT NULL, requested_at {ts} NOT NULL, expires_at {ts} NOT NULL, state TEXT NOT NULL)",
     ]
+
+
+def _sqlite_fts(db) -> None:
+    """The FTS5 table over search_doc.body and the triggers that keep it in step. A SQLite built without FTS5 skips this:
+    volt.searchindex then answers text queries with LIKE and reports degraded."""
+    import sqlite3
+    try:
+        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5("
+                   "body, content='search_doc', content_rowid='seq', tokenize='unicode61 remove_diacritics 2', prefix='2 3')")
+    except sqlite3.OperationalError as exc:
+        if "fts5" in str(exc).lower():
+            return
+        raise
+    db.execute("CREATE TRIGGER IF NOT EXISTS search_doc_ai AFTER INSERT ON search_doc BEGIN "
+               "INSERT INTO search_fts(rowid, body) VALUES (new.seq, new.body); END")
+    db.execute("CREATE TRIGGER IF NOT EXISTS search_doc_ad AFTER DELETE ON search_doc BEGIN "
+               "INSERT INTO search_fts(search_fts, rowid, body) VALUES ('delete', old.seq, old.body); END")
+    db.execute("CREATE TRIGGER IF NOT EXISTS search_doc_au AFTER UPDATE OF body ON search_doc BEGIN "
+               "INSERT INTO search_fts(search_fts, rowid, body) VALUES ('delete', old.seq, old.body); "
+               "INSERT INTO search_fts(rowid, body) VALUES (new.seq, new.body); END")
+    db.execute("INSERT INTO search_fts(search_fts) VALUES ('rebuild')")   # the table is new, so this indexes any rows already there
 
 
 MIGRATIONS = (
@@ -179,6 +202,43 @@ MIGRATIONS = (
                       "CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name)"),
               postgres=("CREATE TABLE IF NOT EXISTS session (id_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, provider TEXT NOT NULL, csrf TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)",
                         "CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name)")),
+
+    # Typed asset metadata (volt/metadata.py). field_def, field_term and asset_meta_value are new tables (base-table creation
+    # makes them); the indexes are here because SCHEMA runs on every open and these only matter on the new tables.
+    Migration(27, "metadata tables",
+              sqlite=("CREATE INDEX IF NOT EXISTS asset_meta_value_text ON asset_meta_value (field_id, v_text)",
+                      "CREATE INDEX IF NOT EXISTS asset_meta_value_num ON asset_meta_value (field_id, v_num)",
+                      "CREATE INDEX IF NOT EXISTS asset_meta_value_date ON asset_meta_value (field_id, v_date)"),
+              postgres=("CREATE INDEX IF NOT EXISTS asset_meta_value_text ON asset_meta_value (field_id, v_text)",
+                        "CREATE INDEX IF NOT EXISTS asset_meta_value_num ON asset_meta_value (field_id, v_num)",
+                        "CREATE INDEX IF NOT EXISTS asset_meta_value_date ON asset_meta_value (field_id, v_date)")),
+    # The derived search index (volt/searchindex.py). search_doc is a new table (base-table creation makes it). On SQLite the
+    # full-text side is an FTS5 external-content table kept in step by triggers, made only when this SQLite has FTS5 (without it
+    # search falls back to LIKE and says so). On Postgres it is a GIN index over the tsvector column the writer fills.
+    Migration(28, "search index",
+              sqlite=("CREATE INDEX IF NOT EXISTS search_doc_asset ON search_doc (asset_id, kind)",
+                      "CREATE INDEX IF NOT EXISTS search_doc_value ON search_doc (kind, value_norm)",
+                      "CREATE INDEX IF NOT EXISTS search_doc_person ON search_doc (person_id)",
+                      _sqlite_fts),
+              postgres=("CREATE INDEX IF NOT EXISTS search_doc_asset ON search_doc (asset_id, kind)",
+                        "CREATE INDEX IF NOT EXISTS search_doc_value ON search_doc (kind, value_norm)",
+                        "CREATE INDEX IF NOT EXISTS search_doc_person ON search_doc (person_id)",
+                        "CREATE INDEX IF NOT EXISTS search_doc_tsv ON search_doc USING GIN (tsv)")),
+    # Saved searches and bins (volt/collections.py): new tables (base-table creation makes them), indexes here. bin_member.span_id has
+    # no foreign key on purpose: transcription and detection delete and rewrite spans, and a bin must never block them.
+    Migration(29, "saved searches and bins",
+              sqlite=(
+                      "CREATE INDEX IF NOT EXISTS saved_search_owner ON saved_search (owner)",
+                      "CREATE INDEX IF NOT EXISTS bin_owner ON bin (owner)",
+                      "CREATE INDEX IF NOT EXISTS bin_member_bin ON bin_member (bin_id, position)",
+                      "CREATE INDEX IF NOT EXISTS bin_member_asset ON bin_member (asset_id)",
+              ),
+              postgres=(
+                      "CREATE INDEX IF NOT EXISTS saved_search_owner ON saved_search (owner)",
+                      "CREATE INDEX IF NOT EXISTS bin_owner ON bin (owner)",
+                      "CREATE INDEX IF NOT EXISTS bin_member_bin ON bin_member (bin_id, position)",
+                      "CREATE INDEX IF NOT EXISTS bin_member_asset ON bin_member (asset_id)",
+              )),
 )
 
 LATEST = MIGRATIONS[-1].version
@@ -311,7 +371,10 @@ def run(db: _Backend) -> list:
             continue
         _ensure_columns(db, migration.columns)
         for stmt in (migration.postgres if db.postgres else migration.sqlite):
-            db.execute(stmt)
+            if callable(stmt):   # a step that needs Python (an optional SQLite module), given the backend
+                stmt(db)
+            else:
+                db.execute(stmt)
         db.record(migration)
         ran.append(migration.version)
     return ran

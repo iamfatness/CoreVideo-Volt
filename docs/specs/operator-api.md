@@ -224,6 +224,39 @@ Same contract and auth as above; rights are never consulted (a legal hold or an 
 
 `GET /api/assets/{asset}/spans` also returns `detect` (the newest detection job as above, with `threshold` and `minFrames`, or `null`) and `indexing` (the `span-frames` job, or `null`). `ageSeconds` is seconds since the job row last changed (for a running job, since it was claimed), computed on the server. A queued job with `error` set is waiting for a retry or for the recording to be wrapped.
 
+## Typed metadata (schema and per-asset values)
+
+Design: `docs/superpowers/specs/2026-11-01-search-indexing-design.md`. Same auth and error shape as above. Request keys are camelCase.
+
+| Path | Role | Body / params | Does | Refusals |
+|---|---|---|---|---|
+| `GET /api/schema` | any | `show?` | `{ok, fields: [{key, label, type, showName, required, multi, position, retired, terms: [{term, retired}]}]}`: active fields, global plus the named show's | 422 `bad_input` (unknown parameter) |
+| `POST /api/schema/fields` | admin | `key, label, type` (`text longtext number date bool enum`), `show?`, `required?`, `multi?` | Create a field; if `key` exists, edit it (`label`, `type`, `required`, `multi`; `show` cannot change). Returns `{ok, created, field}` | 422 `bad_input`; 409 `type_locked` (an asset holds a value), `field_exists` (retired key) |
+| `POST /api/schema/fields/{key}/retire` | admin | none | Hide the field; stored values are kept | 404 `not_found` |
+| `POST /api/schema/fields/{key}/terms` | operator | `terms` (list) | Add terms to an enum's vocabulary (a retired term is revived). Returns `{ok, added, field}` | 404; 422 `bad_input` (not an enum, over 500 terms) |
+| `POST /api/schema/fields/{key}/terms/retire` | admin | `term` | A retired term stays valid on values already stored and is refused on new ones | 404; 422 `not_in_vocabulary` |
+| `GET /api/assets/{asset}/metadata` | any | none | `{ok, assetId, values: {key: [..]}, missing: [required keys with no value]}` | 404 |
+| `POST /api/assets/{asset}/metadata` | operator | `key, values` (list; `[]` clears) | Replace one field's values in one transaction. Returns `{ok, asset, key, values, missing}`. The audit row's `detail` is `{key, old, new}` | 404; 422 `unknown_field`, `type_mismatch`, `not_in_vocabulary`, `required_field`, `bad_input` |
+
+Limits: text 1,000 characters, longtext 10,000, number finite within 1e15, date `YYYY-MM-DD`, 60 active fields, 500 terms per enum, 20 values per multi field. Required means incomplete, not refused at ingest.
+
+## Search, saved searches and bins
+
+Design: `docs/superpowers/specs/2026-11-01-search-indexing-design.md`. Reads need any valid token; the POSTs are operator. Request keys are camelCase. A saved search or a bin that someone else has not shared is invisible to you (`404 not_found`), and only its owner or an admin changes or deletes it (`403 forbidden_role`).
+
+| Path | Role | Body / params | Does | Refusals |
+|---|---|---|---|---|
+| `GET /api/search` | any | `q` (words, "quoted phrases", `-word`; the last bare word is a prefix), `scope` (`all transcript labels metadata`), `filter` (URL-encoded JSON, at most 4 KB), `facets` (comma list), `sort` (`relevance recent show`), `group` (`asset hit`), `include` (`proposed`), `limit` (1 to 100, default 25), `after` | `{ok, assets \| hits, total, facets, next, degraded}`. An asset entry has its show, camera, room, owner, retention, `cleared`, `legalHold`, `blockedBy` (as the spans route), `archived`, `incomplete`, `metadata`, `score` and up to 3 `hits`; a hit is `{kind, spanId \| labelId, tcIn, tcOut, frameIn, frameOut, snippet, status, confidence, score}`. Deleted assets are excluded; archived ones are included and flagged; a file location is never returned. Face labels are absent until confirmed unless `include=proposed`; rejected labels never match. A filter naming a person (`label.person`) writes one `search_person` audit row per person id. `degraded: true` means SQLite has no FTS5 and the answer came from LIKE | 422 `bad_input` (unknown or repeated parameter, bad filter, bad cursor, `limit` over 100, `sort=relevance` or `group=hit` without `q`) |
+| `GET /api/searches` | any | none | `{ok, searches: [{id, name, owner, shared, query, createdAt, updatedAt}]}`: yours and every shared one | |
+| `POST /api/searches` | operator | `name` (1 to 100), `query` (a search request object, no `after`), `shared?` | Save a search. Returns `{ok, search}`. Run it by passing its `query` to `GET /api/search` | 422 `bad_input` (also 200 saved searches already) |
+| `POST /api/searches/{id}/delete` | operator | none | Delete one | 404 `not_found`; 403 `forbidden_role` (shared, not yours, not admin) |
+| `GET /api/bins` | any | none | `{ok, bins: [{id, name, owner, shared, createdAt, count}]}` | |
+| `GET /api/bins/{id}` | any | none | `{ok, bin, members: [{assetId, spanId, position, addedBy, addedAt, gone, kind, label, tcIn, tcOut, assetDeleted}]}`. `gone: true` means the span was rewritten away; the member stays | 404 |
+| `POST /api/bins` | operator | `name`, `shared?` | Create a bin. Returns `{ok, bin}` | 422 `bad_input` (also 200 bins already) |
+| `POST /api/bins/{id}/add` | operator | `assetId`, `spanId?` | Add an asset, or one of its spans. Adding what is there is not an error: `{ok, added, member, bin}` | 404; 403; 422 `bad_input` (span not on that asset); 409 `bin_full` (5,000 items) |
+| `POST /api/bins/{id}/remove` | operator | `assetId`, `spanId?` | Take an item out; the asset is untouched. `{ok, removed, bin}` | 404; 403 |
+| `POST /api/bins/{id}/delete` | operator | none | Delete the bin and its membership | 404; 403 |
+
 ## Other codes
 
 `401 unauthorized` (also `ticket_invalid` / expired media ticket), `403 bad_host`, `403 forbidden_role`, `404 not_found` (also unknown routes, and `GET /rundown?show=<id>` for an unknown show; the body is the same `{ok: false, error: {code, reason}}` shape), `411 length_required`, `413 too_large`, `415 unsupported_media_type`, `409 taking` (go, take, skip, kill, clock while an item of the show is taking), `409 overlaps_shot`/`span_in_use`/`not_editable`/`not_deletable`/`conflict`/`not_adjacent`/`detect_busy`/`indexing`/`essence_open` (shot spans), `503 engine_missing`, `503 no_media_key`, `416 bad_range`, `422 bad_input` (also `bad_timecode`, `outside_source`, `bad_actor`), `502 thumb_failed`, `504 thumb_timeout`, `500 internal` (no detail leaks; the traceback goes to the server's stderr).

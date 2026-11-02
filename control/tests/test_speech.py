@@ -64,6 +64,16 @@ class Transcribe(unittest.TestCase):
         self.assertEqual((hit.asset_id, hit.tc_in, hit.tc_out), (asset.id, "01:12:08:10", "01:12:08:22"))
         self.assertEqual(_job(self.store, asset)["status"], "done")
 
+    def test_the_search_index_follows_a_transcript_and_its_replacement(self):
+        from volt import searchindex
+        asset = _asset(self.store, self.root)
+        transcribe(self.store, asset.id, FakeEngine(WORDS))
+        found = searchindex.search(self.store, {"q": "steal"})["assets"]
+        self.assertEqual([a["assetId"] for a in found], [asset.id])
+        transcribe(self.store, asset.id, FakeEngine([Word("budget", 0.2, 0.6)], model="other"))
+        self.assertEqual(searchindex.search(self.store, {"q": "steal"})["assets"], [])
+        self.assertEqual([a["assetId"] for a in searchindex.search(self.store, {"q": "budget"})["assets"]], [asset.id])
+
     def test_zero_length_word_still_has_a_frame(self):
         asset = _asset(self.store, self.root)
         transcribe(self.store, asset.id, FakeEngine(WORDS))

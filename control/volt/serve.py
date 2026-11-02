@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -108,9 +108,21 @@ _AUDIT_KIND = {
     "groups": "group",
     "devices": "device",
     "session": "session",
+
+    "schema": "schema",
+    "searches": "search",
+    "bins": "bin",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
+
+
+_CALLER = threading.local()
+
+
+def _caller() -> tuple:
+    """(actor, role) of the request being served on this thread. Set by do_POST just before the act runs."""
+    return getattr(_CALLER, "actor", LEGACY_ACTOR), getattr(_CALLER, "role", "admin")
 
 
 class Principal:
@@ -313,6 +325,18 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
             action = "session_end"
         if not captured and isinstance(out.get("user"), dict):
             captured = out["user"].get("name") or ""
+    if len(parts) >= 2 and parts[1] == "schema":
+        action = "schema_term_retire" if parts[-2:] == ["terms", "retire"] else "schema_" + {"fields": "field", "retire": "retire", "terms": "terms"}[parts[-1]]
+        if not captured and isinstance(out.get("field"), dict):
+            captured = out["field"].get("key") or ""
+    if len(parts) >= 2 and parts[1] == "searches":
+        action = "search_delete" if parts[-1] == "delete" else "search_save"
+        if not captured and isinstance(out.get("search"), dict):
+            captured = out["search"].get("id") or ""
+    if len(parts) >= 2 and parts[1] == "bins":
+        action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
+        if not captured and isinstance(out.get("bin"), dict):
+            captured = out["bin"].get("id") or ""
     kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
     target = captured or ""
     if not target:
@@ -326,6 +350,16 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
     if not target:
         target = path
     return action, kind, target
+
+
+def _meta_error(fn, missing_is_404: bool = False):
+    """Run a metadata call, mapping MetaError to ApiError. For routes that name the field in the path an unknown one is 404."""
+    try:
+        return fn()
+    except metadata.MetaError as exc:
+        if missing_is_404 and exc.code == "unknown_field":
+            raise ApiError(404, "not_found", exc.reason) from None
+        raise ApiError(exc.status, exc.code, exc.reason) from None
 
 
 def _advance_errors(fn):
@@ -1127,6 +1161,199 @@ def act_session_end(store, _unused, body, handler):
 # response headers they name under `_headers`.
 REQUEST_AWARE = {act_session_start, act_session_end}
 
+def _field_of(store, key):
+    for f in metadata.list_schema(store):
+        if f["key"] == key:
+            return f
+    return None
+
+
+def act_schema_field(store, _unused, body):
+    """Create a field, or edit an existing one (label, type, required, multi). The show of a field never changes."""
+    _unknown_keys(body, {"key", "label", "type", "show", "required", "multi"})
+    key = _str(body, "key", required=True, limit=64)
+    actor, _role = _caller()
+    existing = _field_of(store, key)
+    if existing is None:
+        fn = lambda: metadata.define_field(  # noqa: E731
+            store, key, body.get("label"), body.get("type"), show_name=body.get("show"),
+            required=body.get("required", False), multi=body.get("multi", False), actor=actor)
+        field = _meta_error(fn)
+        return {"ok": True, "created": True, "field": field}
+    if "show" in body and body["show"] != existing["showName"]:
+        raise ApiError(422, "bad_input", "a field's show cannot change; retire it and define a new one")
+    edits = {k: body[k] for k in ("label", "type", "required", "multi") if k in body}
+    field = _meta_error(lambda: metadata.update_field(store, key, **edits))
+    return {"ok": True, "created": False, "field": field}
+
+
+def act_schema_retire(store, key, body):
+    _unknown_keys(body, set())
+    _meta_error(lambda: metadata.retire_field(store, key), missing_is_404=True)
+    return {"ok": True, "retired": key}
+
+
+def act_schema_terms(store, key, body):
+    _unknown_keys(body, {"terms"})
+    added = _meta_error(lambda: metadata.add_terms(store, key, body.get("terms")), missing_is_404=True)
+    return {"ok": True, "added": added, "field": _field_of(store, key)}
+
+
+def act_schema_term_retire(store, key, body):
+    _unknown_keys(body, {"term"})
+    _meta_error(lambda: metadata.retire_term(store, key, body.get("term")), missing_is_404=True)
+    return {"ok": True, "field": _field_of(store, key)}
+
+
+def act_asset_metadata(store, asset_id, body):
+    """Set one field's values on one asset. The audit row's detail is the old and new values as JSON."""
+    _unknown_keys(body, {"key", "values"})
+    key = _str(body, "key", required=True, limit=64)
+    if not isinstance(body.get("values"), list):
+        raise ApiError(422, "bad_input", "values must be a list (an empty list clears the field)")
+    actor, _role = _caller()
+    try:
+        change = _meta_error(lambda: metadata.set_values(store, asset_id, key, body["values"], actor))
+    except KeyError:
+        raise ApiError(404, "not_found", f"no such asset: {asset_id}") from None
+    state = metadata.get_values(store, asset_id)
+    return {"ok": True, "asset": asset_id, "key": key, "values": change["new"], "missing": state["missing"],
+            "auditDetail": json.dumps({"key": key, "old": change["old"], "new": change["new"]}, sort_keys=True)}
+
+
+def _collection_error(fn):
+    try:
+        return fn()
+    except colls.CollectionError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason) from None
+
+
+def _optional_span(body: dict):
+    span = body.get("spanId")
+    if span is not None and not isinstance(span, str):
+        raise ApiError(422, "bad_input", "spanId must be a span id or left out")
+    return span
+
+
+def _flag(body: dict, key: str) -> bool:
+    return body[key] if key in body else False
+
+
+def act_search_save(store, _unused, body):
+    _unknown_keys(body, {"name", "query", "shared"})
+    actor, _role = _caller()
+    saved = _collection_error(lambda: colls.save_search(store, actor, body.get("name"), body.get("query"), _flag(body, "shared")))
+    return {"ok": True, "search": saved}
+
+
+def act_search_delete(store, search_id, body):
+    _unknown_keys(body, set())
+    actor, role = _caller()
+    _collection_error(lambda: colls.delete_search(store, search_id, actor, role == "admin"))
+    return {"ok": True, "deleted": search_id}
+
+
+def act_bin_create(store, _unused, body):
+    _unknown_keys(body, {"name", "shared"})
+    actor, _role = _caller()
+    return {"ok": True, "bin": _collection_error(lambda: colls.create_bin(store, actor, body.get("name"), _flag(body, "shared")))}
+
+
+def act_bin_add(store, bin_id, body):
+    _unknown_keys(body, {"assetId", "spanId"})
+    actor, role = _caller()
+    out = _collection_error(lambda: colls.add_member(store, bin_id, body.get("assetId"), _optional_span(body), actor, role == "admin"))
+    return {"ok": True, "bin": colls.get_bin(store, bin_id, actor), **out}
+
+
+def act_bin_remove(store, bin_id, body):
+    _unknown_keys(body, {"assetId", "spanId"})
+    actor, role = _caller()
+    removed = _collection_error(lambda: colls.remove_member(store, bin_id, body.get("assetId"), _optional_span(body), actor, role == "admin"))
+    return {"ok": True, "removed": removed, "bin": colls.get_bin(store, bin_id, actor)}
+
+
+def act_bin_delete(store, bin_id, body):
+    _unknown_keys(body, set())
+    actor, role = _caller()
+    _collection_error(lambda: colls.delete_bin(store, bin_id, actor, role == "admin"))
+    return {"ok": True, "deleted": bin_id}
+
+
+SEARCH_PARAMS = {"q", "scope", "filter", "facets", "sort", "group", "include", "limit", "after"}
+MAX_FILTER_PARAM = 4096
+
+
+def _search_request(query: dict) -> dict:
+    """The query string of GET /api/search as a search request. Every parameter at most once; `filter` is URL-encoded JSON."""
+    extra = sorted(set(query) - SEARCH_PARAMS)
+    if extra:
+        raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+    req = {}
+    for key, values in query.items():
+        if len(values) != 1:
+            raise ApiError(422, "bad_input", f"{key} may be given once")
+        req[key] = values[0]
+    if "filter" in req:
+        if len(req["filter"].encode("utf-8")) > MAX_FILTER_PARAM:
+            raise ApiError(422, "bad_input", f"filter is over {MAX_FILTER_PARAM} bytes")
+        try:
+            req["filter"] = json.loads(req["filter"])
+        except ValueError:
+            raise ApiError(422, "bad_input", "filter must be URL-encoded JSON") from None
+    if "limit" in req:
+        if not req["limit"].isdigit():
+            raise ApiError(422, "bad_input", "limit must be a whole number")
+        req["limit"] = int(req["limit"])
+    return req
+
+
+def search_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/search, /api/searches, /api/bins and /api/bins/{id}. Returns True when it answered."""
+    one = re.fullmatch(rf"/api/bins/{_ID}", path)
+    if path not in ("/api/search", "/api/searches", "/api/bins") and not one:
+        return False
+    principal = handler.principal
+    actor = _actor(handler.headers, {}, principal)
+    is_admin = principal is None or principal.role == "admin"
+    if path == "/api/search":
+        try:
+            result = searchindex.search(store, _search_request(query), principal=Principal(actor, "operator", False))
+        except searchindex.SearchError as exc:
+            raise ApiError(exc.status, exc.code, exc.reason) from None
+        handler._json(200, {"ok": True, **result})
+        return True
+    if query:
+        raise ApiError(422, "bad_input", "this route takes no parameters")
+    if path == "/api/searches":
+        handler._json(200, {"ok": True, "searches": colls.list_searches(store, actor)})
+    elif path == "/api/bins":
+        handler._json(200, {"ok": True, "bins": colls.list_bins(store, actor)})
+    else:
+        found = _collection_error(lambda: colls.get_bin(store, one.group(1), actor, is_admin))
+        handler._json(200, {"ok": True, "bin": found, "members": colls.members(store, one.group(1))})
+    return True
+
+
+def schema_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/schema and GET /api/assets/{id}/metadata. Returns True when it answered."""
+    m = re.fullmatch(rf"/api/assets/{_ID}/metadata", path)
+    if path != "/api/schema" and not m:
+        return False
+    allowed = {"show"} if path == "/api/schema" else set()
+    extra = sorted(set(query) - allowed)
+    if extra:
+        raise ApiError(422, "bad_input", f"unknown parameter(s): {', '.join(extra)}")
+    if m:
+        _asset_exists(store, m.group(1))
+        handler._json(200, {"ok": True, "assetId": m.group(1), **metadata.get_values(store, m.group(1))})
+    else:
+        given = query.get("show") or []
+        if len(given) > 1:
+            raise ApiError(422, "bad_input", "show may be given once")
+        handler._json(200, {"ok": True, "fields": metadata.list_schema(store, given[0] if given else None)})
+    return True
+
 
 def _public_user(store, name):
     return next(u for u in users.list_users(store) if u["name"] == name)
@@ -1187,6 +1414,21 @@ ROUTES += [  # show building
 ROUTES += [  # device control
     (re.compile(r"^/api/devices/safe-mode$()"), act_device_safe_mode),
 ]
+ROUTES += [  # typed metadata: the schema (admin, except adding terms) and per-asset values
+    (re.compile(r"^/api/schema/fields$()"), act_schema_field),
+    (re.compile(rf"^/api/schema/fields/{_ID}/retire$"), act_schema_retire),
+    (re.compile(rf"^/api/schema/fields/{_ID}/terms$"), act_schema_terms),
+    (re.compile(rf"^/api/schema/fields/{_ID}/terms/retire$"), act_schema_term_retire),
+    (re.compile(rf"^/api/assets/{_ID}/metadata$"), act_asset_metadata),
+]
+ROUTES += [  # saved searches and bins (operator)
+    (re.compile(r"^/api/searches$()"), act_search_save),
+    (re.compile(rf"^/api/searches/{_ID}/delete$"), act_search_delete),
+    (re.compile(r"^/api/bins$()"), act_bin_create),
+    (re.compile(rf"^/api/bins/{_ID}/add$"), act_bin_add),
+    (re.compile(rf"^/api/bins/{_ID}/remove$"), act_bin_remove),
+    (re.compile(rf"^/api/bins/{_ID}/delete$"), act_bin_delete),
+]
 ROUTES += [  # user management: admin only
     (re.compile(r"^/api/users$()"), act_user_add),
     (re.compile(rf"^/api/users/{_ID}/disable$"), act_user_disable),
@@ -1221,6 +1463,12 @@ ROUTE_ROLES = {
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
     "act_show_delete": "admin",
+    # typed metadata
+    "act_schema_field": "admin", "act_schema_retire": "admin", "act_schema_terms": "operator",
+    "act_schema_term_retire": "admin", "act_asset_metadata": "operator",
+    # saved searches and bins
+    "act_search_save": "operator", "act_search_delete": "operator", "act_bin_create": "operator", "act_bin_add": "operator",
+    "act_bin_remove": "operator", "act_bin_delete": "operator",
     # users and tokens
     "act_user_add": "admin", "act_user_disable": "admin", "act_user_enable": "admin", "act_user_rotate": "admin",
     "act_user_end_sessions": "admin",
@@ -1464,9 +1712,11 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             actor = _actor(self.headers, body, self.principal)
             _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
+            _CALLER.actor, _CALLER.role = actor, self.principal.role
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body, self) if fn in REQUEST_AWARE else fn(store, m.group(1), body)
             headers = out.pop("_headers", None) if isinstance(out, dict) else None
+            detail = out.pop("auditDetail", None) if isinstance(out, dict) else None
             status = 200
             if isinstance(out, dict) and out.get("httpStatus") == 202:
                 out = dict(out)
@@ -1476,7 +1726,7 @@ class Handler(BaseHTTPRequestHandler):
                 action, kind, target = _audit_fields(path, m.group(1), body, out)
                 if kind == "session":
                     target = actor
-                store.append_audit(actor, action, kind, target)
+                store.append_audit(actor, action, kind, target, detail)
             self._json(status, out, headers)
         except ApiError as err:
             self._error(err)
@@ -1619,6 +1869,10 @@ class Handler(BaseHTTPRequestHandler):
         if devices_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if schema_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if search_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         m = MOS_ROUTE.match(parsed.path)
         if m:  # read-only MOS roCreate export (docs/specs/mos.md)
