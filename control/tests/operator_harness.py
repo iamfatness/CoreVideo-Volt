@@ -260,7 +260,7 @@ def _run_jobs(path: str, out_dir: Path, stop: threading.Event) -> None:
     """A runner for the library scenario, so Detect and the indexing backfill finish the way they would for real."""
     store = Store(path)
     try:
-        runner = Runner(store, default_handlers(Config(out_dir=out_dir)), target=path, name="harness-runner", poll=0.3)
+        runner = Runner(store, default_handlers(Config(out_dir=out_dir, archive_dir=out_dir.parent / "archive")), target=path, name="harness-runner", poll=0.3)
         while not stop.is_set():
             runner.drain()
             stop.wait(0.3)
