@@ -388,8 +388,9 @@ def set_status(store: Store, item_id: str, status: str, *, base_rev: int, actor:
                 "approvedAt": at if status == "approved" else None, "approvedRev": rev if status == "approved" else None}
 
 
-def get_story(store: Store, item_id: str) -> dict:
-    """Everything the editor needs about one story, including the private notes (the editing view)."""
+def get_story(store: Store, item_id: str, include_notes: bool = True) -> dict:
+    """Everything the editor needs about one story. The private `//` notes are in `script` unless `include_notes` is
+    false (the read-only viewer role: a note is for the people who edit the story)."""
     row = _need_item(store, item_id)
     wpm = wpm_of(store, row["show_id"])
     revisions = [{"rev": r["rev"], "actor": r["actor"], "at": _utc_text(r["at"])} for r in store.conn.execute(
@@ -401,7 +402,7 @@ def get_story(store: Store, item_id: str) -> dict:
                "to": e["to_value"], "rev": e["rev"], "note": e["note"]} for e in store.conn.execute(
         "SELECT id, at, actor, kind, from_value, to_value, rev, note FROM story_event WHERE item_id = ? "
         "ORDER BY at DESC, id LIMIT 200", (item_id,)).fetchall()]
-    return {"ok": True, "item": item_id, "slug": row["slug"], "script": row["script"] or "", "rev": rev,
+    return {"ok": True, "item": item_id, "slug": row["slug"], "script": (row["script"] or "") if include_notes else public_text(row["script"]), "rev": rev,
             "storyStatus": status_of(row), "approvedBy": row["approved_by"], "approvedAt": _utc_text(row["approved_at"]),
             "approvedRev": row["approved_rev"], "floated": bool(row["floated"]), "itemStatus": row["status"],
             "stats": script_stats(row["script"], wpm), "revisions": revisions, "events": events}

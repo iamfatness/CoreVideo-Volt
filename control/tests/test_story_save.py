@@ -4,6 +4,7 @@ HTTP tests over a real server, each on SQLite and (with VOLT_TEST_PG_DSN) live P
 volt/story.py; serve.py only reads the body, calls it, and maps the refusals.
 """
 
+import json
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -192,6 +193,19 @@ class Save(Behaviour):
         self.assertEqual(self.revs(self.item), [1, 2])
         got = self.store.conn.execute("SELECT actor FROM story_rev WHERE item_id = ? AND rev = 2", (self.item,)).fetchone()
         self.assertEqual(got["actor"], "dana")
+
+    def test_a_viewer_reads_the_story_without_private_notes_and_cannot_save(self):
+        self.ok(f"/api/items/{self.item}/script", {"script": "Read this.\n// PRIVATE note\n[SOT 0:05]", "baseRev": 1})
+        viewer, op = self.user("vera", "viewer"), self.user("dana", "operator")
+        s, v = self.get(f"/api/items/{self.item}/story", token=viewer)
+        self.assertEqual(s, 200, v)
+        self.assertNotIn("PRIVATE", json.dumps(v))
+        self.assertEqual(v["script"], "Read this.\n[SOT 0:05]")
+        s, o = self.get(f"/api/items/{self.item}/story", token=op)
+        self.assertIn("// PRIVATE note", o["script"])
+        self.assertEqual(v["stats"], o["stats"])
+        self.refused(403, "forbidden_role", f"/api/items/{self.item}/script", {"script": "x", "baseRev": 2}, token=viewer)
+        self.refused(403, "forbidden_role", f"/api/items/{self.item}/story-status", {"status": "ready", "baseRev": 2}, token=viewer)
 
     def test_story_get_needs_a_token_when_auth_is_on(self):
         self.user("dana", "operator")

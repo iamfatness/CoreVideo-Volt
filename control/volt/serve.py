@@ -91,7 +91,7 @@ def _who():
     """(actor name, principal) of the POST being handled; ("desk", None) outside a request (a direct call from a test)."""
     return getattr(_REQUEST, "actor", None) or LEGACY_ACTOR, getattr(_REQUEST, "principal", None)
 
-_REQUEST = threading.local()
+
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
 _ACTOR = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 _AUDIT_KIND = {
@@ -980,7 +980,8 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
     if s:
         if query:
             raise ApiError(422, "bad_input", "this route takes no parameters")
-        handler._json(200, _build_errors(lambda: story.get_story(store, s.group(1))))
+        who = getattr(handler, "principal", None)
+        handler._json(200, _build_errors(lambda: story.get_story(store, s.group(1), include_notes=who is None or who.role != "viewer")))
         return True
     m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
     if path != "/api/cue-commands" and not m:
@@ -1359,9 +1360,8 @@ class Handler(BaseHTTPRequestHandler):
                                f"{need} role required; {self.principal.name} is {self.principal.role}")
             body = self._read_json()
             actor = _actor(self.headers, body, self.principal)
-            _REQUEST.actor = actor                  # for the few actions that record who (safe mode)
+            _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
-            _REQUEST.actor, _REQUEST.principal = actor, self.principal
             out = fn(store, m.group(1), body)
             status = 200
             if isinstance(out, dict) and out.get("httpStatus") == 202:
