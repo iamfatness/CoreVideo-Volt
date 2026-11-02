@@ -67,7 +67,8 @@ def _epoch(value) -> float:
     """A stored stamp back to epoch seconds: SQLite keeps the text, Postgres hands back a datetime."""
     if isinstance(value, datetime):
         return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
-    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))  # SQLite: .mmmZ; Postgres text: whole seconds, or an offset
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def create(store, user_name: str, provider: str, now: float, env=None) -> tuple[str, str]:
