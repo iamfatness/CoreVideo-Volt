@@ -239,6 +239,16 @@ MIGRATIONS = (
                       "CREATE INDEX IF NOT EXISTS bin_member_bin ON bin_member (bin_id, position)",
                       "CREATE INDEX IF NOT EXISTS bin_member_asset ON bin_member (asset_id)",
               )),
+    # OIDC sign-in (volt/oidc.py): one row per login in flight (state, nonce, PKCE verifier; the browser binder is stored only hashed), the
+    # (issuer, sub) a person signs in as, and the admin-set map from a provider's group claim value to a Volt group. New tables, so SCHEMA
+    # makes them on a fresh database. Unvalidated against a real provider.
+    Migration(30, "oidc sign-in tables",
+              sqlite=("CREATE TABLE IF NOT EXISTS auth_flow (state TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, provider TEXT NOT NULL, next TEXT NOT NULL, binder_hash TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+                      "CREATE TABLE IF NOT EXISTS identity (issuer TEXT NOT NULL, sub TEXT NOT NULL, user_name TEXT NOT NULL, email TEXT, display_name TEXT, last_login_at TEXT NOT NULL, PRIMARY KEY (issuer, sub))",
+                      "CREATE TABLE IF NOT EXISTS oidc_group_map (provider TEXT NOT NULL, claim_value TEXT NOT NULL, group_name TEXT NOT NULL, PRIMARY KEY (provider, claim_value, group_name))"),
+              postgres=("CREATE TABLE IF NOT EXISTS auth_flow (state TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, provider TEXT NOT NULL, next TEXT NOT NULL, binder_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)",
+                        "CREATE TABLE IF NOT EXISTS identity (issuer TEXT NOT NULL, sub TEXT NOT NULL, user_name TEXT NOT NULL, email TEXT, display_name TEXT, last_login_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (issuer, sub))",
+                        "CREATE TABLE IF NOT EXISTS oidc_group_map (provider TEXT NOT NULL, claim_value TEXT NOT NULL, group_name TEXT NOT NULL, PRIMARY KEY (provider, claim_value, group_name))")),
 )
 
 LATEST = MIGRATIONS[-1].version

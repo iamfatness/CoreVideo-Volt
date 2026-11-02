@@ -97,6 +97,7 @@ def delete_group(store, name: str) -> None:
     _group(store, name)
     with store.transaction():
         store.conn.execute("DELETE FROM group_member WHERE group_name = ?", (name,))
+        store.conn.execute("DELETE FROM oidc_group_map WHERE group_name = ?", (name,))
         store.conn.execute("DELETE FROM volt_group WHERE name = ?", (name,))
 
 
@@ -111,5 +112,62 @@ def set_user_role(store, name: str, role: str, legacy_admin: bool = False) -> di
         if others is None:
             raise UserError(409, "last_admin", "this is the last enabled admin; add another admin first")
     store.conn.execute("UPDATE volt_user SET role = ? WHERE name = ?", (role, name))
+    store.conn.commit()
+    return users._public(users._row(store, name))
+
+
+# ---- sign-in provider mapping (volt/oidc.py) ---------------------------------
+
+_PROVIDER = re.compile(r"^[a-z0-9_-]{1,40}$")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def claims_of(store, group_name: str) -> list:
+    """The provider claim values an admin mapped to this group, as [{provider, value}]."""
+    return [{"provider": r["provider"], "value": r["claim_value"]} for r in store.conn.execute(
+        "SELECT provider, claim_value FROM oidc_group_map WHERE group_name = ? ORDER BY provider, claim_value", (group_name,)).fetchall()]
+
+
+def set_claim_map(store, group_name: str, provider, value, remove: bool = False) -> dict:
+    """Map (or unmap) one value of a provider's group claim to a group. Only an admin does this; an unmapped claim value does nothing."""
+    _group(store, group_name)
+    if not isinstance(provider, str) or not _PROVIDER.fullmatch(provider):
+        raise AccessError(422, "bad_input", "provider must be 1-40 characters from [a-z0-9_-]")
+    if not isinstance(value, str) or not 1 <= len(value) <= 256 or _CONTROL.search(value):
+        raise AccessError(422, "bad_input", "value must be 1-256 characters with no control characters")
+    if remove:
+        store.conn.execute("DELETE FROM oidc_group_map WHERE provider = ? AND claim_value = ? AND group_name = ?", (provider, value, group_name))
+    else:
+        store.conn.execute(
+            "INSERT INTO oidc_group_map (provider, claim_value, group_name) VALUES (?, ?, ?) ON CONFLICT (provider, claim_value, group_name) DO NOTHING",
+            (provider, value, group_name))
+    store.conn.commit()
+    return {"name": group_name, "claims": claims_of(store, group_name)}
+
+
+def clean_email(value):
+    """A stored address: stripped, one @, no spaces or control characters, at most 254 characters. None when it is not one."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    local, at, domain = value.partition("@")
+    if not at or not local or not domain or "@" in domain or len(value) > 254 or re.search(r"[\s\x00-\x1f\x7f]", value):
+        return None
+    return value
+
+
+def set_user_email(store, name: str, email) -> dict:
+    """Pre-link a user to the address their provider will send (None clears it). One address belongs to one user (compared without case)."""
+    users._row(store, name)
+    if email is not None:
+        shown = clean_email(email)
+        if shown is None:
+            raise AccessError(422, "bad_input", "email must look like name@domain, with no spaces, at most 254 characters")
+        taken = store.conn.execute(
+            "SELECT name FROM volt_user WHERE lower(email) = ? AND name <> ? LIMIT 1", (shown.lower(), name)).fetchone()
+        if taken is not None:
+            raise AccessError(409, "email_taken", "another user already has that email")
+        email = shown
+    store.conn.execute("UPDATE volt_user SET email = ? WHERE name = ?", (email, name))
     store.conn.commit()
     return users._public(users._row(store, name))

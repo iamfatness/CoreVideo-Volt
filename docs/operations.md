@@ -80,6 +80,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_TOKEN` | none | Legacy shared bearer token, treated as an admin named `desk`. Required (16+ characters) to bind beyond loopback unless an enabled admin user exists. With no token and no users the server answers loopback `Host` headers only, so behind a TLS proxy a token or user is required ([tls](tls.md)). POSTs with this token may send `X-Volt-Actor` (default `desk`); per-user tokens ignore the header. |
 | `VOLT_PUBLIC_URL` | none | The address browsers use for this server, e.g. `https://volt.example.com`. Decides the session cookie (`__Host-` name and `Secure` under https) and the `Origin` a cookie write must carry. Unset, cookie sessions work on loopback only. |
 | `VOLT_SESSION_IDLE` / `VOLT_SESSION_MAX` | `28800` / `50400` | Seconds a cookie session may sit idle (8 h) and its absolute lifetime (14 h). |
+| `VOLT_OIDC_CONFIG` | none | Path of the JSON file that turns on sign-in with Google or Microsoft (OpenID Connect). **Unvalidated against a real provider**: only the fake in `control/tests/oidc_fake.py` has been used. Needs `VOLT_PUBLIC_URL` (https, or a loopback address) because the redirect URI is `VOLT_PUBLIC_URL` + `/auth/callback`, never taken from the `Host` header. A path that cannot be read, or a wrong file, stops `volt serve` with exit 78. See "Sign-in with Google or Microsoft" below. |
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |
@@ -330,3 +331,24 @@ is not blocked from starting.
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.
 - **Not exercised on real systems:** the Task Scheduler registration and the systemd unit were reviewed and the
   installer's plan was tested with `-DryRun`, but neither was installed on a live machine.
+
+## Sign-in with Google or Microsoft (unvalidated against a real provider)
+
+Nothing here has been run against Google or Microsoft. The flow, the checks and the claim handling are tested against a fake provider only, and what the real providers send (`hd`, `tid`, `email_verified`, the group overage marker, key rotation timing) is from published behaviour as recalled. Try it on a test tenant before relying on it. Tokens keep working and are the recovery path.
+
+It needs TLS (`docs/tls.md`): Google refuses plain-http redirect URIs except on localhost, so a plain-http LAN install keeps tokens only. Register `VOLT_PUBLIC_URL` + `/auth/callback` as the redirect URI at the provider.
+
+`VOLT_OIDC_CONFIG` names a JSON file:
+
+```json
+{"providers": [
+  {"id": "google", "label": "Google", "issuer": "https://accounts.google.com", "client_id": "...",
+   "client_secret_env": "VOLT_GOOGLE_SECRET", "domains": ["example.com"], "auto_provision": false},
+  {"id": "microsoft", "label": "Microsoft", "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0", "client_id": "...",
+   "client_secret_env": "VOLT_MS_SECRET", "tenants": ["<tenant-id>"], "group_claim": "groups"}
+]}
+```
+
+The secret is read from the named environment variable and is never in the file, the log or the audit (a `client_secret` key in the file is refused). `scopes` defaults to `openid email profile`; `offline_access` is refused. Microsoft needs one tenant issuer (`common`, `organizations`, `consumers` are refused) and a `tenants` list; Google's `auto_provision` needs `domains`. `auto_provision` (default off) creates a `viewer` for an unknown, trusted email; otherwise an admin adds the user and sets their address with `POST /api/users/{name}/identity {email}`.
+
+Who may sign in: a known `(issuer, sub)` always signs in as the same user, whatever email it now carries. An unknown identity is linked to an existing, enabled, not-yet-linked user whose address equals the token's, only when the address can be trusted (Google: `email_verified` and `hd` in `domains`; Microsoft: `tid` in `tenants`); otherwise it is refused as `not_provisioned`. Groups come from the token's group claim through the map an admin sets (`POST /api/groups/{name}/claims`); they replace only oidc-sourced memberships, and a Microsoft overage marker leaves the groups as they were (a log warning; Graph is not called). Membership changes at the provider apply at the next sign-in, bounded by the session limits. Every refusal writes `login_failed` (insert-only; at most one row a second per provider and reason, the skipped ones counted in the next row) and makes no session. Provider endpoints are called with 10 second timeouts, https only, no redirects.

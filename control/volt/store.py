@@ -498,6 +498,34 @@ CREATE TABLE IF NOT EXISTS bin_member (
   added_by TEXT NOT NULL,
   added_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS auth_flow (
+  state TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  code_verifier TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  next TEXT NOT NULL,
+  binder_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity (
+  issuer TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  email TEXT,
+  display_name TEXT,
+  last_login_at TEXT NOT NULL,
+  PRIMARY KEY (issuer, sub)
+);
+
+CREATE TABLE IF NOT EXISTS oidc_group_map (
+  provider TEXT NOT NULL,
+  claim_value TEXT NOT NULL,
+  group_name TEXT NOT NULL,
+  PRIMARY KEY (provider, claim_value, group_name)
+);
 """
 
 

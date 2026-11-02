@@ -315,8 +315,23 @@
     } catch (e) { return ''; }
   }
 
+  // The sign-in anchors for the Token dialog: [{id, label, href}] from the server's provider list. Ids are plain words, labels are cut to
+  // 40 characters and only ever set as text, and the return path is this page's own (one leading slash, printable ASCII), else the root.
+  function providerLinks(providers, next) {
+    if (!Array.isArray(providers)) return [];
+    const raw = typeof next === 'string' ? next.split('#')[0] : '';
+    const back = /^\/(?!\/)[\x20-\x7e]{0,511}$/.test(raw) && raw.indexOf('\\') < 0 ? raw : '/';
+    const out = [];
+    for (const p of providers) {
+      if (!p || typeof p !== 'object' || typeof p.id !== 'string' || !/^[a-z0-9_-]{1,40}$/.test(p.id)) continue;
+      const label = typeof p.label === 'string' && p.label.trim() ? p.label.trim().slice(0, 40) : p.id;
+      out.push({ id: p.id, label, href: '/auth/login?provider=' + p.id + '&next=' + encodeURIComponent(back) });
+    }
+    return out;
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession, providerLinks };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -3275,7 +3290,25 @@
   }
 
   // ---- dialogs, keys, screens ----------------------------------------------
-  function openToken() { const d = $('token-dlg'); if (!d.open) { d.showModal(); $('token-in').focus(); } }
+  function openToken() { const d = $('token-dlg'); if (!d.open) { d.showModal(); $('token-in').focus(); loadProviders(); } }
+  // The Token dialog also offers 'Sign in with ...' when the server has OIDC configured (GET /auth/providers, 404 when off). Anchors, not
+  // forms: the CSP has form-action 'none', and the server does the redirect.
+  function renderProviders(providers, next) {
+    const links = providerLinks(providers, next);
+    $('token-providers').hidden = links.length === 0;
+    $('token-provider-list').replaceChildren(...links.map((l) => el('li', {},
+      el('a', { class: 'btn ghost', href: l.href, 'data-provider': l.id }, icon('signin', 's'), el('span', { text: 'Sign in with ' + l.label })))));
+  }
+  let providersLoaded = false;
+  async function loadProviders() {
+    if (providersLoaded) return;
+    providersLoaded = true;
+    try {
+      const res = await fetch('/auth/providers', { cache: 'no-store' });
+      const data = res.ok ? await res.json() : null;
+      renderProviders(data && data.providers, location.pathname + location.search);
+    } catch (e) { providersLoaded = false; }   // offline or an older server: try again next time the dialog opens
+  }
   function anyDialog() { return $('token-dlg').open || $('keys-dlg').open; }
 
   function setScreen(name) {

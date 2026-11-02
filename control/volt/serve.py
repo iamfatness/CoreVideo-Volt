@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -115,6 +115,8 @@ _AUDIT_KIND = {
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
+# The OIDC sign-in configuration (volt/oidc.py), loaded from VOLT_OIDC_CONFIG at start. None = sign-in is off and /auth/* answers 404.
+OIDC_CONFIG = None
 
 
 _CALLER = threading.local()
@@ -1121,6 +1123,30 @@ def act_user_role(store, name, body):
     return {"ok": True, "user": _access_error(lambda: acl.set_user_role(store, name, body.get("role"), legacy_admin=bool(TOKEN)))}
 
 
+def act_group_claims(store, name, body):
+    _unknown_keys(body, {"provider", "value", "remove"})
+    for key in ("provider", "value"):
+        if key not in body:
+            raise ApiError(422, "bad_input", f"{key} is required")
+    remove = body.get("remove", False)
+    if not isinstance(remove, bool):
+        raise ApiError(422, "bad_input", "remove must be true or false")
+    try:
+        group = _access_error(lambda: acl.set_claim_map(store, name, body["provider"], body["value"], remove))
+    except ApiError as err:
+        if err.code == "no_such_group":
+            raise ApiError(404, "not_found", err.reason) from None
+        raise
+    return {"ok": True, "group": group}
+
+
+def act_user_identity(store, name, body):
+    _unknown_keys(body, {"email"})
+    if "email" not in body:
+        raise ApiError(422, "bad_input", "email is required (null clears it)")
+    return {"ok": True, "user": _access_error(lambda: acl.set_user_email(store, name, body["email"]))}
+
+
 def act_user_end_sessions(store, name, body):
     _unknown_keys(body, set())
     _user_error(lambda: users._row(store, name))
@@ -1382,6 +1408,7 @@ ROUTES = [
     (re.compile(r"^/api/groups()$"), act_group_create),
     (re.compile(rf"^/api/groups/{_ID}/members$"), act_group_members),
     (re.compile(rf"^/api/groups/{_ID}/delete$"), act_group_delete),
+    (re.compile(rf"^/api/groups/{_ID}/claims$"), act_group_claims),
     (re.compile(rf"^/api/users/{_ID}/role$"), act_user_role),
     (re.compile(rf"^/api/assets/{_ID}/rehydrate$"), act_asset_rehydrate),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
@@ -1435,6 +1462,7 @@ ROUTES += [  # user management: admin only
     (re.compile(rf"^/api/users/{_ID}/enable$"), act_user_enable),
     (re.compile(rf"^/api/users/{_ID}/rotate$"), act_user_rotate),
     (re.compile(rf"^/api/users/{_ID}/end-sessions$"), act_user_end_sessions),
+    (re.compile(rf"^/api/users/{_ID}/identity$"), act_user_identity),
 ]
 ROUTES += [  # sessions: any signed-in role
     (re.compile(r"^/api/session/start$()"), act_session_start),
@@ -1447,6 +1475,7 @@ ROUTES += [  # sessions: any signed-in role
 ROUTE_ROLES = {
     # show control
     "act_group_create": "admin", "act_group_members": "admin", "act_group_delete": "admin", "act_user_role": "admin",
+    "act_group_claims": "admin", "act_user_identity": "admin",
     "act_device_safe_mode": "operator", "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
@@ -1673,6 +1702,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
             self._json(200, health.liveness())
             return
+        if path == "/auth" or path.startswith("/auth/"):   # sign-in: before the gate, because the browser has no credential yet
+            self._auth(path)
+            return
         if path != "/" and not self._gate_or_ticket():
             return
         # One connection per request. Postgres schema is applied once in main().
@@ -1687,6 +1719,78 @@ class Handler(BaseHTTPRequestHandler):
             self._error(ApiError(err.status, err.code, err.reason, headers=err.headers))
         except Exception:  # same rule as POST: no leaked internals, and the client always gets a response
             log.exception("unhandled error on GET %s", urlparse(self.path).path)
+            self._error(ApiError(500, "internal", "internal error"))
+        finally:
+            store.close()
+
+    # ---- OIDC sign-in (unvalidated against a real provider; volt/oidc.py) --------------------------
+    def _redirect(self, location: str, cookies=()):
+        self.send_response(302)
+        self.send_header("Location", location)
+        for value in cookies:
+            self.send_header("Set-Cookie", value)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _login_error_page(self, err, secure: bool):
+        """A fixed-text page: nothing from the request, the provider or the exception is put in it."""
+        body = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in problem - Volt</title>'
+                '<link rel="stylesheet" href="/operator/operator.css"></head><body><main class="auth-error">'
+                '<h1>Sign-in could not be completed</h1><p>' + err.public_message + '</p>'
+                '<p><a href="/">Back to Volt</a></p></main></body></html>').encode("utf-8")
+        self.send_response(err.status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Set-Cookie", oidc.clear_flow_cookie(secure))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _auth(self, path: str):
+        cfg = OIDC_CONFIG
+        if cfg is None or path not in ("/auth/providers", "/auth/login", "/auth/callback"):
+            self._error(ApiError(404, "not_found", "no such route"))
+            return
+        parsed = urlparse(self.path)
+        secure = cfg.public_url.startswith("https://")
+        query = parse_qs(parsed.query, keep_blank_values=True) if len(parsed.query) <= 4096 else {}
+        if path == "/auth/providers":
+            self._send(200, "application/json", json.dumps(
+                {"ok": True, "providers": [{"id": p.id, "label": p.label} for p in cfg.providers]}).encode(),
+                {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+            return
+        store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+        try:
+            if path == "/auth/login":
+                given = query.get("provider", [])
+                if len(given) != 1:
+                    raise ApiError(422, "bad_provider", "give exactly one provider")
+                if set(query) - {"provider", "next"} or len(query.get("next", [""])) != 1:
+                    raise ApiError(422, "bad_input", "only provider and next are accepted, once each")
+                try:
+                    url, binder = oidc.begin(store, cfg, given[0], query.get("next", ["/"])[0], CLOCK())
+                except oidc.LoginError as err:
+                    raise ApiError(err.status, err.code, err.public_message) from None
+                self._redirect(url, [oidc.flow_cookie_header(binder, secure)])
+                return
+            flat = {k: (v[0] if len(v) == 1 else v) for k, v in query.items()}   # a repeated parameter stays a list, which complete() refuses
+            try:
+                res = oidc.complete(store, cfg, flat, oidc.flow_cookie_value(self.headers.get("Cookie")), CLOCK())
+            except oidc.LoginError as err:
+                self._login_error_page(err, secure)
+                return
+            sec, prefix = _cookie_flags()
+            self._redirect(res.next, [sessions.cookie_header(res.session_cookie, sec, prefix), oidc.clear_flow_cookie(secure)])
+        except ApiError as err:
+            self._error(err)
+        except Exception:  # noqa: BLE001 - no leaked internals; the cause is in the log
+            log.exception("unhandled error on GET %s", parsed.path)
             self._error(ApiError(500, "internal", "internal error"))
         finally:
             store.close()
@@ -1857,7 +1961,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/groups":
             self._require_admin()
-            self._json(200, {"ok": True, "groups": acl.list_groups(STORE)})
+            self._json(200, {"ok": True, "groups": [dict(g, claims=acl.claims_of(STORE, g["name"])) for g in acl.list_groups(STORE)]})
             return
         if parsed.path == "/api/users":
             self._require_admin()
@@ -2060,6 +2164,11 @@ def main(argv=None):
     except (ValueError, OSError) as exc:
         _config_exit(str(exc))
     host, port = args.host, args.port
+    global OIDC_CONFIG
+    try:
+        OIDC_CONFIG = oidc.load_config(os.environ.get("VOLT_OIDC_CONFIG"))
+    except oidc.ConfigError as exc:
+        _config_exit(str(exc))
     try:
         check_bind(host, TOKEN, has_admin_user=(not TOKEN and not _is_loopback(host)
                                                 and users.db_has_enabled_admin(DB_PATH)))

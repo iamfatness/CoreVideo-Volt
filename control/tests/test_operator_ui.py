@@ -651,7 +651,7 @@ class Tokens(unittest.TestCase):
 
 ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
               "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
-              "lower3 mark").split()
+              "lower3 mark signin").split()
 
 
 class Icons(unittest.TestCase):
@@ -1373,3 +1373,58 @@ class SessionSignIn(unittest.TestCase):
         for path in ("/api/session/start", "/api/session/end"):
             self.assertIn(path, js)
             self.assertTrue(any(p.match(path) for p, _ in serve.ROUTES), path)
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class ProviderAnchors(unittest.TestCase):
+    """The Token dialog's sign-in anchors (identity plan, task 5). Unvalidated against a real provider: the page only links to the
+    server's /auth/login, which answers 404 when OIDC is off, and then no anchors are shown."""
+
+    def test_links_carry_the_provider_and_an_encoded_return_path(self):
+        got = _node(["providerLinks", [{"id": "google", "label": "Google"}, {"id": "microsoft", "label": "Microsoft"}], "/operator?show=1&x=y#z"])[0]
+        self.assertEqual(got, [
+            {"id": "google", "label": "Google", "href": "/auth/login?provider=google&next=%2Foperator%3Fshow%3D1%26x%3Dy"},
+            {"id": "microsoft", "label": "Microsoft", "href": "/auth/login?provider=microsoft&next=%2Foperator%3Fshow%3D1%26x%3Dy"}])
+
+    def test_a_hostile_provider_list_or_return_path_is_made_safe(self):
+        hostile = [{"id": "a b", "label": "x"}, {"id": "../x", "label": "x"}, {"id": "x&next=//evil", "label": "x"}, {"id": 7, "label": "x"},
+                   {"id": "ok", "label": 5}, {"id": "ok2", "label": "<img src=x onerror=alert(1)>" + "y" * 100}, None, "str", {"label": "no id"}]
+        links = _node(["providerLinks", hostile, "//evil.example/x"])[0]
+        self.assertEqual([l["id"] for l in links], ["ok", "ok2"])
+        for l in links:
+            self.assertTrue(l["href"].startswith("/auth/login?provider="), l)
+            self.assertTrue(l["href"].endswith("&next=%2F"), l)                 # an off-site return path becomes the root
+            self.assertLessEqual(len(l["label"]), 40)
+        self.assertEqual(links[0]["label"], "ok")                                # a non-text label falls back to the id
+        self.assertEqual(_node(["providerLinks", "nope", "/"], ["providerLinks", None, "/"], ["providerLinks", {"id": "google"}, "/"]), [[], [], []])
+
+    def test_markup_has_a_hidden_provider_block_in_the_token_dialog_and_no_form_navigation(self):
+        html = FILES["index.html"]
+        start = html.index('<dialog id="token-dlg"')
+        dialog = html[start:html.index("</dialog>", start)]
+        self.assertRegex(dialog, r'<div id="token-providers" hidden>')
+        self.assertIn('id="token-provider-list"', dialog)
+        self.assertIn("not been checked against a real provider", dialog)         # the unvalidated note is on the screen, not just in the docs
+        self.assertNotRegex(html, r"<form[^>]*\baction=")
+        self.assertNotRegex(html, r"\son[a-z]+=")                                   # no inline handlers
+        self.assertEqual(re.findall(r"<script\b[^>]*>", html).count("<script>"), 0)
+
+    def test_the_page_builds_anchors_not_forms_and_never_puts_provider_text_in_markup(self):
+        js = FILES["operator.js"]
+        body = js[js.index("function renderProviders"):]
+        body = body[:body.index("\n  }\n")]
+        self.assertIn("el('a'", body)
+        self.assertIn("icon('signin'", body)
+        self.assertNotIn("innerHTML", body)
+        self.assertNotIn("location", body)
+        self.assertIn("'/auth/providers'", js)
+        self.assertNotRegex(js, r"https?://")
+
+    def test_signin_icon_is_in_the_sprite_and_the_styles_use_only_existing_colour_tokens(self):
+        self.assertIn("signin", Icons.SPRITE_IDS)
+        css = FILES["operator.css"]
+        rules = re.findall(r"[^}]*\.providers[^{]*\{[^}]*\}", css)
+        self.assertTrue(rules)
+        for rule in rules:
+            self.assertNotRegex(rule, r"#[0-9a-fA-F]{3,8}\b")                       # no new colour: both themes come from the same tokens
+            self.assertNotRegex(rule, r"\b(rgb|hsl)a?\(")
