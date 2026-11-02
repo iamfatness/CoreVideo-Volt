@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- FCPXML 1.10 export (`format: "fcpxml"`, a third radio on the Export tab): exact rational times, drop-frame aware, same refusals as xmeml. Unvalidated against Final Cut Pro or Resolve, and labelled so.
+
 - Relative and recurring schedules (migration 19): an item can follow the previous one by an offset (`mode: after_previous`), and a show can repeat daily or weekly in an IANA time zone; the clock makes the next copy 24 hours ahead, idempotently and safe with two clocks. `POST /api/shows/{id}/recurrence`. Needs the `tzdata` package on Windows. `volt run` now always starts the clock.
 
 - Room registry: cues are routed to their own room through `volt/roomreg.py` and `dispatch.ROOM_HANDLERS`; the CoreVideo Pro behaviour is unchanged, and a single room object is still accepted everywhere. The groundwork for a second room kind.

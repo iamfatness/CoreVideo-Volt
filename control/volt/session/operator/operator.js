@@ -2827,7 +2827,7 @@
     proxy_mismatch: ['A proxy does not line up with its hi-res.', 'It records a different frame rate or start timecode, so frames would land in the wrong place. Export the hi-res.'],
     outside_source: ['A span lies outside its file.', 'Trim it on the shot list so it sits inside the recording, or take it out of the selection.'],
     mixed_rates: ['The selection mixes frame rates.', 'One sequence has one rate. Export them in separate files.'],
-    unsupported_rate: ['A frame rate cannot be written.', 'Only whole-number and /1001 broadcast rates can go into xmeml or an EDL.'],
+    unsupported_rate: ['A frame rate cannot be written.', 'Only whole-number and /1001 broadcast rates can go into xmeml, an EDL or FCPXML.'],
     bad_input: ['The request was not accepted.', 'Check the options on the right.'],
     not_found: ['A selected span no longer exists.', 'It was deleted or merged since you selected it. Remove it from the selection.'],
     bad_path_map: ['The server\'s path map is broken.', 'This is a server setting (VOLT_EXPORT_PATH_MAP), not something to fix here. Tell whoever runs the server.'],
@@ -2922,7 +2922,7 @@
     if (xKey() !== key) { render(); return; }               // the options moved on while the file was being built
     const d = out.data;
     if (out.status === 200 && d && d.ok && typeof d.content === 'string') {
-      X.done = { filename: d.filename || 'volt-selects.' + (d.format === 'edl' ? 'edl' : 'xml'), mime: d.mime || 'text/plain', content: d.content, sha: d.sha256,
+      X.done = { filename: d.filename || 'volt-selects.' + (d.format === 'edl' ? 'edl' : d.format === 'fcpxml' ? 'fcpxml' : 'xml'), mime: d.mime || 'text/plain', content: d.content, sha: d.sha256,
         clips: (d.spans || []).filter((s) => s.status === 'ready').length, frames: d.durationFrames, rate: d.rate, format: d.format, saved: false };
       X.done.saved = xSave(X.done);
       announce(X.done.saved ? 'Saved ' + X.done.filename + '.' : 'Built ' + X.done.filename + ' but the browser did not save it.');
@@ -2960,7 +2960,7 @@
     const out = [];
     if (!FORMAT_VERIFIED) {
       out.push(el('div', { class: 'info', id: 'lib-x-unverified' }, el('strong', { text: 'Not checked in an NLE yet. ' }),
-        'The xmeml and EDL files have been read back by a second program, but nobody has imported them into Premiere or Resolve and recorded the result. Import one and check the clips before you rely on it. The steps are under "Manual import check" in docs/specs/shot-spans.md.'));
+        'The xmeml, EDL and FCPXML files have been read back by a second program, but nobody has imported them into Premiere, Final Cut Pro or Resolve and recorded the result. Import one and check the clips before you rely on it. The steps are under "Manual import check" in docs/specs/shot-spans.md.'));
     }
     if (L.sel.length > XPORT.MAX) {
       out.push(el('div', { class: 'banner bad', role: 'alert' }, el('div', { class: 'msg' }, el('strong', { text: 'Too many spans.' }),
@@ -3059,7 +3059,8 @@
     return el('div', { class: 'body' },
       el('fieldset', { class: 'plainset' }, el('legend', { class: 'f', text: 'Format' }),
         xRadio('fmt', 'xmeml', 'Final Cut XML (xmeml)', 'Imports in Premiere. Keeps names, paths, in and out, comments.', X.format === 'xmeml'),
-        xRadio('fmt', 'edl', 'CMX3600 EDL', 'Cuts only. Reel names are cut to 8 characters. No paths.', X.format === 'edl')),
+        xRadio('fmt', 'edl', 'CMX3600 EDL', 'Cuts only. Reel names are cut to 8 characters. No paths.', X.format === 'edl'),
+        xRadio('fmt', 'fcpxml', 'Final Cut Pro X / Resolve (FCPXML 1.10)', 'Imports in Final Cut Pro and DaVinci Resolve. Keeps names, paths, in and out. Not yet opened in either.', X.format === 'fcpxml')),
       el('fieldset', { class: 'plainset' }, el('legend', { class: 'f', text: 'Media' }),
         xRadio('med', 'hi-res', 'Hi-res', 'Opens without relinking if the NLE sees the same path.', X.media === 'hi-res'),
         xRadio('med', 'proxy', 'Proxy', 'Smaller. Relink to hi-res later.', X.media === 'proxy')),

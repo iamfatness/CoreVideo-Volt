@@ -40,7 +40,7 @@ from volt.store import Store
 MAX_SPANS = 500
 DEFAULT_START_TC = "01:00:00:00"
 DEFAULT_NAME = "Volt selects"
-FORMATS = ("xmeml", "edl")
+FORMATS = ("xmeml", "edl", "fcpxml")
 MEDIA = ("hi-res", "proxy")
 MAX_CHANNELS = 32
 PREVIEW_LINES = 20
@@ -401,6 +401,65 @@ def build_xmeml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] =
     return Built(content, "application/xml", "xml", p.duration, p.rate, p.start_tc, p.drop, warnings)
 
 
+# ---- FCPXML 1.10 (Final Cut Pro, DaVinci Resolve) -----------------------------------------------------------------
+# Times are exact rational seconds, `frames * d / n s` for a rate n/d, reduced. A drop-frame label changes how a frame is
+# NAMED, not how long it is, so the arithmetic is the same for drop and non-drop; only `tcFormat` differs.
+# FORMAT STATUS: written from the published FCPXML 1.10 grammar. Apple does not publish a vendorable DTD, so it is
+# unvalidated, and nobody has opened it in Final Cut Pro or Resolve.
+
+def _secs(frames: int, rate: Fraction) -> str:
+    t = Fraction(frames) / rate
+    return f"{t.numerator}s" if t.denominator == 1 else f"{t.numerator}/{t.denominator}s"
+
+
+def _fcp_src(path: str) -> str:
+    """The asset's `src` URL. A drive path is file:///D%3a/...; a UNC share \\host\share is file://host/share/...."""
+    url = file_url(path)
+    if url.startswith("file://localhost//"):
+        return "file://" + url[len("file://localhost//"):]
+    return url.replace("file://localhost/", "file:///", 1)
+
+
+def build_fcpxml(items: list, name: str = DEFAULT_NAME, start_tc: Optional[str] = None) -> Built:
+    p = plan(items, start_tc)
+    warnings = []
+    n_audio = max((i.source.channels or 0) for i in items)
+    if any(not i.source.channels for i in items) and n_audio:
+        warnings.append("some sources have no known audio layout; they are marked as having no audio")
+    if not n_audio:
+        warnings.append("no source has a known audio layout: the assets are marked as having no audio")
+    root = ET.Element("fcpxml", version="1.10")
+    res = _el(root, "resources")
+    _el(res, "format", id="r1", name="Volt", frameDuration=_secs(1, p.rate))
+    ids: dict = {}
+    for i in items:
+        src = i.source
+        if src.key in ids:
+            continue
+        ids[src.key] = f"r{len(ids) + 2}"
+        attrs = {"id": ids[src.key], "name": clean(file_name(src.path), 200), "start": _secs(src.start, src.rate),
+                 "hasVideo": "1", "format": "r1"}
+        if src.duration:
+            attrs["duration"] = _secs(src.duration, src.rate)
+        if src.channels:
+            attrs.update(hasAudio="1", audioSources="1", audioChannels=str(src.channels), audioRate=str(SAMPLE_RATE))
+        asset = _el(res, "asset", **attrs)
+        _el(asset, "media-rep", kind="original-media", src=_fcp_src(src.path))
+    lib = _el(root, "library")
+    event = _el(lib, "event", name=clean(name, 200))
+    project = _el(event, "project", name=clean(name, 200))
+    seq = _el(project, "sequence", format="r1", duration=_secs(p.duration, p.rate), tcStart=_secs(p.start_frames, p.rate),
+              tcFormat="DF" if p.drop else "NDF", audioLayout="stereo", audioRate="48k")
+    spine = _el(seq, "spine")
+    for item, a, _b in p.placed:
+        src = item.source
+        _el(spine, "asset-clip", name=clean(item.name, 200), ref=ids[src.key], offset=_secs(a, p.rate), start=_secs(item.frame_in, src.rate),
+            duration=_secs(item.length, src.rate), tcFormat="DF" if src.drop else "NDF")
+    ET.indent(root, space="  ")
+    content = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n' + ET.tostring(root, encoding="unicode") + "\n"
+    return Built(content, "application/xml", "fcpxml", p.duration, p.rate, p.start_tc, p.drop, warnings)
+
+
 # ---- CMX3600 EDL ------------------------------------------------------------------------------------
 
 def reel_names(items: list) -> dict:
@@ -457,7 +516,9 @@ def build(fmt: str, items: list, name: str = DEFAULT_NAME, start_tc: Optional[st
         return build_xmeml(items, name, start_tc)
     if fmt == "edl":
         return build_edl(items, name, start_tc)
-    raise bad("format must be xmeml or edl")
+    if fmt == "fcpxml":
+        return build_fcpxml(items, name, start_tc)
+    raise bad("format must be xmeml, edl or fcpxml")
 
 
 def filename(name: str, extension: str) -> str:
@@ -483,7 +544,7 @@ def parse_request(body: dict) -> dict:
         raise bad(f"unknown field(s): {', '.join(extra)}")
     fmt = body.get("format")
     if fmt not in FORMATS:
-        raise bad("format must be xmeml or edl")
+        raise bad("format must be xmeml, edl or fcpxml")
     spans = body.get("spans")
     if not isinstance(spans, list) or not spans or not all(isinstance(s, str) and 0 < len(s) <= 128 for s in spans):
         raise bad("spans must be a non-empty list of span ids")

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.10">
+  <resources>
+    <format id="r1" name="Volt" frameDuration="1/25s" />
+    <asset id="r2" name="cam1.mxf" start="3600s" hasVideo="1" format="r1" duration="40s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" src="file:///D%3a/iso/cam1.mxf" />
+    </asset>
+  </resources>
+  <library>
+    <event name="Final &lt;Four&gt;">
+      <project name="Final &lt;Four&gt;">
+        <sequence format="r1" duration="87/25s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip name="A &amp; B" ref="r2" offset="0s" start="3602s" duration="2s" tcFormat="NDF" />
+            <asset-clip name="Two" ref="r2" offset="2s" start="3610s" duration="37/25s" tcFormat="NDF" />
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
