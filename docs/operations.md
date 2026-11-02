@@ -78,6 +78,8 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_HOST` | `127.0.0.1` | Bind address. Anything but loopback needs `VOLT_TOKEN`. |
 | `VOLT_PORT` | `8765` | Port; `0` picks a free one. |
 | `VOLT_TOKEN` | none | Legacy shared bearer token, treated as an admin named `desk`. Required (16+ characters) to bind beyond loopback unless an enabled admin user exists. With no token and no users the server answers loopback `Host` headers only, so behind a TLS proxy a token or user is required ([tls](tls.md)). POSTs with this token may send `X-Volt-Actor` (default `desk`); per-user tokens ignore the header. |
+| `VOLT_PUBLIC_URL` | none | The address browsers use for this server, e.g. `https://volt.example.com`. Decides the session cookie (`__Host-` name and `Secure` under https) and the `Origin` a cookie write must carry. Unset, cookie sessions work on loopback only. |
+| `VOLT_SESSION_IDLE` / `VOLT_SESSION_MAX` | `28800` / `50400` | Seconds a cookie session may sit idle (8 h) and its absolute lifetime (14 h). |
 | `VOLT_MEDIA_KEY` | none | HMAC key for media tickets. Unset: tickets are signed with `VOLT_TOKEN`. |
 | `VOLT_ROOM_URL` | none | CoreVideo Pro core for cues, recording and the clock. Without it room-backed routes answer `no_room` and `volt run` skips the clock. |
 | `VOLT_ROOM_TOKEN` | none | Token for that core, if it needs one. |

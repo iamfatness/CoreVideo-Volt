@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, story, tickets, users
+from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -107,14 +107,20 @@ _AUDIT_KIND = {
     "users": "user",
     "groups": "group",
     "devices": "device",
+    "session": "session",
 }
+
+CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
 
 
 class Principal:
     """Who a request is: a per-user token (name, role), or the legacy VOLT_TOKEN / open loopback (desk, admin)."""
 
-    def __init__(self, name: str, role: str, legacy: bool, groups: tuple = ()):
+    def __init__(self, name: str, role: str, legacy: bool, groups: tuple = (), via: str = "", session_id: str = "", csrf: str = ""):
         self.name, self.role, self.legacy, self.groups = name, role, legacy, tuple(groups)
+        # How the request proved who it is: the legacy VOLT_TOKEN or open loopback, a per-user token, or a cookie session.
+        self.via = via or ("legacy" if legacy else "token")
+        self.session_id, self.csrf = session_id, csrf
 
 
 LEGACY_ACTOR = "desk"
@@ -299,8 +305,12 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "group_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("group"), dict):
             captured = out["group"].get("name") or ""
+    if len(parts) >= 2 and parts[1] == "session":
+        action = {"start": "login", "end": "logout"}.get(parts[-1], "session_" + parts[-1])
     if len(parts) >= 2 and parts[1] == "users":
         action = "user_" + (parts[-1] if len(parts) > 2 else "add")
+        if action == "user_end-sessions":
+            action = "session_end"
         if not captured and isinstance(out.get("user"), dict):
             captured = out["user"].get("name") or ""
     kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
@@ -1077,6 +1087,47 @@ def act_user_role(store, name, body):
     return {"ok": True, "user": _access_error(lambda: acl.set_user_role(store, name, body.get("role"), legacy_admin=bool(TOKEN)))}
 
 
+def act_user_end_sessions(store, name, body):
+    _unknown_keys(body, set())
+    _user_error(lambda: users._row(store, name))
+    return {"ok": True, "ended": sessions.end_for_user(store, name)}
+
+
+def _cookie_flags():
+    return sessions.is_https(), sessions.is_https()   # (Secure, __Host- name): both follow VOLT_PUBLIC_URL, never a request header
+
+
+def act_session_start(store, _unused, body, handler):
+    """Turn a valid per-user bearer token into a cookie session. A cookie, the legacy VOLT_TOKEN and the open loopback mode cannot."""
+    _unknown_keys(body, set())
+    principal = handler.principal
+    if principal.via == "session" or not handler._bearer():
+        raise ApiError(401, "bearer_required", "starting a session needs a user token in the Authorization header")
+    if principal.legacy:
+        raise ApiError(409, "not_a_user", "the legacy VOLT_TOKEN names no user, so it cannot own a session; it keeps working as a bearer")
+    if sessions.public_origin() is None and not _is_loopback(_host_name(handler.headers.get("Host") or "")):
+        raise ApiError(409, "public_url_required",
+                       "set VOLT_PUBLIC_URL to this server's https address before signing in with a cookie off loopback")
+    value, csrf = sessions.create(store, principal.name, "token", CLOCK())
+    secure, prefix = _cookie_flags()
+    return {"ok": True, "csrf": csrf, "_headers": {"Set-Cookie": sessions.cookie_header(value, secure, prefix), "Cache-Control": "no-store"}}
+
+
+def act_session_end(store, _unused, body, handler):
+    _unknown_keys(body, set())
+    principal = handler.principal
+    if principal.via != "session":
+        return {"ok": True, "ended": False}
+    sessions.end(store, principal.session_id)
+    secure, prefix = _cookie_flags()
+    return {"ok": True, "ended": True, "_headers": {"Set-Cookie": sessions.clear_header(secure, prefix), "Cache-Control": "no-store"}}
+
+
+# These two need the request itself (who it is, its Host), so do_POST passes the handler as a fourth argument and sets the
+# response headers they name under `_headers`.
+REQUEST_AWARE = {act_session_start, act_session_end}
+
+
 def _public_user(store, name):
     return next(u for u in users.list_users(store) if u["name"] == name)
 
@@ -1141,6 +1192,11 @@ ROUTES += [  # user management: admin only
     (re.compile(rf"^/api/users/{_ID}/disable$"), act_user_disable),
     (re.compile(rf"^/api/users/{_ID}/enable$"), act_user_enable),
     (re.compile(rf"^/api/users/{_ID}/rotate$"), act_user_rotate),
+    (re.compile(rf"^/api/users/{_ID}/end-sessions$"), act_user_end_sessions),
+]
+ROUTES += [  # sessions: any signed-in role
+    (re.compile(r"^/api/session/start$()"), act_session_start),
+    (re.compile(r"^/api/session/end$()"), act_session_end),
 ]
 
 # Every POST route's role, by action function. operator runs the show; admin is everything an operator can do plus
@@ -1167,6 +1223,9 @@ ROUTE_ROLES = {
     "act_show_delete": "admin",
     # users and tokens
     "act_user_add": "admin", "act_user_disable": "admin", "act_user_enable": "admin", "act_user_rotate": "admin",
+    "act_user_end_sessions": "admin",
+    # sessions: a viewer may sign in with a token and sign out
+    "act_session_start": "viewer", "act_session_end": "viewer",
 }
 
 
@@ -1200,6 +1259,44 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(503, "auth_unavailable", "cannot check the token right now") from None
         return Principal(user.name, user.role, False, user.groups) if user else None
 
+    def _session_principal(self):
+        """The principal a valid session cookie names, or None. The role is read from the tables now, never from the session row."""
+        raw = sessions.cookie_value(self.headers.get("Cookie"), sessions.is_https())
+        if not raw:
+            return None
+        try:
+            store = self._open_store()
+            try:
+                info = sessions.resolve(store, raw, CLOCK())
+                if info is None:
+                    return None
+                row = store.conn.execute("SELECT name, role, disabled_at FROM volt_user WHERE name = ?", (info.user_name,)).fetchone()
+                if row is None or row["disabled_at"] is not None:
+                    sessions.end(store, info.id_hash)
+                    return None
+                return Principal(row["name"], acl.effective_role(store, row["name"], row["role"]), False,
+                                 acl.groups_of(store, row["name"]), via="session", session_id=info.id_hash, csrf=info.csrf)
+            finally:
+                store.close()
+        except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
+            log.exception("session lookup failed")
+            raise ApiError(503, "auth_unavailable", "cannot check the session right now") from None
+
+    def _check_cookie_write(self) -> None:
+        """A cookie is attached by the browser on its own, so a cookie POST must also prove it came from this site's page:
+        an Origin equal to the public URL's origin, and the per-session CSRF value in a header a foreign page cannot add."""
+        expected = sessions.public_origin()
+        if expected is None:  # no VOLT_PUBLIC_URL: only a loopback Host, whose http origin is its own
+            host = self.headers.get("Host") or ""
+            if _is_loopback(_host_name(host)):
+                expected = sessions.origin_of("http://" + host)
+        origin = sessions.origin_of(self.headers.get("Origin"))
+        if expected is None or origin is None or origin != expected:
+            raise ApiError(403, "bad_origin", "this request did not come from the page this server serves")
+        given = self.headers.get("X-Volt-Csrf") or ""
+        if not given or not hmac.compare_digest(given.encode("utf-8"), self.principal.csrf.encode("utf-8")):
+            raise ApiError(403, "bad_csrf", "missing or wrong X-Volt-Csrf; read it from /api/whoami")
+
     def _auth_configured(self) -> bool:
         """Is a token required? Yes with VOLT_TOKEN or any user row; otherwise this is the open loopback mode."""
         if TOKEN:
@@ -1218,6 +1315,10 @@ class Handler(BaseHTTPRequestHandler):
         found = self._bearer_principal()
         if found is not None:
             return found
+        if not self._bearer():  # a bearer header, even a wrong one, never falls back to a cookie
+            found = self._session_principal()
+            if found is not None:
+                return found
         if self._auth_configured():
             raise ApiError(401, "unauthorized", "missing or wrong bearer token")
         # No token and no users means loopback only. A rebinding page would arrive with a foreign Host.
@@ -1347,6 +1448,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         store = None
         try:
+            if self.principal.via == "session":
+                self._check_cookie_write()
             path = urlparse(self.path).path
             for pattern, fn in ROUTES:
                 m = pattern.match(path)
@@ -1362,7 +1465,8 @@ class Handler(BaseHTTPRequestHandler):
             actor = _actor(self.headers, body, self.principal)
             _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
-            out = fn(store, m.group(1), body)
+            out = fn(store, m.group(1), body, self) if fn in REQUEST_AWARE else fn(store, m.group(1), body)
+            headers = out.pop("_headers", None) if isinstance(out, dict) else None
             status = 200
             if isinstance(out, dict) and out.get("httpStatus") == 202:
                 out = dict(out)
@@ -1370,8 +1474,10 @@ class Handler(BaseHTTPRequestHandler):
                 status = 202
             if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300:
                 action, kind, target = _audit_fields(path, m.group(1), body, out)
+                if kind == "session":
+                    target = actor
                 store.append_audit(actor, action, kind, target)
-            self._json(status, out)
+            self._json(status, out, headers)
         except ApiError as err:
             self._error(err)
         except Exception:  # never leak internals; the cause is in the server's log
@@ -1486,10 +1592,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "rows": rows, "next": nxt})
             return
         if parsed.path == "/api/whoami":
-            self._json(200, {"ok": True, "name": self.principal.name if self.principal else LEGACY_ACTOR,
-                             "role": self.principal.role if self.principal else "admin",
-                             "legacy": self.principal is None or self.principal.legacy,
-                             "groups": list(self.principal.groups) if self.principal else []})
+            p = self.principal
+            name = p.name if p else LEGACY_ACTOR
+            row = STORE.conn.execute("SELECT display_name FROM volt_user WHERE name = ?", (name,)).fetchone() if p and not p.legacy else None
+            who = {"ok": True, "name": name, "role": p.role if p else "admin",
+                   "legacy": p is None or p.legacy,
+                   "groups": list(p.groups) if p else [],
+                   "effectiveRole": p.role if p else "admin",
+                   "via": p.via if p else "legacy",
+                   "displayName": (row["display_name"] if row and row["display_name"] else name)}
+            if p is not None and p.via == "session":
+                who["csrf"] = p.csrf   # the page keeps it in memory and sends it back as X-Volt-Csrf
+            self._json(200, who)
             return
         if parsed.path == "/api/groups":
             self._require_admin()
@@ -1618,8 +1732,8 @@ class Handler(BaseHTTPRequestHandler):
         state["orderVersion"] = building.order_version(store, show_id) if show_id and rundown is not None else None
         return state
 
-    def _json(self, status: int, payload: dict):
-        self._send(status, "application/json", json.dumps(payload).encode())
+    def _json(self, status: int, payload: dict, headers=None):
+        self._send(status, "application/json", json.dumps(payload).encode(), headers)
 
     def _error(self, err: ApiError):
         if err.status >= 500:
@@ -1642,10 +1756,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send(self, status, content_type, body):
+    def _send(self, status, content_type, body, headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 

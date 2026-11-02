@@ -173,6 +173,12 @@ MIGRATIONS = (
                        ("item", "source_wire_id", "TEXT"), ("show", "read_wpm", "INTEGER")),
               sqlite=("CREATE INDEX IF NOT EXISTS story_event_item ON story_event (item_id, kind, rev)",),
               postgres=("CREATE INDEX IF NOT EXISTS story_event_item ON story_event (item_id, kind, rev)",)),
+    # Server-side sessions (volt/sessions.py): the cookie value is stored only as a sha256 hash. A new table, so SCHEMA makes it on a fresh database.
+    Migration(26, "session table",
+              sqlite=("CREATE TABLE IF NOT EXISTS session (id_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, provider TEXT NOT NULL, csrf TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+                      "CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name)"),
+              postgres=("CREATE TABLE IF NOT EXISTS session (id_hash TEXT PRIMARY KEY, user_name TEXT NOT NULL, provider TEXT NOT NULL, csrf TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)",
+                        "CREATE INDEX IF NOT EXISTS session_by_user ON session (user_name)")),
 )
 
 LATEST = MIGRATIONS[-1].version
