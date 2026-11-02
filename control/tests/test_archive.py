@@ -199,6 +199,36 @@ class Refusals(Base):
         self.assertIsNone(operator_state._blocked_by(True, False, False))
 
 
+class Lifecycle(Base):
+    def test_a_purge_removes_the_archived_object_and_a_hold_blocks_archiving(self):
+        from volt import retention
+        archive.run_archive(self.store, self.asset, self.backend, "cold")
+        key = self.row()["archive_key"]
+        self.assertTrue(self.backend.exists(key))
+        retention.tombstone(self.store, self.asset)
+        result = retention.purge_asset(self.store, self.asset, retention.OwnedRoots(archive_backend=self.backend))
+        self.assertEqual(result.status, "purged", result.failed)
+        self.assertFalse(self.backend.exists(key))
+
+    def test_a_purge_that_cannot_reach_the_archive_store_is_partial_and_retried(self):
+        from volt import retention
+        archive.run_archive(self.store, self.asset, self.backend, "cold")
+        retention.tombstone(self.store, self.asset)
+        result = retention.purge_asset(self.store, self.asset, retention.OwnedRoots())
+        self.assertEqual(result.status, "partial")
+        self.assertTrue(any("archive" in f for f in result.failed))
+
+    def test_the_runner_defers_hi_res_work_on_an_archived_asset(self):
+        from volt import runner
+        archive.run_archive(self.store, self.asset, self.backend, "cold")
+        handlers = runner.default_handlers(runner.Config(proxy_dir=self.root / "proxy"))
+        job = mock.Mock(asset_id=self.asset, id="j", key="k", type="proxy")
+        with self.assertRaises(runner.Defer) as ctx:
+            handlers["proxy"](self.store, job)
+        self.assertIn("archived", str(ctx.exception))
+        self.assertEqual({"archive", "restore"} <= set(handlers), True)
+
+
 class ArchiveApi(Api):
     def setUp(self):
         super().setUp()

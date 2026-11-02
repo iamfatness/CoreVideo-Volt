@@ -165,7 +165,8 @@ class Config:
         return retention.OwnedRoots(
             self.proxy_dir, self.quarantine_dir, self.out_dir,
             backend=self.storage,
-            backend_factory=lambda: storage.from_env(local_root=self.publish_dir))
+            backend_factory=lambda: storage.from_env(local_root=self.publish_dir),
+            archive_backend_factory=lambda: archive_mod.pick_backend(self.storage, self.archive_dir, self.publish_dir)[0])
 
 
 def _need(value, name: str, flag: str):
