@@ -225,6 +225,7 @@ class Recurrence(unittest.TestCase):
         self.assertEqual(clock.materialise_recurring(self.store, datetime(2026, 10, 11, 1, 0, tzinfo=timezone.utc)), [])
 
 
+@unittest.skipUnless(_has_zones(), "needs a time-zone database (on Windows: pip install tzdata)")
 class RecurrenceApi(Api):
     def setUp(self):
         super().setUp()
