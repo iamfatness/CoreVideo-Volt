@@ -469,6 +469,7 @@ CREATE TABLE IF NOT EXISTS bin_member (
   position INTEGER NOT NULL,
   added_by TEXT NOT NULL,
   added_at TIMESTAMPTZ NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS auth_flow (
   state TEXT PRIMARY KEY,

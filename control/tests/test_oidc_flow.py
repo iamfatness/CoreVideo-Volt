@@ -95,6 +95,9 @@ class Flow(unittest.TestCase):
     """Library-level tests: begin and complete against a store, a frozen clock and the fake providers."""
 
     def setUp(self):
+        prior = logging.root.manager.disable          # another test file may have switched logging off for the whole process
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, prior)
         oidc.reset_caches()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
