@@ -127,6 +127,8 @@ class Config:
     out_dir: Optional[Path] = None            # VOLT_OUT: where thumbnails are cached (same default as the server)
     quarantine_dir: Optional[Path] = None     # VOLT_QUARANTINE_DIR: where watch-folder ingest copies cards (purge may delete there)
     purge_every: float = 0.0                  # VOLT_PURGE_EVERY seconds between purge passes; 0 = off (opt in)
+    mos_devices: str = ""                    # VOLT_MOS_DEVICES: name=host[:port],... turns the MOS sender on (off when empty)
+    mos_ncs_id: str = "volt.ncs"             # VOLT_MOS_NCS_ID: Volt's own id in every MOS message
     archive_dir: Optional[Path] = None        # VOLT_ARCHIVE_DIR: a dedicated archive folder (else VOLT_STORAGE, else under publish_dir)
 
     @classmethod
@@ -158,6 +160,8 @@ class Config:
             quarantine_dir=path("VOLT_QUARANTINE_DIR"),
             purge_every=float(env.get("VOLT_PURGE_EVERY") or 0),
             archive_dir=path("VOLT_ARCHIVE_DIR"),
+            mos_devices=env.get("VOLT_MOS_DEVICES") or "",
+            mos_ncs_id=env.get("VOLT_MOS_NCS_ID") or "volt.ncs",
         )
 
     def owned_roots(self) -> retention.OwnedRoots:
@@ -689,6 +693,14 @@ def main(argv: list[str]) -> int:
     gc_every = float(os.environ.get("VOLT_CACHE_GC_EVERY") or 600)
     if gc_every > 0 and not args.once:
         runner.periodic.append(Periodic("cache-gc", gc_every, cache_gc_task(config)))
+    if env.mos_devices:
+        from volt import mos_send
+        try:
+            sender = mos_send.MosSender(mos_send.parse_devices(env.mos_devices), ncs_id=env.mos_ncs_id)
+        except ValueError as exc:
+            print(f"volt runner: {exc}", file=sys.stderr)
+            return 78
+        runner.periodic.append(Periodic("mos", 2.0, sender.step))
     from volt import watch as watch_mod
     watch_every = float(os.environ.get("VOLT_WATCH_EVERY") or 2)
     if watch_mod.env_on(os.environ.get("VOLT_WATCH")):

@@ -133,8 +133,8 @@ def _metadata(parent, scope: str):
 # ---- rendering --------------------------------------------------------------------------------------------------
 
 def build_ro_create(show_id: str, title: str, stories: list, mos_id: str = DEFAULT_MOS_ID,
-                    ncs_id: str = DEFAULT_NCS_ID, message_id: int = 1, include_cues: bool = False) -> Built:
-    """One roCreate for a show. Each rundown item is a story; its attached span is the story's one item."""
+                    ncs_id: str = DEFAULT_NCS_ID, message_id: int = 1, include_cues: bool = False, tag: str = "roCreate") -> Built:
+    """One roCreate for a show (`tag="roReplace"` writes the same body as a roReplace). Each rundown item is a story; its attached span is the story's one item."""
     _check_id("mos_id", mos_id)
     _check_id("ncs_id", ncs_id)
     warnings: list = []
@@ -145,7 +145,9 @@ def build_ro_create(show_id: str, title: str, stories: list, mos_id: str = DEFAU
     _sub(root, "mosID", mos_id)
     _sub(root, "ncsID", ncs_id)
     _sub(root, "messageID", int(message_id))
-    ro = _sub(root, "roCreate")
+    if tag not in ("roCreate", "roReplace"):
+        raise ValueError("tag must be roCreate or roReplace")
+    ro = _sub(root, tag)
     _sub(ro, "roID", clean_text(show_id, 128))
     _sub(ro, "roSlug", clean_text(title))
     dur_el = _sub(ro, "roEdDur")

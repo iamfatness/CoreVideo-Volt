@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import archive, building, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -562,6 +562,22 @@ def act_asset_rehydrate(store, asset_id, body):
     return {"ok": True, "job": job, "asset": asset_payload(store, asset_id)}
 
 
+def act_mos_resolve(store, ident, body):
+    """The desk's answer for a show whose roCreate got no acknowledgement: {action: created | retry}. `ident` is device:show."""
+    _unknown_keys(body, {"action"})
+    action = body.get("action")
+    device, sep, show_id = ident.partition(":")
+    if not sep or not device or not show_id:
+        raise ApiError(422, "bad_input", "the id is device:show")
+    if action not in ("created", "retry"):
+        raise ApiError(422, "bad_input", "action must be created or retry")
+    try:
+        mos_send.resolve(store, device, show_id, action)
+    except KeyError:
+        raise ApiError(404, "not_found", f"nothing is waiting on {ident}") from None
+    return {"ok": True, "mos": mos_send.status(store)}
+
+
 def act_unpublish(store, version_id, body):
     """Withdraw one publish version and remove the object Volt stored for it. Idempotent; a failed storage delete is
     a 502 `storage_failed` with the version already withdrawn, and calling again retries just the delete."""
@@ -920,6 +936,7 @@ ROUTES = [
     (re.compile(rf"^/api/assets/{_ID}/delete$"), act_delete),
     (re.compile(rf"^/api/assets/{_ID}/restore$"), act_restore),
     (re.compile(rf"^/api/assets/{_ID}/archive$"), act_asset_archive),
+    (re.compile(rf"^/api/mos/{_ID}/resolve$"), act_mos_resolve),
     (re.compile(rf"^/api/assets/{_ID}/rehydrate$"), act_asset_rehydrate),
     (re.compile(rf"^/api/spans/{_ID}/publish$"), act_publish),
     (re.compile(rf"^/api/versions/{_ID}/unpublish$"), act_unpublish),
@@ -956,7 +973,7 @@ ROUTES += [  # user management: admin only
 # until it is classified on purpose.
 ROUTE_ROLES = {
     # show control
-    "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
