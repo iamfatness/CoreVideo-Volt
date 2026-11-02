@@ -33,6 +33,11 @@ class Cue:
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> str:
     if room == "corevideo.pro" and command not in COREVIDEO_COMMANDS:
         raise ValueError(command)
+    if room == "hyperdeck":
+        from volt import hyperdeck
+        if command not in hyperdeck.DECK_COMMANDS:
+            raise ValueError(command)
+        hyperdeck.parse_payload(payload)   # a ValueError for a payload that names no deck
     cue_id = _id()
     with store.transaction(f"item-cues:{item_id}"):  # next position is read then written: one at a time
         position = store.conn.execute(
