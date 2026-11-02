@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
-ROLES = ("operator", "admin")
+ROLES = ("viewer", "operator", "admin")
 NAME = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")  # the same shape as an audit actor
 RESERVED = {"desk"}  # the audit name of the legacy VOLT_TOKEN
 PREFIX = "vtk_"
@@ -40,7 +40,8 @@ class UserError(Exception):
 @dataclass(frozen=True)
 class User:
     name: str
-    role: str
+    role: str          # the effective role: the user's own, or a group's if higher (volt/access.py)
+    groups: tuple = ()
 
 
 def hash_token(token: str) -> str:
@@ -81,7 +82,7 @@ def add(store, name: str, role: str) -> tuple[dict, str]:
     if not isinstance(name, str) or not NAME.fullmatch(name) or name in RESERVED:
         raise UserError(422, "bad_name", "name must be 1-100 characters matching [A-Za-z0-9._:-] and not be 'desk'")
     if role not in ROLES:
-        raise UserError(422, "bad_role", "role must be operator or admin")
+        raise UserError(422, "bad_role", "role must be viewer, operator or admin")
     if store.conn.execute("SELECT 1 FROM volt_user WHERE name = ?", (name,)).fetchone():
         raise UserError(409, "user_exists", f"user {name} already exists")
     token = new_token()
@@ -112,7 +113,9 @@ def authenticate(store, token: str) -> Optional[User]:
         (digest,)).fetchone()
     if row is None or not hmac.compare_digest(row["token_hash"].encode("ascii"), digest.encode("ascii")):
         return None
-    return User(row["name"], row["role"])
+    from volt import access
+
+    return User(row["name"], access.effective_role(store, row["name"], row["role"]), access.groups_of(store, row["name"]))
 
 
 def any_users(store) -> bool:
@@ -200,6 +203,16 @@ def main(argv=None) -> int:
     p.add_argument("--role", required=True, choices=ROLES)
     p = sub.add_parser("list", help="list users (never tokens)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("role", help="change a user's direct role")
+    p.add_argument("name")
+    p.add_argument("--role", required=True, choices=ROLES)
+    p = sub.add_parser("group-add", help="create a group (optionally with a role that raises its members)")
+    p.add_argument("name")
+    p.add_argument("--role", choices=ROLES, default=None)
+    p = sub.add_parser("group-member", help="add or remove members of a group")
+    p.add_argument("name")
+    p.add_argument("--add", action="append", default=[])
+    p.add_argument("--remove", action="append", default=[])
     for cmd, text in (("disable", "revoke a user's token at once"), ("enable", "restore a disabled user"),
                       ("rotate", "replace a user's token and print the new one once")):
         sub.add_parser(cmd, help=text).add_argument("name")
@@ -224,6 +237,18 @@ def main(argv=None) -> int:
                     print(f"{r['name']:<24} {r['role']:<9} {state}  created {r['created_at']}")
                 if not rows:
                     print("no users")
+        elif args.cmd == "role":
+            from volt import access
+            user = access.set_user_role(store, args.name, args.role, legacy_admin=bool(os.environ.get("VOLT_TOKEN")))
+            print(f"user {user['name']} is now {user['role']}")
+        elif args.cmd == "group-add":
+            from volt import access
+            g = access.create_group(store, args.name, args.role)
+            print(f"group {g['name']} created" + (f" (raises members to {g['role']})" if g["role"] else ""))
+        elif args.cmd == "group-member":
+            from volt import access
+            g = access.set_members(store, args.name, add=args.add, remove=args.remove)
+            print(f"group {g['name']}: {', '.join(g['members']) or 'no members'}")
         elif args.cmd == "disable":
             disable(store, args.name, legacy_admin=bool(os.environ.get("VOLT_TOKEN")))
             print(f"user {args.name} disabled")
@@ -239,6 +264,11 @@ def main(argv=None) -> int:
     except UserError as exc:
         print(f"volt: {exc.code}: {exc.reason}", file=sys.stderr)
         return 1
+    except Exception as exc:  # noqa: BLE001 - an AccessError from volt.access
+        if exc.__class__.__name__ == "AccessError":
+            print(f"volt: {exc.code}: {exc.reason}", file=sys.stderr)
+            return 1
+        raise
     finally:
         store.close()
 

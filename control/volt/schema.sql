@@ -228,5 +228,21 @@ CREATE TABLE IF NOT EXISTS volt_user (
   role TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL,
-  disabled_at TIMESTAMPTZ
+  disabled_at TIMESTAMPTZ,
+  email TEXT,
+  display_name TEXT,
+  source TEXT
+);
+
+CREATE TABLE IF NOT EXISTS volt_group (
+  name TEXT PRIMARY KEY,
+  role TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_member (
+  group_name TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  PRIMARY KEY (group_name, user_name)
 );

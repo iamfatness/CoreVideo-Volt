@@ -243,7 +243,7 @@
     operator: ['show', 'record'],
   };
   const DEFAULT_WORKSPACE = 'operator';
-  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library'];
+  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity'];
   const workspaceName = (stored) => (typeof stored === 'string' && Object.prototype.hasOwnProperty.call(WORKSPACES, stored) ? stored : DEFAULT_WORKSPACE);
   // A hash naming a screen outside the rail keeps the workspace; that screen rides along as the one temporary extra.
   function railFor(workspace, screen) {
@@ -301,6 +301,7 @@
     cueAdd:      ['POST', '/api/items/{id}/cues'],
     cueRemove:   ['POST', '/api/cues/{id}/remove'],
     cueCommands: ['GET',  '/api/cue-commands'],
+    audit:       ['GET',  '/api/audit'],
     ingest:      ['POST', '/api/ingest'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
@@ -308,7 +309,7 @@
   const SEQUENCED = new Set(['go', 'take', 'skip', 'kill', 'reorder', 'recordStart', 'recordStop', 'attach']);
 
   const POLL_MS = 2000, POLL_HIDDEN_MS = 6000, TAKE_COOLDOWN_MS = 1500, ARM_MS = 4000;
-  const SCREENS = ['show', 'record', 'rights', 'publish', 'library'];
+  const SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity'];
 
   const ERR_LABEL = {
     held: 'Held', not_cleared: 'Not cleared', no_media: 'No media', cue_failed: 'Cue failed',
@@ -505,7 +506,8 @@
       // The pill names the person and their access level; it stays hidden when the server does not say.
       const pill = $('who');
       pill.hidden = !(who && who.name);
-      if (!pill.hidden) pill.replaceChildren(icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }));
+      if (!pill.hidden) pill.replaceChildren(icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }),
+        who.role === 'admin' ? el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }) : null);
     } catch (e) { /* leave the button as it is */ }
   }
 
@@ -767,6 +769,55 @@
     if (S.screen === 'publish') renderPublish();
     if (S.screen === 'library') renderLibrary();
     if (S.screen === 'library') renderWordsTab();
+    if (S.screen === 'activity') renderActivity();
+  }
+
+  // ---- Activity: who did what (admin). Filters, newest first, 'Load more' by cursor, and a CSV that is fetched with the token. ----
+  const ACT = { rows: [], next: null, loaded: false, busy: false, err: null, f: { actor: '', action: '', kind: '' } };
+  async function actLoad(more) {
+    if (ACT.busy) return;
+    ACT.busy = true; ACT.err = null; render();
+    const q = { limit: '100' };
+    for (const k of ['actor', 'action', 'kind']) if (ACT.f[k].trim()) q[k] = ACT.f[k].trim();
+    if (more && ACT.next) q.before = ACT.next;
+    try {
+      const { status, data } = await call('audit', null, null, q);
+      if (status === 200 && data && data.ok) { ACT.rows = more ? ACT.rows.concat(data.rows) : data.rows; ACT.next = data.next || null; ACT.loaded = true; }
+      else ACT.err = status === 403 ? 'The activity log needs the admin role.' : (data && data.error ? data.error.reason : 'The server did not answer.');
+    } catch (e) { ACT.err = 'The server did not answer.'; }
+    ACT.busy = false; S.sigs['act-rows'] = null; S.sigs['act-head'] = null; render();
+  }
+  async function actCsv() {
+    const q = new URLSearchParams({ format: 'csv', limit: '500' });
+    for (const k of ['actor', 'action', 'kind']) if (ACT.f[k].trim()) q.set(k, ACT.f[k].trim());
+    const token = getToken();
+    const res = await fetch('/api/audit?' + q.toString(), { headers: token ? { Authorization: 'Bearer ' + token } : {}, cache: 'no-store' });
+    if (!res.ok) { setFlash({ kind: 'bad', title: 'Could not export.', code: 'export_failed', reason: 'The server refused the CSV (' + res.status + ').' }); render(); return; }
+    const url = URL.createObjectURL(await res.blob());
+    const a = el('a', { href: url, download: 'volt-activity.csv' });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function renderActivity() {
+    if (!ACT.loaded && !ACT.busy && !ACT.err) { actLoad(false); return; }
+    paint('act-head', [ACT.busy, ACT.f.actor, ACT.f.action, ACT.f.kind], () => el('div', { class: 'panel' },
+      el('h2', { id: 'h-act' }, icon('wave', 's'), 'Activity'),
+      el('form', { class: 'form-row', 'aria-labelledby': 'h-act', onsubmit: (e) => { e.preventDefault(); actLoad(false); } },
+        [['actor', 'Who'], ['action', 'Action'], ['kind', 'Kind of thing']].map(([k, label]) => el('div', {}, el('label', { for: 'act-' + k, text: label }),
+          el('input', { id: 'act-' + k, type: 'text', 'data-fk': 'act-' + k, value: ACT.f[k], autocomplete: 'off', oninput: (e) => { ACT.f[k] = e.target.value; } }))),
+        btn('Show', { key: 'act-go', cls: 'ghost', onclick: () => actLoad(false) }),
+        btn('Download CSV', { key: 'act-csv', cls: 'ghost', onclick: actCsv }))));
+    paint('act-rows', [ACT.rows, ACT.next, ACT.busy, ACT.err], () => {
+      if (ACT.err) return el('div', { class: 'panel' }, el('p', { class: 'empty', text: ACT.err }));
+      if (!ACT.rows.length) return el('div', { class: 'panel' }, el('p', { class: 'empty', text: ACT.busy ? 'Reading the log…' : 'Nothing matches.' }));
+      return el('div', { class: 'panel' }, el('div', { class: 'tblwrap' }, el('table', {},
+        el('caption', { class: 'vh', text: 'Who did what, newest first' }),
+        el('thead', {}, el('tr', {}, ['When', 'Who', 'Action', 'Thing', 'Detail'].map((h) => el('th', { scope: 'col', text: h })))),
+        el('tbody', {}, ACT.rows.map((r) => el('tr', {}, el('td', { class: 'mono', text: r.at }), el('td', { text: r.actor }),
+          el('td', {}, icon('wave', 's'), ' ' + r.action), el('td', { class: 'mono', text: r.target_kind + ' ' + short(r.target_id) }),
+          el('td', { text: r.detail || '' })))))),
+        ACT.next ? el('div', { class: 'bar' }, btn(ACT.busy ? 'Loading…' : 'Load more', { key: 'act-more', cls: 'ghost', disabled: ACT.busy, onclick: () => actLoad(true) })) : null);
+    });
   }
 
   function renderChrome() {

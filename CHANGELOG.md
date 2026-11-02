@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Identity, first two slices (migrations 22 and 23): a read-only `viewer` role, groups that raise a member's role (effective role read on every request), `POST /api/users/{name}/role`, `/api/groups...`, `volt user role|group-add|group-member`; and an audit view: `GET /api/audit` with filters, cursor paging and CSV for admins, an Activity screen. See [access.md](docs/specs/access.md). Sign-in, sessions, leases and comments are still to do.
+
 - HyperDeck rooms: cues `deck.play`, `deck.stop`, `deck.goto`, `deck.record.start`, `deck.record.stop` drive Blackmagic HyperDecks over their Ethernet protocol (`VOLT_HYPERDECK_HOSTS`). A cue is fired only when the deck's transport state shows it; a failed deck cue is advisory and never rewinds a take. Unvalidated against a real deck. See [hyperdeck.md](docs/specs/hyperdeck.md).
 
 - MOS sender (migration 21; off unless `VOLT_MOS_DEVICES` is set): Volt as the NCS connects to a device's upper port (10541), sends `roCreate`, then `roReplace` on every change and `roDelete` for a gone show, answers heartbeats and matches `roAck`s; a `roCreate` with no answer is held for the desk, never resent blind. `POST /api/mos/{device}:{show}/resolve`. Unvalidated against a real device. See [mos.md](docs/specs/mos.md).

@@ -129,6 +129,20 @@ MIGRATIONS = (
               postgres=("CREATE TABLE IF NOT EXISTS mos_sync (device TEXT NOT NULL, show_id TEXT NOT NULL, state TEXT NOT NULL, acked_hash TEXT, error TEXT, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (device, show_id))",
               "CREATE TABLE IF NOT EXISTS mos_counter (device TEXT PRIMARY KEY, next_id INTEGER NOT NULL)",
               "CREATE TABLE IF NOT EXISTS mos_device (device TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT, updated_at TIMESTAMPTZ NOT NULL)",)),
+    # Groups and richer users (volt/access.py): who a person is (email, display name, where the account came from) and the groups that can
+    # raise their role. New tables, so SCHEMA makes them on a fresh database; the statements make them on an older one.
+    Migration(22, "groups and user profile columns",
+              columns=(("volt_user", "email", "TEXT"), ("volt_user", "display_name", "TEXT"), ("volt_user", "source", "TEXT")),
+              sqlite=("CREATE TABLE IF NOT EXISTS volt_group (name TEXT PRIMARY KEY, role TEXT, created_at TEXT NOT NULL)",
+                      "CREATE TABLE IF NOT EXISTS group_member (group_name TEXT NOT NULL, user_name TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (group_name, user_name))"),
+              postgres=("CREATE TABLE IF NOT EXISTS volt_group (name TEXT PRIMARY KEY, role TEXT, created_at TIMESTAMPTZ NOT NULL)",
+                        "CREATE TABLE IF NOT EXISTS group_member (group_name TEXT NOT NULL, user_name TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (group_name, user_name))")),
+    # The audit view filters by actor, action and time, newest first: indexes for those, on both backends.
+    Migration(23, "audit view indexes",
+              sqlite=("CREATE INDEX IF NOT EXISTS audit_at ON audit (at, id)", "CREATE INDEX IF NOT EXISTS audit_actor_at ON audit (actor, at)",
+                      "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)"),
+              postgres=("CREATE INDEX IF NOT EXISTS audit_at ON audit (at, id)", "CREATE INDEX IF NOT EXISTS audit_actor_at ON audit (actor, at)",
+                        "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)")),
 )
 
 LATEST = MIGRATIONS[-1].version
