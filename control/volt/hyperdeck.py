@@ -275,5 +275,34 @@ def _record_stop(store, room, cue, ctx) -> None:
             raise DeckError(f"deck {name}: still reports recording")
 
 
-HANDLERS = {"deck.play": _play, "deck.stop": _stop, "deck.goto": _goto,
-            "deck.record.start": _record_start, "deck.record.stop": _record_stop}
+def _gated(command: str, fn):
+    """Every deck command passes the safe-mode gate and leaves a device_event row (fired, failed or refused)."""
+    def run(store, room, cue, ctx):
+        from volt import devices, safety
+        from volt.adapters.base import SafeModeError
+        try:
+            deck = parse_payload(cue.payload)[0]
+        except ValueError:
+            deck = "?"
+        name = f"{ROOM}:{deck}"
+
+        def log(outcome, detail=""):
+            devices.record_event(store, name, command, cue.payload, outcome, detail, cue_id=getattr(cue, "id", None),
+                                 actor=(ctx or {}).get("actor", "system"))
+        try:
+            safety.check_send(store, ROOM)
+        except SafeModeError as exc:
+            log("refused", str(exc))
+            raise
+        try:
+            fn(store, room, cue, ctx)
+        except LiveError as exc:
+            log("failed", str(exc))
+            raise
+        log("fired")
+    return run
+
+
+HANDLERS = {c: _gated(c, f) for c, f in (
+    ("deck.play", _play), ("deck.stop", _stop), ("deck.goto", _goto),
+    ("deck.record.start", _record_start), ("deck.record.stop", _record_stop))}

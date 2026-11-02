@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import access as acl, auditview, archive, building, mos_send, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
+from volt import access as acl, auditview, archive, building, devices, mos_send, safety, health, logs, media, mos, nle, operator_state, retention, shots, tickets, users
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -83,6 +83,7 @@ UNPUBLISH_BACKEND = None
 _SEQ = threading.Lock()
 _REC = threading.Lock()
 
+_REQUEST = threading.local()
 _ID = r"([A-Za-z0-9_.:-]{1,128})"
 _ACTOR = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 _AUDIT_KIND = {
@@ -97,6 +98,7 @@ _AUDIT_KIND = {
     "exports": "export",
     "users": "user",
     "groups": "group",
+    "devices": "device",
 }
 
 
@@ -866,6 +868,25 @@ def act_ingest(store, _unused, body):
     return {"ok": True, **out, "assetState": asset_payload(store, out["asset"]), "httpStatus": 202}
 
 
+def act_device_safe_mode(store, _unused, body):
+    """Turn safe mode on or off: {on: bool, reason?}. While on, Volt sends nothing to any device other than CoreVideo Pro."""
+    _unknown_keys(body, {"on", "reason", "owner"})
+    on = _bool(body, "on")
+    reason = _str(body, "reason", default="", limit=300)
+    state = safety.set(store, on, reason, getattr(_REQUEST, "actor", LEGACY_ACTOR))
+    return {"ok": True, "safeMode": state, "devices": devices.status(store)}
+
+
+def devices_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/devices: the configured devices, what the poller last saw, and safe mode."""
+    if path != "/api/devices":
+        return False
+    if query:
+        raise ApiError(422, "bad_input", "this route takes no parameters")
+    handler._json(200, {"ok": True, "devices": devices.status(store), "safeMode": safety.state(store)})
+    return True
+
+
 def show_building_get(handler, store, path: str, query: dict) -> bool:
     """GET /api/cue-commands and GET /api/items/{item}/cues. Returns True when it answered."""
     m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
@@ -1014,6 +1035,9 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/cues/{_ID}/remove$"), act_cue_remove),
     (re.compile(r"^/api/ingest$()"), act_ingest),
 ]
+ROUTES += [  # device control
+    (re.compile(r"^/api/devices/safe-mode$()"), act_device_safe_mode),
+]
 ROUTES += [  # user management: admin only
     (re.compile(r"^/api/users$()"), act_user_add),
     (re.compile(rf"^/api/users/{_ID}/disable$"), act_user_disable),
@@ -1027,7 +1051,7 @@ ROUTES += [  # user management: admin only
 ROUTE_ROLES = {
     # show control
     "act_group_create": "admin", "act_group_members": "admin", "act_group_delete": "admin", "act_user_role": "admin",
-    "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
+    "act_device_safe_mode": "operator", "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
@@ -1238,6 +1262,7 @@ class Handler(BaseHTTPRequestHandler):
                                f"{need} role required; {self.principal.name} is {self.principal.role}")
             body = self._read_json()
             actor = _actor(self.headers, body, self.principal)
+            _REQUEST.actor = actor                  # for the few actions that record who (safe mode)
             store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body)
             status = 200
@@ -1377,6 +1402,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/media-ticket":
             self._issue_media_ticket(parse_qs(parsed.query, keep_blank_values=True))
+            return
+        if devices_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
