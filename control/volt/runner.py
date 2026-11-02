@@ -701,6 +701,11 @@ def main(argv: list[str]) -> int:
             print(f"volt runner: {exc}", file=sys.stderr)
             return 78
         runner.periodic.append(Periodic("mos", 2.0, sender.step))
+    from volt import roomreg as roomreg_mod
+    device_registry = roomreg_mod.from_env()
+    if any(hasattr(device_registry.get(k), "ACTIONS") for k in device_registry.names()):
+        from volt import devices as devices_mod
+        runner.periodic.append(Periodic("devices", 2.0, lambda st: devices_mod.poll(st, device_registry)))
     from volt import watch as watch_mod
     watch_every = float(os.environ.get("VOLT_WATCH_EVERY") or 2)
     if watch_mod.env_on(os.environ.get("VOLT_WATCH")):

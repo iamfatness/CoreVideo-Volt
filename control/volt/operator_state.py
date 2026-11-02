@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 from volt.cues import cues
 from volt import shots
 from volt.rooms import LiveError
-from volt import mos_send
+from volt import devices, mos_send, safety
 from volt.store import Store
 
 SPAN_LIMIT = 200
@@ -210,4 +210,6 @@ def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: d
         "spans": spans(store, include_ids=[] if show_id is None else _item_span_ids(store, show_id)),
         "room": room,
         "mos": mos_send.status(store),
+        "devices": devices.status(store),
+        "safeMode": safety.state(store),
     }

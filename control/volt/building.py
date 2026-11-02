@@ -226,20 +226,29 @@ def cue_commands() -> list[dict]:
            for c in sorted(cue_mod.COREVIDEO_COMMANDS)]
     if os.environ.get("VOLT_HYPERDECK_HOSTS"):     # offered only where a deck is configured; a stored deck cue is accepted regardless
         out += [{"room": hyperdeck.ROOM, "command": c, "adapter": True, "verified": False} for c in hyperdeck.DECK_COMMANDS]
+    from volt import adapters
+    for kind, (var, _module) in sorted(adapters.REGISTRY.items()):
+        if os.environ.get(var):                    # only the kinds the environment configures; nothing set, nothing listed
+            out += [{"room": kind, "command": c, "adapter": True, "verified": False, "previewable": spec.prepare is not None}
+                    for c, spec in sorted(adapters.actions(kind).items())]
     return out
 
 
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> tuple[str, str, bool]:
     """Returns (cue id, show id, verified) — verified means live-proven, not merely that an adapter exists."""
-    from volt import hyperdeck
-    if room not in (CUE_ROOM, hyperdeck.ROOM):
-        raise BuildError(422, "bad_input", f"room must be {CUE_ROOM} or {hyperdeck.ROOM}: they are the rooms with a command list")
-    known = cue_mod.COREVIDEO_COMMANDS if room == CUE_ROOM else set(hyperdeck.DECK_COMMANDS)
+    from volt import adapters, hyperdeck
+    kinds = adapters.kinds()
+    if room not in (CUE_ROOM, hyperdeck.ROOM, *kinds):
+        raise BuildError(422, "bad_input", f"room must be one of {', '.join([CUE_ROOM, hyperdeck.ROOM, *kinds])}: they are the rooms with a command list")
+    if room in kinds:
+        known = set(adapters.actions(room))
+    else:
+        known = cue_mod.COREVIDEO_COMMANDS if room == CUE_ROOM else set(hyperdeck.DECK_COMMANDS)
     if command not in known:
         raise BuildError(422, "bad_command", f"unknown {room} command: {command}", commands=sorted(known))
-    if room == hyperdeck.ROOM:
+    if room == hyperdeck.ROOM or room in kinds:
         try:
-            hyperdeck.parse_payload(payload)
+            hyperdeck.parse_payload(payload) if room == hyperdeck.ROOM else adapters.actions(room)[command].parse(payload)
         except ValueError as exc:
             raise BuildError(422, "bad_input", str(exc)) from None
     row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()

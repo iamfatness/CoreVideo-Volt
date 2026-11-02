@@ -40,6 +40,10 @@ class NotSent(DeviceError):
     """Raised by a Session when it failed BEFORE any byte of the command was written, so a retry cannot double-send."""
 
 
+class CommandRefused(DeviceError):
+    """The device answered with an explicit refusal (for example a 4xx reply): the command did not run, so the outcome is known."""
+
+
 class BadInput(DeviceError):
     """The cue's payload does not parse. Nothing was sent; the cue is wrong, not the device."""
 

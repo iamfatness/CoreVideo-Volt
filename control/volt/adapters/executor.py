@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from volt.adapters.base import (ActionSpec, BadInput, DeviceError, InterlockError, NotSent, OutcomeUnknown, SafeModeError)
+from volt.adapters.base import (ActionSpec, BadInput, CommandRefused, DeviceError, InterlockError, NotSent, OutcomeUnknown, SafeModeError)
 
 RECONNECTS = 2
 UNKNOWN_TEXT = "sent; no answer; the device does not show it; check it before taking again"
@@ -36,12 +36,13 @@ def _ctx(ctx: Optional[dict]) -> dict:
     return ctx
 
 
-def _open(adapter, device: str):
-    """Connect, retrying a failed connect up to RECONNECTS more times (nothing has been sent)."""
+def _open(adapter, device: str, params: Optional[dict] = None):
+    """Connect, retrying a failed connect up to RECONNECTS more times (nothing has been sent). An adapter whose observation depends
+    on the action's parameters (a CasparCG layer) offers `open_for(device, params)`."""
     last: Optional[DeviceError] = None
     for _ in range(RECONNECTS + 1):
         try:
-            return adapter.open(device)
+            return adapter.open_for(device, params or {}) if hasattr(adapter, "open_for") else adapter.open(device)
         except DeviceError as exc:
             last = exc
     raise last  # type: ignore[misc]
@@ -86,9 +87,9 @@ def _gate(adapter, spec: ActionSpec, params: dict, store, gate) -> Optional[Outc
 def execute(adapter, device: str, spec: ActionSpec, params: dict, ctx: Optional[dict] = None, store=None, gate=None) -> Outcome:
     ctx = _ctx(ctx)
     refused = _gate(adapter, spec, params, store, gate)
-    if refused is not None:
-        return refused
-    return _run(adapter, device, spec, spec.perform, spec.observed, spec.on_air, params, ctx)
+    outcome = refused if refused is not None else _run(adapter, device, spec, spec.perform, spec.observed, spec.on_air, params, ctx)
+    _log(store, adapter, device, spec, params, outcome, ctx)
+    return outcome
 
 
 def prepare(adapter, device: str, spec: ActionSpec, params: dict, ctx: Optional[dict] = None, store=None, gate=None) -> Outcome:
@@ -98,11 +99,24 @@ def prepare(adapter, device: str, spec: ActionSpec, params: dict, ctx: Optional[
         return Outcome("failed", f"{spec.command} has no prepare step", [])
     refused = _gate(adapter, spec, params, store, gate)
     if refused is not None:
+        _log(store, adapter, device, spec, params, refused, ctx)
         return refused
     outcome = _run(adapter, device, spec, spec.prepare, lambda base, now, p: spec.prepared(now, p), False, params, ctx)
     if outcome.status == "fired":
         outcome.status = "prepared"
+    _log(store, adapter, device, spec, params, outcome, ctx)
     return outcome
+
+
+def _log(store, adapter, device, spec, params, outcome: Outcome, ctx: dict) -> None:
+    """One device_event row per attempt or refusal, when there is a store to write it to."""
+    if store is None:
+        return
+    from volt import devices
+    devices.record_event(store, f"{adapter.kind}:{device}", spec.command, params,
+                         "refused" if outcome.status in ("refused", "interlocked") else outcome.status,
+                         outcome.detail or ("; ".join(t for _k, t in outcome.events[-1:])), cue_id=ctx.get("cue_id"),
+                         actor=ctx.get("actor", "system"))
 
 
 def _fail(detail: str, events: list) -> Outcome:
@@ -113,7 +127,7 @@ def _fail(detail: str, events: list) -> Outcome:
 def _run(adapter, device, spec, send, observed, on_air, params, ctx) -> Outcome:
     events: list = []
     try:
-        session = _open(adapter, device)
+        session = _open(adapter, device, params)
     except DeviceError as exc:
         return _fail(str(exc), events)
     baseline = None
@@ -132,9 +146,11 @@ def _run(adapter, device, spec, send, observed, on_air, params, ctx) -> Outcome:
                 if attempt == RECONNECTS:
                     return _fail(f"{spec.command}: could not send after {RECONNECTS + 1} tries: {exc}", events)
                 try:
-                    session = _open(adapter, device)
+                    session = _open(adapter, device, params)
                 except DeviceError as err:
                     return _fail(str(err), events)
+            except CommandRefused as exc:          # the device said no: it did not run, nothing to recover
+                return _fail(str(exc), events)
             except DeviceError as exc:             # bytes may have gone and the answer was lost
                 return _recover(adapter, device, spec, send, observed, on_air, params, ctx, baseline, events, exc)
         events.append(("sent", spec.command))
@@ -153,7 +169,7 @@ def _run(adapter, device, spec, send, observed, on_air, params, ctx) -> Outcome:
 def _recover(adapter, device, spec, send, observed, on_air, params, ctx, baseline, events, exc) -> Outcome:
     events.append(("unknown", f"{exc}; re-observing"))
     try:
-        session = _open(adapter, device)
+        session = _open(adapter, device, params)
     except DeviceError as again:
         return _fail(f"sent; no answer, and the device cannot be reached to check: {again}", events)
     try:
@@ -190,7 +206,7 @@ def handler_for(adapter, spec: ActionSpec) -> Callable:
             params = spec.parse(cue.payload)
         except ValueError as exc:
             raise BadInput(f"{spec.command}: {exc}") from None
-        outcome = execute(adapter, adapter.device_of(params), spec, params, ctx, store=store)
+        outcome = execute(adapter, adapter.device_of(params), spec, params, {**(ctx or {}), "cue_id": getattr(cue, "id", None)}, store=store)
         if outcome.status == "fired":
             return
         cls = {"refused": SafeModeError, "interlocked": InterlockError}.get(outcome.status, DeviceError)

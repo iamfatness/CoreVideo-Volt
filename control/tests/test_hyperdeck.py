@@ -107,12 +107,14 @@ class Base(unittest.TestCase):
         self.addCleanup(self.deck.close)
         self.room = HyperDeckRoom({"A": ("127.0.0.1", self.deck.port)}, timeout=0.5)
         self.ctx = {"attempts": 5, "interval": 0, "sleep": _no_sleep}
+        self.store = Store()           # the safe-mode gate reads the database on every send
+        self.addCleanup(self.store.close)
 
     def cue(self, command, payload):
-        return mock.Mock(command=command, payload=payload)
+        return mock.Mock(id="cue-1", command=command, payload=payload)
 
     def run_cue(self, command, payload):
-        hyperdeck.HANDLERS[command](None, self.room, self.cue(command, payload), self.ctx)
+        hyperdeck.HANDLERS[command](self.store, self.room, self.cue(command, payload), self.ctx)
 
 
 class Parsing(unittest.TestCase):

@@ -191,6 +191,18 @@ class MosSender:
     def _request(self, store: Store, conn: _Conn, dev: Device, message: str) -> Optional[str]:
         """Send one message and wait for its roAck. Returns None for OK, else the device's status text. Raises on timeout or a
         dropped connection (the caller decides what that means for the message)."""
+        from volt import devices
+        found = re.search(r"<(ro[A-Za-z]+)>", message)
+        kind = found.group(1) if found else "message"
+        try:
+            refusal = self._request_inner(store, conn, dev, message)
+        except (OSError, MosProtocolError) as exc:
+            devices.record_event(store, f"mos:{dev.name}", f"mos.{kind}", "", "failed", str(exc) or exc.__class__.__name__)
+            raise
+        devices.record_event(store, f"mos:{dev.name}", f"mos.{kind}", "", "fired" if refusal is None else "failed", refusal or "")
+        return refusal
+
+    def _request_inner(self, store: Store, conn: _Conn, dev: Device, message: str) -> Optional[str]:
         conn.sock.sendall(frame(message))
         deadline = time.monotonic() + self.ack_timeout     # real time: waiting for a socket is not scheduling
         while True:
@@ -207,6 +219,12 @@ class MosSender:
 
     # -- one pass --
     def step(self, store: Store) -> None:
+        from volt import safety
+        if safety.is_on(store):                 # safe mode: connect to nothing, send nothing (heartbeats included)
+            for dev in self.devices:
+                self._close(dev.name)
+                self._set_state(store, dev.name, "safe", "safe mode is on; nothing sent")
+            return
         for dev in self.devices:
             try:
                 self._step_device(store, dev)

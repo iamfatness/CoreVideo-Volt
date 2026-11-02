@@ -46,8 +46,20 @@ class Migration:
     postgres: tuple = ()
 
 
+def _device_tables(ts: str) -> list:
+    """The device-control tables as CREATE IF NOT EXISTS statements; `ts` is the timestamp type for the backend."""
+    return [
+        f"CREATE TABLE IF NOT EXISTS device_status (device TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, observed TEXT, updated_at {ts} NOT NULL)",
+        f"CREATE TABLE IF NOT EXISTS device_event (id TEXT PRIMARY KEY, at {ts} NOT NULL, device TEXT NOT NULL, command TEXT NOT NULL, params TEXT, outcome TEXT NOT NULL, detail TEXT, cue_id TEXT, actor TEXT NOT NULL)",
+        f"CREATE TABLE IF NOT EXISTS device_safety (id INTEGER PRIMARY KEY, safe_mode INTEGER NOT NULL, reason TEXT, set_by TEXT, set_at {ts})",
+        f"CREATE TABLE IF NOT EXISTS macro (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, version INTEGER NOT NULL, created_at {ts} NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS macro_step (macro_id TEXT NOT NULL, version INTEGER NOT NULL, position INTEGER NOT NULL, room TEXT NOT NULL, command TEXT NOT NULL, payload TEXT NOT NULL, offset_ms INTEGER NOT NULL, group_key TEXT, PRIMARY KEY (macro_id, version, position))",
+        f"CREATE TABLE IF NOT EXISTS device_confirm (id TEXT PRIMARY KEY, cue_id TEXT NOT NULL, requested_by TEXT NOT NULL, requested_at {ts} NOT NULL, expires_at {ts} NOT NULL, state TEXT NOT NULL)",
+    ]
+
+
 MIGRATIONS = (
-    Migration(1, "item as-run columns",
+    Migration(1,"item as-run columns",
               columns=(("item", "as_run_in", "TIMESTAMP"), ("item", "as_run_out", "TIMESTAMP"))),
     Migration(2, "show hold columns",
               columns=(("show", "hold_reason", "TEXT"), ("show", "held_at", "TIMESTAMP"))),
@@ -143,6 +155,14 @@ MIGRATIONS = (
                       "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)"),
               postgres=("CREATE INDEX IF NOT EXISTS audit_at ON audit (at, id)", "CREATE INDEX IF NOT EXISTS audit_actor_at ON audit (actor, at)",
                         "CREATE INDEX IF NOT EXISTS audit_action_at ON audit (action, at)")),
+    # Device control (docs/superpowers/specs/2026-11-01-device-control-design.md): cue timing and preview columns (all nullable; a NULL
+    # offset or preroll reads as 0, no group), and the new tables device_status, device_event, device_safety, macro, macro_step and
+    # device_confirm. The tables are made by base-table creation; these statements make them on an older database.
+    Migration(24, "device control",
+              columns=(("cue", "offset_ms", "INTEGER"), ("cue", "preroll_ms", "INTEGER"), ("cue", "group_key", "TEXT"),
+                       ("cue", "due_at", "TIMESTAMP"), ("cue", "claimed_at", "TIMESTAMP"), ("cue", "preload_status", "TEXT"),
+                       ("cue", "preload_detail", "TEXT"), ("cue", "preloaded_at", "TIMESTAMP")),
+              sqlite=tuple(_device_tables("TEXT")), postgres=tuple(_device_tables("TIMESTAMPTZ"))),
 )
 
 LATEST = MIGRATIONS[-1].version

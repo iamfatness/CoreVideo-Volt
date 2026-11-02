@@ -50,10 +50,16 @@ def from_env(env=None) -> RoomRegistry:
     if hosts:
         from volt import hyperdeck
         reg.register(hyperdeck.ROOM, hyperdeck.HyperDeckRoom(hyperdeck.parse_hosts(hosts)))
+    from volt import adapters
+    for kind, (var, _module) in adapters.REGISTRY.items():
+        text = env.get(var)
+        if text:                                      # opt-in: an adapter registers only when its variable is set
+            reg.register(kind, adapters.build(kind, text))
     return reg
 
 
 def configured(env=None) -> bool:
     """True when the environment configures any room; `volt run` starts the clock only then."""
     env = os.environ if env is None else env
-    return bool(env.get("VOLT_ROOM_URL") or env.get("VOLT_HYPERDECK_HOSTS"))
+    from volt import adapters
+    return bool(env.get("VOLT_ROOM_URL") or env.get("VOLT_HYPERDECK_HOSTS") or any(env.get(v) for v in adapters.env_names()))

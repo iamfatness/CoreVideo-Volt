@@ -83,6 +83,12 @@ from volt import hyperdeck as _hyperdeck  # noqa: E402
 ROOM_HANDLERS = {COREVIDEO: HANDLERS, _hyperdeck.ROOM: _hyperdeck.HANDLERS}
 
 
+def adapter_handlers(adapter) -> dict:
+    """The cue handlers for a registered device adapter, one per ACTIONS entry."""
+    from volt.adapters.executor import handler_for
+    return {command: handler_for(adapter, spec) for command, spec in adapter.ACTIONS.items()}
+
+
 def dispatch_item(
     store: Store,
     room,
@@ -106,8 +112,11 @@ def dispatch_item(
     for cue in cues(store, item_id):
         if cue.status == "fired":
             continue
-        handler = ROOM_HANDLERS.get(cue.room, {}).get(cue.command)
         client = rooms.get(cue.room)
+        table = ROOM_HANDLERS.get(cue.room)
+        if table is None and hasattr(client, "ACTIONS"):      # a device adapter: its handlers come from its ACTIONS
+            table = adapter_handlers(client)
+        handler = (table or {}).get(cue.command)
         if handler is None or client is None:
             detail = (f"no verified adapter for {cue.room}/{cue.command}" if handler is None
                       else f"room {cue.room} is not configured")

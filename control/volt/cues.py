@@ -33,6 +33,11 @@ class Cue:
 def add_cue(store: Store, item_id: str, room: str, command: str, payload: str) -> str:
     if room == "corevideo.pro" and command not in COREVIDEO_COMMANDS:
         raise ValueError(command)
+    from volt import adapters
+    if room in adapters.kinds():
+        if command not in adapters.actions(room):
+            raise ValueError(command)
+        adapters.actions(room)[command].parse(payload)   # a ValueError for a payload that names no device
     if room == "hyperdeck":
         from volt import hyperdeck
         if command not in hyperdeck.DECK_COMMANDS:

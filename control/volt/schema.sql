@@ -164,6 +164,63 @@ CREATE TABLE IF NOT EXISTS mos_device (
   updated_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS device_status (
+  device TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  detail TEXT,
+  observed TEXT,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_event (
+  id TEXT PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL,
+  device TEXT NOT NULL,
+  command TEXT NOT NULL,
+  params TEXT,
+  outcome TEXT NOT NULL,
+  detail TEXT,
+  cue_id TEXT,
+  actor TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_safety (
+  id INTEGER PRIMARY KEY,
+  safe_mode INTEGER NOT NULL,
+  reason TEXT,
+  set_by TEXT,
+  set_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS macro (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  version INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS macro_step (
+  macro_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  room TEXT NOT NULL,
+  command TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  offset_ms INTEGER NOT NULL,
+  group_key TEXT,
+  PRIMARY KEY (macro_id, version, position)
+);
+
+CREATE TABLE IF NOT EXISTS device_confirm (
+  id TEXT PRIMARY KEY,
+  cue_id TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  requested_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  state TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS version (
   id TEXT PRIMARY KEY,
   asset_id TEXT NOT NULL REFERENCES asset(id),
@@ -190,7 +247,15 @@ CREATE TABLE IF NOT EXISTS cue (
   status TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   fail_status TEXT,
-  fail_detail TEXT
+  fail_detail TEXT,
+  offset_ms INTEGER,
+  preroll_ms INTEGER,
+  group_key TEXT,
+  due_at TIMESTAMPTZ,
+  claimed_at TIMESTAMPTZ,
+  preload_status TEXT,
+  preload_detail TEXT,
+  preloaded_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS purge_audit (
