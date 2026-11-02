@@ -381,7 +381,7 @@ class StoryMigration(unittest.TestCase):
 
     def test_the_registry_names_it(self):
         m = next(m for m in migrations.MIGRATIONS if m.name == "newsroom scripts")
-        self.assertEqual(m.version, migrations.LATEST)
+        self.assertEqual(m.version, 25)
         self.assertEqual({c for t, c, _ in m.columns if t == "item"}, STORY_ITEM_COLUMNS)
         self.assertIn(("show", "read_wpm", "INTEGER"), m.columns)
 
