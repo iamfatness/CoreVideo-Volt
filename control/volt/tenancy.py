@@ -17,12 +17,17 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
+import hmac
 import json
 import os
 import re
 import sys
+import threading
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from volt import migrations, pg
@@ -31,6 +36,8 @@ SLUG = re.compile(r"^[a-z][a-z0-9-]{1,38}$")
 RESERVED = frozenset({"public", "volt-control", "admin", "administrator", "www", "api", "root", "system", "default", "template",
                       "pg-catalog", "pg-toast", "information-schema", "postgres", "volt", "platform", "control"})
 LIMIT_NAMES = ("max_assets", "max_storage_bytes", "max_jobs_per_day", "max_running_jobs")
+# Non-secret settings a tenant may carry in the registry. A secret is never stored there: the registry names an environment variable.
+SETTING_NAMES = ("room_url", "room_token_env")
 DEFAULT_CONTROL_SCHEMA = "volt_control"
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
@@ -201,6 +208,10 @@ class Registry:
         with self._cx() as c:
             return {r["name"]: int(r["value"]) for r in c.execute("SELECT name, value FROM tenant_limit WHERE slug = ?", (slug,)).fetchall()}
 
+    def settings(self, slug: str) -> dict:
+        with self._cx() as c:
+            return {r["name"]: r["value"] for r in c.execute("SELECT name, value FROM tenant_setting WHERE slug = ?", (slug,)).fetchall()}
+
     def epoch(self) -> int:
         with self._cx() as c:
             return int(c.execute("SELECT epoch FROM registry_epoch WHERE id = 1").fetchone()["epoch"])
@@ -294,6 +305,22 @@ class Registry:
                 self._bump(c)
                 self._audit(c, operator, "limit", slug, f"{name}={value}")
 
+    def set_setting(self, slug: str, name: str, value: str, operator: Optional[str] = None) -> None:
+        if name not in SETTING_NAMES:
+            raise TenantError(f"unknown setting {name!r}; the settings are {', '.join(SETTING_NAMES)} "
+                              "(a secret is never stored: name the environment variable that holds it)")
+        if not isinstance(value, str) or not value or len(value) > 500:
+            raise TenantError("a setting is a non-empty string of at most 500 characters")
+        if name == "room_token_env" and not re.match(r"^[A-Z][A-Z0-9_]{0,63}$", value):
+            raise TenantError("room_token_env names an environment variable: capital letters, digits and underscores")
+        with self._cx() as c:
+            self._need(c, slug)
+            with c.transaction():
+                c.execute("INSERT INTO tenant_setting (slug, name, value) VALUES (?, ?, ?) "
+                          "ON CONFLICT (slug, name) DO UPDATE SET value = excluded.value", (slug, name, value))
+                self._bump(c)
+                self._audit(c, operator, "setting", slug, f"{name} set")      # the value is not audited: it may be a URL with a key
+
     @staticmethod
     def _need(conn, slug: str) -> None:
         if not conn.execute("SELECT 1 FROM tenant WHERE slug = ?", (slug,)).fetchone():
@@ -316,6 +343,116 @@ class Registry:
             return list(store.last_migrations)
         finally:
             store.close()
+
+
+def derive_media_key(master: str, slug: str) -> str:
+    """The signing key for one tenant's media tickets: HMAC(master, slug). A ticket signed for tenant A never verifies on tenant B, even
+    for the same asset id, and no tenant's key reveals the master."""
+    return hmac.new(master.encode("utf-8"), f"volt-media:{slug}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+@dataclass(frozen=True)
+class TenantSettings:
+    """Everything `serve` used to hold in a module global that is really one tenant's."""
+    out_dir: Path
+    proxy_dir: Path
+    publish_dir: Path
+    quarantine_dir: Path
+    storage_prefix: str
+    media_key: Optional[str]
+    room_url: Optional[str]
+    room_token: Optional[str]
+
+
+@dataclass(frozen=True)
+class TenantContext:
+    ref: TenantRef
+    settings: TenantSettings
+    limits: dict = field(default_factory=dict)
+
+    def open_store(self, init: bool = False):
+        """The only way a request gets a Store in tenant mode. The schema was migrated when the tenant was made (or by `volt tenant migrate`)."""
+        from volt.store import Store
+        return Store(self.ref.dsn, init=init, schema=self.ref.schema)
+
+
+def build_context(ref: TenantRef, stored: dict, limits: dict, out_root, master_key: Optional[str], env=None) -> TenantContext:
+    env = os.environ if env is None else env
+    root = Path(out_root)
+    token_env = stored.get("room_token_env")
+    return TenantContext(ref, TenantSettings(
+        out_dir=root / ref.slug,
+        proxy_dir=Path(env.get("VOLT_PROXY_DIR") or root / "proxy") / ref.slug,
+        publish_dir=Path(env.get("VOLT_PUBLISH_DIR") or root / "publish") / ref.slug,
+        quarantine_dir=Path(env.get("VOLT_QUARANTINE") or root / "quarantine") / ref.slug,
+        storage_prefix=f"tenants/{ref.slug}/",
+        media_key=derive_media_key(master_key, ref.slug) if master_key else None,
+        room_url=stored.get("room_url"),
+        room_token=(env.get(token_env) or None) if token_env else None), dict(limits))
+
+
+class TenantResolver:
+    """Host header to TenantContext, cached. A cached answer lives `ttl` seconds, but the registry epoch is re-read every `epoch_every`
+    seconds and a change drops the whole cache, so a suspend takes effect within `epoch_every`, not `ttl`. Unknown hosts are cached
+    briefly (so a scanner does not make one registry query per request) and the cache is bounded."""
+
+    MAX_ENTRIES = 1000
+    NEGATIVE_TTL = 5.0
+
+    def __init__(self, registry: Registry, out_root, master_key: Optional[str] = None, env=None, now=time.monotonic,
+                 ttl: float = 60.0, epoch_every: float = 5.0):
+        self.registry, self.out_root, self.master_key, self._env = registry, out_root, master_key, env
+        self._now, self.ttl, self.epoch_every = now, ttl, epoch_every
+        self._lock = threading.Lock()
+        self._cache: dict = {}
+        self._epoch: Optional[int] = None
+        self._epoch_at = float("-inf")
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._epoch = None
+            self._epoch_at = float("-inf")
+
+    def resolve(self, host) -> Optional[TenantContext]:
+        try:
+            name = normalise_host(host)
+        except TenantError:
+            return None
+        now = self._now()
+        with self._lock:
+            if now - self._epoch_at >= self.epoch_every:
+                epoch = self.registry.epoch()
+                if epoch != self._epoch:
+                    self._cache.clear()
+                    self._epoch = epoch
+                self._epoch_at = now
+            hit = self._cache.get(name)
+            if hit is not None and now - hit[1] < (self.ttl if hit[0] is not None else self.NEGATIVE_TTL):
+                return hit[0]
+        ref = self.registry.by_host(name)
+        ctx = None
+        if ref is not None:
+            ctx = build_context(ref, self.registry.settings(ref.slug), self.registry.limits(ref.slug), self.out_root,
+                                self.master_key, self._env)
+        with self._lock:
+            if len(self._cache) >= self.MAX_ENTRIES:
+                self._cache.clear()
+            self._cache[name] = (ctx, now)
+        return ctx
+
+
+def health_env(ctx: TenantContext) -> dict:
+    """The environment `health.collect` sees on a tenant host: the thresholds, and this tenant's own proxy folder. Nothing that names
+    another tenant's directory, the database, or the node's shared paths."""
+    keep = ("VOLT_MIN_FREE_MB", "VOLT_THUMB_CACHE_MB", "VOLT_RUNNER_STALE_SECONDS", "VOLT_STUCK_JOB_SECONDS")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env["VOLT_PROXY_DIR"] = str(ctx.settings.proxy_dir)
+    return env
 
 
 def _operator() -> str:
@@ -360,6 +497,15 @@ def main(argv=None) -> int:
     lm.add_argument("slug")
     lm.add_argument("name")
     lm.add_argument("value", type=int)
+    st = sub.add_parser("setting", help="set a non-secret tenant setting: " + ", ".join(SETTING_NAMES))
+    st.add_argument("slug")
+    st.add_argument("name")
+    st.add_argument("value")
+    us = sub.add_parser("user", help="volt tenant user <slug> add <name> <role>: make a user in a tenant (its token is printed once)")
+    us.add_argument("slug")
+    us.add_argument("op", choices=["add"])
+    us.add_argument("name")
+    us.add_argument("role", choices=["viewer", "operator", "admin"])
     d = sub.add_parser("domain", help="volt tenant domain add <slug> <host>")
     d.add_argument("op", choices=["add"])
     d.add_argument("slug")
@@ -391,6 +537,26 @@ def main(argv=None) -> int:
         elif args.action == "limit":
             reg.set_limit(args.slug, args.name, args.value)
             print(f"{args.slug}: {args.name} = {args.value}")
+        elif args.action == "setting":
+            reg.set_setting(args.slug, args.name, args.value)
+            print(f"{args.slug}: {args.name} set")
+        elif args.action == "user":
+            ref = reg.get(args.slug)
+            if ref is None:
+                raise TenantError(f"no such tenant: {args.slug}")
+            from volt import users
+            from volt.store import Store
+            store = Store(ref.dsn, init=False, schema=ref.schema)
+            try:
+                row, token = users.add(store, args.name, args.role)
+            except users.UserError as exc:
+                raise TenantError(str(exc)) from None
+            finally:
+                store.close()
+            with reg._cx() as c:
+                reg._audit(c, None, "user", args.slug, f"added {row['name']} as {args.role}")
+                c.commit()
+            print(f"{args.slug}: {row['name']} ({args.role}); token (shown once): {token}")
         elif args.action == "domain":
             reg.add_domain(args.slug, args.host)
             print(f"added {normalise_host(args.host)} to {args.slug}")

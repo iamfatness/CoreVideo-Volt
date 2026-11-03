@@ -97,6 +97,7 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_LOG_FORMAT` | `text` | `text` (logfmt-style) or `json`. |
 | `VOLT_LOG_MAX_MB` | `10` | Size at which a log file rotates. |
 | `VOLT_LOG_BACKUPS` | `5` | Rotated files kept per process. |
+| `VOLT_TENANCY` | off | `on` makes `serve` resolve a tenant from the `Host` header (hosted multi-tenant, Postgres only; see "Several organisations in one deployment"). Refused together with `VOLT_TOKEN` or `VOLT_OIDC_CONFIG` (exit 78). |
 | `VOLT_CONTROL_DSN` | `VOLT_DB` when that is a Postgres DSN | The Postgres database holding the tenant registry (hosted multi-tenant only). Read by `volt tenant`. |
 | `VOLT_CONTROL_SCHEMA` | `volt_control` | The schema in that database that holds the registry. |
 | `VOLT_REQUEST_TIMEOUT` | `30` | Seconds a client socket may stall before `serve` drops it and frees the thread. Matters because connections are kept alive (HTTP/1.1). |
@@ -206,12 +207,21 @@ volt tenant list
 volt tenant suspend acme --reason "unpaid"   /   volt tenant resume acme
 volt tenant limit acme max_assets 50000      # max_assets, max_storage_bytes, max_jobs_per_day, max_running_jobs (enforced by a later slice)
 volt tenant domain add acme news.acme.example
+volt tenant setting acme room_url http://core.acme.internal:8011   # also room_token_env NAME (the variable holding the token)
+volt tenant user acme add admin1 admin       # the token is printed once
 volt tenant migrate [--tenants all|acme,legacy]   # idempotent; a tenant that fails is reported and the rest still run
 ```
 
 How a connection is kept inside its tenant: every `Store` for a tenant sets `search_path` to that schema when it is checked out, prefixes advisory-lock names with the schema (two tenants never serialise on `show:1`), and resets `search_path` before the connection returns to the pool. A connection that cannot be reset is closed, not lent on. The pool stays keyed by cluster DSN, never by tenant. This is **application-level isolation**: one pool and one database role serve every tenant, so it does not defend against SQL that names another schema. Per-tenant Postgres roles would; they are not done.
 
-Proven by `control/tests/test_tenancy.py` on Postgres 16 only (a pooled connection handed from tenant A to tenant B shows none of A's tables; lock names do not collide across tenants; control migrations forward and refuse a newer schema). **Not yet wired to requests**: `serve` does not resolve a tenant from the Host header in this slice, so a deployment cannot be put into tenant mode yet.
+Proven by `control/tests/test_tenancy.py` on Postgres 16 only (a pooled connection handed from tenant A to tenant B shows none of A's tables; lock names do not collide across tenants; control migrations forward and refuse a newer schema). **On the request path** (`VOLT_TENANCY=on`, with `VOLT_CONTROL_DSN` or `--db` naming the Postgres cluster):
+
+- The tenant comes from the `Host` header **before authentication** and from nothing else (not a body, a query or another header). An unknown host gets the plain 404 an unknown route gets, with nothing that confirms a tenant exists. A suspended tenant gets `403 tenant_suspended` on everything except `/health` and `/ready`. A registry that cannot be read is `503 tenant_unavailable`. A resolved tenant is cached 60 s, but the registry epoch is re-read every 5 s and any platform action bumps it, so a suspend takes effect within about 5 s.
+- The token is then looked up in **that tenant's** `volt_user` table, so a valid token from tenant A on tenant B's host is 401. A tenant with no users is locked, never the open loopback mode. `VOLT_TOKEN` is refused (`serve` exits 78), as is `VOLT_OIDC_CONFIG`: browser sign-in is not built for tenant mode, use per-user tokens (`volt tenant user <slug> add <name> <role>`).
+- Per tenant: the media and prompter ticket key (`HMAC(VOLT_MEDIA_KEY, slug)`, so a ticket for tenant A never verifies on B even for the same asset id; `VOLT_MEDIA_KEY` is the master and must be the same on every node), the thumbnail and publish folder (`VOLT_OUT/<slug>`), the quarantine folder, the storage prefix (`tenants/<slug>/`) and the room (`volt tenant setting <slug> room_url <url>`; a room token is never stored, `room_token_env` names the environment variable that holds it; the process-wide `VOLT_ROOM_URL` is never a fallback). `/metrics` and `/api/health` on a tenant host read that tenant's tables, omit the process-wide request series, and show no database path or other tenant's folder.
+- Every `Store(` in `serve.py` goes through `open_request_store` (a test parses the source and fails on any other).
+
+Proven by `control/tests/test_tenant_http.py` on Postgres 16 with two tenants and a fake room. **Not proven or not built:** browser (cookie) sign-in on a tenant host; per-tenant proxy, publish and quarantine folders in the runner and ingest (they still read the process environment, so a worker serving tenants needs the tenant-aware runner slice); quotas and rate limits; Postgres roles per tenant; a real hosted deployment. Migration from today's data: `volt tenant adopt --schema public` registers it where it is, then set `VOLT_TENANCY=on`, remove `VOLT_TOKEN` and add a user per tenant first.
 
 ### More than one serve process
 

@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Tenancy on the request path (scale and operations, task 5; `VOLT_TENANCY=on`, Postgres only): the tenant is found from the Host header before authentication (unknown host: plain 404; suspended: 403 `tenant_suspended`, `/health` still answers), tokens, tickets (per-tenant HMAC key), thumbnail and publish folders, the room, `/metrics` and `/api/health` are all per tenant, every `Store(` goes through one opener (a test enforces it), `VOLT_TOKEN` and `VOLT_OIDC_CONFIG` are refused in tenant mode. `volt tenant setting` and `volt tenant user`. Not built: browser sign-in on a tenant host, per-tenant folders in the runner and ingest.
+
 - Tenancy core (scale and operations, task 4; Postgres only, off by default): a control schema with a tenant registry (`tenant`, `tenant_domain`, `tenant_limit`, `tenant_setting`, `registry_epoch`, `control_audit`; own `CONTROL_MIGRATIONS`), `volt tenant create|adopt|list|suspend|resume|limit|domain|migrate`, and schema-per-tenant connections: `search_path` set on checkout and reset on return (a connection that cannot be reset is closed), advisory-lock names prefixed with the schema. Application-level isolation only; **not yet resolved from requests**, so a deployment cannot run in tenant mode yet.
 
 - Owner rulings 2026-11-03: unknown Google/Microsoft sign-ins stay refused until an admin adds the user (tested through the sign-in path, documented); with `VOLT_APPROVERS` set the person who saved a story's current revision cannot approve it (`403 own_story`); viewers get the mention roster again; the operator page hides write controls from a viewer (the server still answers 403).
