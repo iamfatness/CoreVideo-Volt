@@ -307,7 +307,10 @@
     operator: ['show', 'scripts', 'record'],
   };
   const DEFAULT_WORKSPACE = 'operator';
-  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'scripts'];
+  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access', 'scripts'];
+  // The number keys reach the first six screens only; Access (an admin's screen, opened from the pill) takes no key.
+  const KEY_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity'];
+  const screenForKey = (key) => (/^[1-9]$/.test(String(key)) ? KEY_SCREENS[+key - 1] || null : null);
   const workspaceName = (stored) => (typeof stored === 'string' && Object.prototype.hasOwnProperty.call(WORKSPACES, stored) ? stored : DEFAULT_WORKSPACE);
   // A hash naming a screen outside the rail keeps the workspace; that screen rides along as the one temporary extra.
   function railFor(workspace, screen) {
@@ -365,8 +368,38 @@
     return out;
   }
 
+  // ---- per-show access: who may view, edit or run a show. The server decides; these only name things. ----
+  // view reads and comments, edit builds the rundown, run is edit plus go, take, hold, release, skip and kill.
+  const ACCESS_SPEC = {
+    view: { icon: 'eye',     word: 'View', cls: 'st done', does: 'read the rundown and comment' },
+    edit: { icon: 'sliders', word: 'Edit', cls: 'st next', does: 'build the rundown' },
+    run:  { icon: 'take',    word: 'Run',  cls: 'st ok',   does: 'edit, and go, take, hold, release, skip and kill' },
+  };
+  function accessLevelSpec(level) {
+    return Object.prototype.hasOwnProperty.call(ACCESS_SPEC, level) ? ACCESS_SPEC[level] : { icon: 'pending', word: String(level), cls: 'st', does: '' };
+  }
+  function accessSummary(rows) {
+    if (Array.isArray(rows) && rows.length) {
+      return { kind: 'restricted', icon: 'lock', word: 'Restricted', cls: 'st hold',
+        text: 'Only the people and groups listed here, and every admin, can use this show. Removing the last row opens it again.' };
+    }
+    return { kind: 'open', icon: 'ready', word: 'Open', cls: 'st ok',
+      text: 'Everyone who can sign in can use this show at their own role. Add a person or a group to restrict it.' };
+  }
+  // The names an admin can still add: enabled users, or groups, that are not already listed for this show.
+  function accessCandidates(kind, users, groups, rows) {
+    const listed = new Set((Array.isArray(rows) ? rows : []).filter((r) => r && r.subject_kind === kind).map((r) => r.subject));
+    const pool = kind === 'group' ? groups : users;
+    return (Array.isArray(pool) ? pool : []).filter((x) => x && typeof x.name === 'string' && !x.disabled_at && !listed.has(x.name)).map((x) => x.name);
+  }
+  // A refusal for a show the signed-in person may not use at that level. The server's reason names the level and nobody else.
+  function forbiddenShow(e) {
+    return { title: 'You do not have the access this needs on this show.', reason: (e && e.reason) || '',
+      sub: 'Only an admin can change who has access to a show.' };
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -415,6 +448,10 @@
     cueRemove:   ['POST', '/api/cues/{id}/remove'],
     cueCommands: ['GET',  '/api/cue-commands'],
     audit:       ['GET',  '/api/audit'],
+    showAccess:  ['GET',  '/api/shows/{id}/access'],
+    showAccessSet: ['POST', '/api/shows/{id}/access'],
+    users:       ['GET',  '/api/users'],
+    groups:      ['GET',  '/api/groups'],
     ingest:      ['POST', '/api/ingest'],
     story:       ['GET',  '/api/items/{id}/story'],
     scriptSave:  ['POST', '/api/items/{id}/script'],
@@ -437,7 +474,7 @@
   const SEQUENCED = new Set(['go', 'take', 'skip', 'kill', 'reorder', 'recordStart', 'recordStop', 'attach']);
 
   const POLL_MS = 2000, POLL_HIDDEN_MS = 6000, TAKE_COOLDOWN_MS = 1500, ARM_MS = 4000;
-  const SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'scripts'];   // Scripts is last so keys 1 to 6 stay where they were
+  const SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access', 'scripts'];
 
   const ERR_LABEL = {
     held: 'Held', not_cleared: 'Not cleared', no_media: 'No media', cue_failed: 'Cue failed',
@@ -445,7 +482,7 @@
     not_wrapped: 'Not wrapped', publish_failed: 'Publish failed', not_found: 'Not found',
     not_skippable: 'Cannot skip', not_killable: 'Cannot kill', not_attachable: 'Cannot attach',
     bad_input: 'Bad input', unauthorized: 'Token needed', bad_host: 'Wrong host',
-    forbidden_role: 'Admin only',
+    forbidden_role: 'Admin only', forbidden_show: 'No access to this show',
     too_large: 'Too large', internal: 'Server error',
     overlaps_shot: 'Shots overlap', span_in_use: 'Span in use', bad_timecode: 'Bad timecode',
     outside_source: 'Outside the source', no_proxy: 'No proxy', not_deletable: 'Cannot delete',
@@ -644,7 +681,8 @@
       const pill = $('who');
       pill.hidden = !(who && who.name);
       if (!pill.hidden) pill.replaceChildren(icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }),
-        who.role === 'admin' ? el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }) : null);
+        who.role === 'admin' ? el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }) : null,
+        who.role === 'admin' ? el('a', { href: '#access', class: 'pill-link', text: 'Access' }) : null);
     } catch (e) { /* leave the button as it is */ }
   }
 
@@ -753,6 +791,7 @@
 
   function refusal(kind, e, data, o) {
     const f = { kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason };
+    if (e.code === 'forbidden_show') Object.assign(f, forbiddenShow(e));
     if (kind === 'take' && data && data.results) {
       (data.results || []).forEach((r) => { S.cueDetail[r.cue] = r.detail || r.status; S.cueLast[r.cue] = r.status; });
       const n = data.results.length;
@@ -908,6 +947,7 @@
     if (S.screen === 'library') renderWordsTab();
     if (S.screen === 'activity') renderActivity();
     if (S.screen === 'scripts') renderScripts();
+    if (S.screen === 'access') renderAccess();
   }
 
   // ---- Activity: who did what (admin). Filters, newest first, 'Load more' by cursor, and a CSV that is fetched with the token. ----
@@ -956,6 +996,73 @@
           el('td', { text: r.detail || '' })))))),
         ACT.next ? el('div', { class: 'bar' }, btn(ACT.busy ? 'Loading…' : 'Load more', { key: 'act-more', cls: 'ghost', disabled: ACT.busy, onclick: () => actLoad(true) })) : null);
     });
+  }
+
+  // ---- Access: who may view, edit or run a show (admin). The list and the two pickers come from the server; a change is one POST. ----
+  const ACC = { show: null, rows: [], users: null, groups: null, loaded: null, busy: false, err: null, kind: 'user', subject: '', level: 'view' };
+  async function accLoad(showId) {
+    if (ACC.busy) return;
+    ACC.busy = true; ACC.err = null; ACC.show = showId;
+    try {
+      const [acc, us, gs] = await Promise.all([call('showAccess', showId), call('users'), call('groups')]);
+      if (acc.status === 200 && acc.data && acc.data.ok) {
+        ACC.rows = acc.data.access || [];
+        ACC.users = us.status === 200 && us.data ? us.data.users || [] : null;
+        ACC.groups = gs.status === 200 && gs.data ? gs.data.groups || [] : null;
+        ACC.loaded = showId;
+        if (us.status === 403) ACC.err = 'Changing show access needs the admin role.';
+      } else ACC.err = acc.status === 403 ? 'Changing show access needs the admin role.' : (acc.data && acc.data.error ? acc.data.error.reason : 'The server did not answer.');
+    } catch (e) { ACC.err = 'The server did not answer.'; }
+    ACC.busy = false; S.sigs['acc-head'] = null; S.sigs['acc-rows'] = null; render();
+  }
+  function accSet(kind, subject, level) {
+    act('showAccessSet', ACC.show, { subject_kind: kind, subject, level }, { key: 'acc:' + kind + ':' + subject,
+      okTitle: level ? 'Access saved.' : 'Access removed.',
+      ok: (d) => { ACC.rows = d.access || []; S.sigs['acc-head'] = null; S.sigs['acc-rows'] = null;
+        const now = accessSummary(ACC.rows); return 'This show is now ' + now.word.toLowerCase() + '. ' + now.text; },
+      hint: 'Nothing changed.' });
+  }
+  function renderAccess() {
+    const shows = (S.data && S.data.shows) || [];
+    const want = ACC.show && shows.some((x) => x.id === ACC.show) ? ACC.show : (S.show || (shows[0] && shows[0].id) || null);
+    if (want && ACC.loaded !== want && !ACC.busy && !ACC.err) { accLoad(want); return; }
+    if (want) ACC.show = want;
+    const sum = accessSummary(ACC.rows);
+    paint('acc-head', [ACC.show, shows.map((x) => x.id + x.title), ACC.busy, ACC.err, sum.kind], () => el('div', { class: 'panel' },
+      el('h2', { id: 'h-acc' }, icon('lock', 's'), 'Who can use this show'),
+      el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'acc-show', text: 'Show' }),
+        el('select', { id: 'acc-show', 'data-fk': 'acc-show', onchange: (e) => { ACC.show = e.target.value; ACC.loaded = null; ACC.err = null; S.sigs = {}; render(); } },
+          shows.map((x) => el('option', { value: x.id, selected: x.id === ACC.show }, x.title))))),
+      ACC.err ? el('p', { class: 'empty', role: 'alert', text: ACC.err })
+        : el('p', { class: 'hint' }, el('span', { class: sum.cls }, icon(sum.icon, 's'), el('span', { text: sum.word })), ' ', sum.text)));
+    if (ACC.err) { paint('acc-rows', [ACC.err], () => []); return; }
+    const names = accessCandidates(ACC.kind, ACC.users, ACC.groups, ACC.rows);
+    if (!names.includes(ACC.subject)) ACC.subject = names[0] || '';
+    paint('acc-rows', [ACC.rows, ACC.busy, ACC.kind, ACC.subject, ACC.level, names, [...S.pending].filter((k) => k.startsWith('acc:'))], () => el('div', { class: 'panel' },
+      !ACC.rows.length ? el('p', { class: 'empty', text: 'No one is listed, so the show is open.' })
+        : el('div', { class: 'tblwrap' }, el('table', {},
+          el('caption', { class: 'vh', text: 'People and groups with access to this show' }),
+          el('thead', {}, el('tr', {}, ['Who', 'Level', 'Can'].map((h) => el('th', { scope: 'col', text: h })), el('th', { scope: 'col' }, el('span', { class: 'vh', text: 'Remove' })))),
+          el('tbody', {}, ACC.rows.map((r) => {
+            const spec = accessLevelSpec(r.level);
+            return el('tr', {}, el('td', {}, icon('user', 's'), ' ' + (r.subject_kind === 'group' ? 'Group ' : 'User ') + r.subject),
+              el('td', {}, el('span', { class: spec.cls }, icon(spec.icon, 's'), el('span', { text: spec.word }))),
+              el('td', { text: spec.does }),
+              el('td', {}, btn('Remove', { key: 'acc:' + r.subject_kind + ':' + r.subject, cls: 'ghost small', aria: 'Remove ' + r.subject + ' from this show',
+                onclick: () => accSet(r.subject_kind, r.subject, null) })));
+          })))),
+      el('form', { class: 'form-row', 'aria-label': 'Add or change access', onsubmit: (e) => { e.preventDefault(); if (ACC.subject) accSet(ACC.kind, ACC.subject, ACC.level); } },
+        el('div', {}, el('label', { for: 'acc-kind', text: 'Add' }),
+          el('select', { id: 'acc-kind', 'data-fk': 'acc-kind', onchange: (e) => { ACC.kind = e.target.value; S.sigs['acc-rows'] = null; render(); } },
+            [['user', 'A user'], ['group', 'A group']].map(([v, t]) => el('option', { value: v, selected: v === ACC.kind }, t)))),
+        el('div', {}, el('label', { for: 'acc-subject', text: ACC.kind === 'group' ? 'Group' : 'User' }),
+          el('select', { id: 'acc-subject', 'data-fk': 'acc-subject', disabled: !names.length, onchange: (e) => { ACC.subject = e.target.value; } },
+            names.length ? names.map((n) => el('option', { value: n, selected: n === ACC.subject }, n)) : [el('option', { value: '' }, 'No one left to add')])),
+        el('div', {}, el('label', { for: 'acc-level', text: 'Level' }),
+          el('select', { id: 'acc-level', 'data-fk': 'acc-level', onchange: (e) => { ACC.level = e.target.value; } },
+            ['view', 'edit', 'run'].map((v) => el('option', { value: v, selected: v === ACC.level }, accessLevelSpec(v).word)))),
+        el('button', { type: 'submit', class: 'btn', disabled: !names.length || S.pending.has('acc:' + ACC.kind + ':' + ACC.subject) }, 'Save'),
+        el('span', { class: 'hint', text: 'A person’s role still caps this: a viewer given Run can only view.' }))));
   }
 
   function renderChrome() {
@@ -3871,7 +3978,7 @@
     const t = e.target;
     if (t && t.matches && t.matches('input,select,textarea,[contenteditable]')) return;
     if (e.key === '?') { $('keys-dlg').showModal(); return; }
-    if (e.key >= '1' && e.key <= String(SCREENS.length)) { location.hash = '#' + SCREENS[+e.key - 1]; return; }
+    if (screenForKey(e.key)) { location.hash = '#' + screenForKey(e.key); return; }
     if (S.screen === 'library') { libKey(e); return; }   // its own keys; Space is never TAKE here
     if (S.screen !== 'show' || !S.data) return;
     const k = e.key.toLowerCase();

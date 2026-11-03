@@ -59,8 +59,8 @@ Deleting a show (which is only possible when nothing aired) first copies every s
 
 ## Screens
 
-The Scripts screen is in the Producer and Operator rails (seventh in the key order, so keys 1 to 6 are unchanged). Ctrl+S saves, from inside the script box only. Left: the stories in rundown order with their chips, a status filter and the reading pace; centre: slug, script, a preview of what is read and the count (a polite status region that changes at most once a second); right: a tabbed panel (History, Wire, Templates, Archive). See [operator-ui.md](operator-ui.md).
+The Scripts screen is in the Producer and Operator rails (it takes no number key; keys 1 to 6 are unchanged). Ctrl+S saves, from inside the script box only. Left: the stories in rundown order with their chips, a status filter and the reading pace; centre: slug, script, a preview of what is read and the count (a polite status region that changes at most once a second); right: a tabbed panel (History, Wire, Templates, Archive). See [operator-ui.md](operator-ui.md).
 
 ## Schema
 
-Migration 25 adds the story columns on `item`, `show.read_wpm` and the tables `story_rev`, `story_event`, `wire_story`, `story_template` and `story_archive`; migration 31 adds `wire_feed`. All are mirrored in `store.SCHEMA` and `schema.sql`. Existing rows need no backfill: a NULL reads as today's behaviour.
+Migration 25 adds the story columns on `item`, `show.read_wpm` and the tables `story_rev`, `story_event`, `wire_story`, `story_template` and `story_archive`; migration 32 adds `wire_feed`. All are mirrored in `store.SCHEMA` and `schema.sql`. Existing rows need no backfill: a NULL reads as today's behaviour.

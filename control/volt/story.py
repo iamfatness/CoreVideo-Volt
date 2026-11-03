@@ -494,7 +494,7 @@ def _snippet(text: str, q: str, width: int = 160) -> str:
 
 
 def search(store: Store, *, q: str = "", status: str = "", show: str = "", from_: str = "", to: str = "",
-           limit: int = 50, cursor: Optional[str] = None) -> dict:
+           limit: int = 50, cursor: Optional[str] = None, show_ok=None) -> dict:
     """Live items and archived stories together, newest first, each row marked `archived`. `q` matches the slug and the script's public
     text (never a private note) case-insensitively, with % and _ taken literally. Returns {ok, rows, next}; `next` is the cursor for the
     following page. LIKE, not full text: adequate for thousands of stories, and the limit is stated in the docs."""
@@ -555,6 +555,8 @@ def search(store: Store, *, q: str = "", status: str = "", show: str = "", from_
         for r in rows:
             if q and q.lower() not in (r["slug"] + " " + public_text(r["script"])).lower():
                 continue
+            if show_ok is not None and r["show_id"] is not None and not show_ok(r["show_id"]):
+                continue      # a restricted show the caller is not on
             if len(out) == limit:
                 more = True
                 break

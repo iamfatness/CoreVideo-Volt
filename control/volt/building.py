@@ -209,6 +209,8 @@ def delete_show(store: Store, show_id: str) -> dict:
         left = store.conn.execute("SELECT COUNT(*) FROM item WHERE show_id = ?", (show_id,)).fetchone()[0]
         if left:  # an item changed state between the check and the delete: undo it all
             raise BuildError(409, "show_not_deletable", "an item changed while the show was being deleted")
+        # Its access list goes with it: a later show given the same id must not inherit who could see this one.
+        store.conn.execute("DELETE FROM show_acl WHERE show_id = ?", (show_id,))
         store.conn.execute("DELETE FROM show WHERE id = ?", (show_id,))
         return {"items": items, "cues": cues}
 

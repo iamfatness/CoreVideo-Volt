@@ -136,6 +136,19 @@ class Archive(Api):
         self.assertEqual(self.call("GET", "/api/stories")[0], 401)
         self.assertEqual(self.call("GET", "/api/stories", token=TOKEN)[0], 200)
 
+    def test_a_restricted_show_is_not_searched_for_people_who_are_not_on_it(self):
+        from volt import access, users
+        _, root = users.add(self.store, "root", "admin")
+        _, alice = users.add(self.store, "alice", "operator")
+        _, bob = users.add(self.store, "bob", "operator")
+        access.set_acl(self.store, self.show, "user", "alice", "edit")
+        got = lambda tok: self.call("GET", "/api/stories", token=tok)[1]["rows"]
+        self.assertEqual((len(got(root)), len(got(alice)), len(got(bob))), (3, 3, 0))
+        other = open_show(self.store, "Other")
+        self.assertEqual(self.post(f"/api/items/{self.a}/copy", {"show": other}, token=bob)[0], 403)      # the source is a restricted show
+        self.assertEqual(self.post(f"/api/items/{self.a}/copy", {"show": self.show}, token=bob)[0], 403)
+        self.assertEqual(self.post(f"/api/items/{self.a}/copy", {"show": other}, token=alice)[0], 200)
+
     # ---- copy -----------------------------------------------------------------------------------------------
     def test_copy_creates_draft_rev_1_without_approval(self):
         story.set_status(self.store, self.a, "approved", base_rev=1, actor="marcus")
