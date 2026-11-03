@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users, wire
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -117,6 +117,7 @@ _AUDIT_KIND = {
     "searches": "search",
     "bins": "bin",
     "wire": "wire",
+    "templates": "template",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
@@ -342,6 +343,10 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
             captured = out["search"].get("id") or ""
     if len(parts) >= 2 and parts[1] == "wire":
         action = "wire_" + parts[-1]
+    if len(parts) >= 2 and parts[1] == "templates":
+        action = "template_" + (parts[-1] if len(parts) > 2 else "create")
+        if not captured and isinstance(out.get("template"), dict):
+            captured = out["template"].get("id") or ""
     if len(parts) >= 2 and parts[1] == "bins":
         action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("bin"), dict):
@@ -953,6 +958,86 @@ def act_wire_dismiss(store, wire_id, body):
     return {"ok": True, "wire": wire_id, **_wire_errors(lambda: wire.dismiss(store, wire_id, _who()[0]))}
 
 
+def _template_errors(fn):
+    try:
+        return fn()
+    except (templates.TemplateError, building.BuildError, story.StoryError) as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **getattr(exc, "extra", {})) from None
+
+
+def act_template_create(store, _unused, body):
+    """Make a template: {kind, name, fromShow | fromItem | body}. Exactly one source."""
+    _unknown_keys(body, {"kind", "name", "fromShow", "fromItem", "body"})
+    kind = _str(body, "kind", required=True, limit=20)
+    name = _str(body, "name", required=True, limit=templates.MAX_NAME)
+    sources = [k for k in ("fromShow", "fromItem", "body") if body.get(k) is not None]
+    if len(sources) != 1:
+        raise ApiError(422, "bad_input", "give exactly one of fromShow, fromItem or body")
+    actor = _who()[0]
+    if sources[0] == "fromShow":
+        if kind != "show":
+            raise ApiError(422, "bad_input", "fromShow makes a show template")
+        tid = _template_errors(lambda: templates.from_show(store, _str(body, "fromShow", required=True, limit=128), name, actor))
+    elif sources[0] == "fromItem":
+        if kind != "story":
+            raise ApiError(422, "bad_input", "fromItem makes a story template")
+        tid = _template_errors(lambda: templates.from_item(store, _str(body, "fromItem", required=True, limit=128), name, actor))
+    else:
+        tid = _template_errors(lambda: templates.create(store, kind, name, body["body"], actor))
+    return {"ok": True, "template": {"id": tid, "kind": kind, "name": name.strip()}}
+
+
+def act_template_instantiate(store, template_id, body):
+    """Use a template. A story template: {show, position?} adds a draft story. A show template: {title} makes a new show."""
+    _unknown_keys(body, {"show", "position", "title"})
+    actor = _who()[0]
+    row = store.conn.execute("SELECT kind FROM story_template WHERE id = ?", (template_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "not_found", f"no such template: {template_id}")
+    if row["kind"] == "story":
+        show_id = _str(body, "show", required=True, limit=128)
+        out = _template_errors(lambda: templates.instantiate_story(store, template_id, show_id, body.get("position"), actor))
+        return {"ok": True, "template": {"id": template_id}, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+    title = _str(body, "title", required=True, limit=200)
+    out = _template_errors(lambda: templates.instantiate_show(store, template_id, title, actor))
+    return {"ok": True, "template": {"id": template_id}, **out, "show": {"id": out["show"], "title": title.strip()},
+            "rundown": rundown_payload(store, out["show"])}
+
+
+def act_template_delete(store, template_id, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "template": {"id": template_id}, **_template_errors(lambda: templates.delete(store, template_id, _who()[0]))}
+
+
+def act_item_copy(store, source_id, body):
+    """Copy a story (or `archive:<id>`) into a show as a new draft. {show, position?}. Not a take: it works on a held show."""
+    _unknown_keys(body, {"show", "position"})
+    show_id = _str(body, "show", required=True, limit=128)
+    out = _build_errors(lambda: story.copy_story(store, source_id, show_id, body.get("position"), _who()[0]))
+    return {"ok": True, "source": source_id, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+
+
+def stories_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/stories and GET /api/templates."""
+    if path == "/api/templates":
+        if query:
+            raise ApiError(422, "bad_input", "this route takes no parameters")
+        handler._json(200, templates.listing(store))
+        return True
+    if path != "/api/stories":
+        return False
+    extra = sorted(set(query) - {"q", "status", "show", "from", "to", "limit", "cursor"})
+    if extra or any(len(v) != 1 for v in query.values()):
+        raise ApiError(422, "bad_input", "this route takes q, status, show, from, to, limit and cursor, each once")
+    one = lambda k: query.get(k, [""])[0]  # noqa: E731
+    limit = one("limit") or "50"
+    if not limit.isdigit():
+        raise ApiError(422, "bad_input", "limit must be a whole number from 1 to 200")
+    handler._json(200, _build_errors(lambda: story.search(store, q=one("q"), status=one("status"), show=one("show"), from_=one("from"), to=one("to"),
+                                                          limit=int(limit), cursor=one("cursor") or None)))
+    return True
+
+
 def wire_get(handler, store, path: str, query: dict) -> bool:
     """GET /api/wire?state=new&limit=&cursor=: the inbox, newest first, with each feed's last success and last error."""
     if path != "/api/wire":
@@ -1508,6 +1593,10 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/shows/{_ID}/prompter-ticket$"), act_prompter_ticket),
     (re.compile(rf"^/api/wire/{_ID}/take$"), act_wire_take),
     (re.compile(rf"^/api/wire/{_ID}/dismiss$"), act_wire_dismiss),
+    (re.compile(r"^/api/templates$()"), act_template_create),
+    (re.compile(rf"^/api/templates/{_ID}/instantiate$"), act_template_instantiate),
+    (re.compile(rf"^/api/templates/{_ID}/delete$"), act_template_delete),
+    (re.compile(rf"^/api/items/{_ID}/copy$"), act_item_copy),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1563,7 +1652,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_wire_take": "operator", "act_wire_dismiss": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_wire_take": "operator", "act_wire_dismiss": "operator", "act_template_create": "operator", "act_template_instantiate": "operator", "act_item_copy": "operator", "act_template_delete": "admin", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -2071,6 +2160,8 @@ class Handler(BaseHTTPRequestHandler):
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if wire_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if stories_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if schema_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return

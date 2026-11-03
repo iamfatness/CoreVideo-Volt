@@ -101,6 +101,9 @@ class Endpoints(Api):
             elif tpl == "/api/audit":   # needs a target or the admin role: refused, never a missing route
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (200, 401, 403, 422), tpl)
+            elif tpl == "/api/templates":    # the template list: empty on a fresh database
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"], payload["templates"]), (200, True, []), tpl)
             elif tpl == "/api/wire":     # the inbox: a list, empty without feeds
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"], payload["stories"]), (200, True, []), tpl)
@@ -1584,3 +1587,14 @@ class ScriptsScreenContract(unittest.TestCase):
         self.assertIn("{ id: 'wire', label: 'Wire', icon: 'wire' }", self.JS)
         self.assertIn("VOLT_WIRE_FEEDS", sec)                                # the empty state says who sets the feeds
         self.assertIn("not against a real agency feed", sec)                 # the unvalidated line
+
+
+    def test_the_templates_tab_arms_delete_names_before_saving_and_draws_text_only(self):
+        sec = self.JS[self.JS.index("// ---- Templates: start"):self.JS.index("function renderScripts")]
+        self.assertNotIn("innerHTML", sec)
+        self.assertIn("armedAction(del,", sec)                               # Delete needs two presses
+        self.assertIn("Name the template first.", sec)
+        self.assertIn("Name the new show first.", sec)
+        self.assertIn("{ id: 'templates', label: 'Templates', icon: 'transcript' }", self.JS)
+        self.assertIn("templateUse: ['POST', '/api/templates/{id}/instantiate']", self.JS)
+        self.assertIn("anything made from one starts as a draft with no approval", sec.lower())

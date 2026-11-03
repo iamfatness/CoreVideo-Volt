@@ -425,6 +425,10 @@
     wireList:    ['GET',  '/api/wire'],
     wireTake:    ['POST', '/api/wire/{id}/take'],
     wireDismiss: ['POST', '/api/wire/{id}/dismiss'],
+    templateList: ['GET',  '/api/templates'],
+    templateCreate: ['POST', '/api/templates'],
+    templateUse: ['POST', '/api/templates/{id}/instantiate'],
+    templateDelete: ['POST', '/api/templates/{id}/delete'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -452,7 +456,7 @@
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
     taking: 'Taking',
     stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
-    not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken',
+    not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken', wrong_kind: 'Wrong template kind',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -3348,7 +3352,7 @@
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
     pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
-  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }];
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
 
@@ -3681,6 +3685,70 @@
       el('p', { class: 'note', text: 'Wire formats are checked against sample files only, not against a real agency feed.' })];
   }
 
+  // ---- Templates: start a story or a whole show from a saved shape. Stories made from one are drafts, never approved. ----
+  const TPL = { rows: [], busy: false, err: null, loaded: false, name: '', title: '' };
+  async function tplLoad() {
+    if (TPL.busy) return;
+    TPL.busy = true; TPL.err = null; render();
+    try {
+      const { status, data } = await call('templateList');
+      if (status === 200 && data && data.ok) { TPL.rows = data.templates; TPL.loaded = true; }
+      else TPL.err = status === 401 ? 'A token is needed to read the templates.' : codeOf(data, status).reason || 'The server refused to list the templates.';
+    } catch (e) { TPL.err = 'The server did not answer.'; }
+    TPL.busy = false; render();
+  }
+  function tplSave(kind) {
+    if (!TPL.name.trim()) { setFlash({ kind: 'bad', title: 'Name the template first.', code: 'bad_input', reason: 'A template needs a name.' }); render(); return; }
+    const body = kind === 'story' ? { kind, name: TPL.name.trim(), fromItem: SC.sel } : { kind, name: TPL.name.trim(), fromShow: S.show };
+    TPL.name = '';
+    act('templateCreate', '', body, { key: 'tpl-save-' + kind, okTitle: 'Template saved.', ok: () => (kind === 'story' ? 'The slug and script of this story, private notes included.' : 'The stories and their cues, the slot length and the pace. No media is kept.') }).then(tplLoad);
+  }
+  function tplUse(t) {
+    if (t.kind === 'story') {
+      act('templateUse', t.id, { show: S.show }, { key: 'tpl-use:' + t.id, okTitle: 'Draft added.', ok: () => 'A new draft story is at the end of the rundown. It is not approved.' });
+      return;
+    }
+    const title = TPL.title.trim();
+    if (!title) { setFlash({ kind: 'bad', title: 'Name the new show first.', code: 'bad_input', reason: 'A show made from a template needs a title.' }); render(); return; }
+    TPL.title = '';
+    act('templateUse', t.id, { title }, { key: 'tpl-use:' + t.id, okTitle: 'Show created.', ok: (d) => {
+      S.show = d.show.id; S.selected = null; SC.sel = null; S.sigs = {};
+      try { sessionStorage.setItem('volt.show', S.show); } catch (x) { /* ignore */ }
+      return '"' + d.show.title + '" is open with ' + d.items.length + (d.items.length === 1 ? ' draft story' : ' draft stories') + (d.skippedCues ? '; ' + d.skippedCues + ' cue(s) the server no longer accepts were left out.' : '.');
+    } });
+  }
+  function tplPanel() {
+    const hasStory = !!scLoaded();
+    return [el('div', { class: 'sc-tplform' },
+        el('label', { for: 'tpl-name', text: 'Save as a template' }),
+        el('input', { id: 'tpl-name', type: 'text', 'data-fk': 'tpl-name', value: TPL.name, maxlength: '120', autocomplete: 'off', placeholder: 'Template name', oninput: (e) => { TPL.name = e.target.value; } }),
+        el('div', { class: 'bar flush' },
+          btn('New from this story', { key: 'tpl-save-story', cls: 'ghost small', disabled: !hasStory, title: hasStory ? null : 'Choose a story first', onclick: () => tplSave('story') }),
+          btn('New from this show', { key: 'tpl-save-show', cls: 'ghost small', disabled: !S.show, onclick: () => tplSave('show') }))),
+      el('div', { class: 'sc-tplform' }, el('label', { for: 'tpl-title', text: 'Title for a new show' }),
+        el('input', { id: 'tpl-title', type: 'text', 'data-fk': 'tpl-title', value: TPL.title, maxlength: '200', autocomplete: 'off', placeholder: 'Used by show templates', oninput: (e) => { TPL.title = e.target.value; } })),
+      TPL.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', TPL.err) : null,
+      TPL.rows.length ? el('ul', { class: 'list wirelist', 'aria-label': 'Templates' }, TPL.rows.map((t) => {
+        const del = 'tpl-del:' + t.id;
+        return el('li', { class: 'wirerow' }, el('div', { class: 'wh', text: t.name }),
+          el('div', { class: 'meta', text: t.kind === 'story' ? 'Story template' : 'Show template · ' + t.stories + (t.stories === 1 ? ' story' : ' stories') + (t.slotSeconds ? ' · slot ' + fmtOffset(t.slotSeconds) : '') + ' · ' + (t.createdBy || '') }),
+          el('div', { class: 'bar flush' },
+            btn(t.kind === 'story' ? 'Add to this show' : 'Make a show', { key: 'tpl-use:' + t.id, cls: 'small', disabled: t.kind === 'story' && !S.show,
+              aria: (t.kind === 'story' ? 'Add a draft from ' : 'Make a show from ') + t.name, onclick: () => tplUse(t) }),
+            btn(S.armed === del ? 'Confirm delete' : 'Delete', { key: 'tpl-delb:' + t.id, cls: 'danger small' + (S.armed === del ? ' armed' : ''), aria: (S.armed === del ? 'Confirm delete of ' : 'Delete ') + t.name,
+              onclick: () => armedAction(del, () => act('templateDelete', t.id, {}, { key: 'tpl-del-act:' + t.id, okTitle: 'Template deleted.', ok: () => 'Stories made from it are not affected.' }).then(tplLoad)) })));
+      })) : el('p', { class: 'empty', text: TPL.loaded ? 'No templates yet.' : 'Reading the templates…' }),
+      el('p', { class: 'note', text: 'A template keeps text and cues, never media. Anything made from one starts as a draft with no approval.' })];
+  }
+
+  // What each tab of the story panel loads (once, or on a timer) and paints. A tab's `sig` is what repaints it.
+  const SC_PANELS = {
+    history: { sig: () => { const st = scLoaded(); return [SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]]; }, build: () => scHistory() },
+    wire: { load: wireMaybeLoad, sig: () => [WIRE.rows, WIRE.feeds, WIRE.err, WIRE.busy, S.show, [...S.pending].filter((k) => k.startsWith('wire-'))], build: () => wirePanel() },
+    templates: { load: () => { if (!TPL.loaded && !TPL.busy && !TPL.err) tplLoad(); },
+      sig: () => [TPL.rows, TPL.err, TPL.busy, TPL.name, TPL.title, S.show, SC.sel, !!scLoaded(), S.armed, [...S.pending].filter((k) => k.startsWith('tpl-'))], build: () => tplPanel() },
+  };
+
   function renderScripts() {
     const items = scItems();
     if (S.data && S.data.rundown && !items.find((i) => i.id === SC.sel)) { SC.sel = null; SC.story = null; }
@@ -3710,9 +3778,9 @@
     scCountNow();
     renderScPreview();
     scTabs();
-    if (SC.tab === 'wire') wireMaybeLoad();
-    paint('sc-side', SC.tab === 'wire' ? ['wire', WIRE.rows, WIRE.feeds, WIRE.err, WIRE.busy, S.show, [...S.pending].filter((k) => k.startsWith('wire-'))]
-      : [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'wire' ? wirePanel() : scHistory()));
+    const panel = SC_PANELS[SC.tab] || SC_PANELS.history;
+    if (panel.load) panel.load();
+    paint('sc-side', [SC.tab, ...panel.sig()], panel.build);
   }
   // Closing the conflict dialog (Esc included) gives focus back to the editor and keeps the draft exactly as it was.
   function scConflictInit() {
