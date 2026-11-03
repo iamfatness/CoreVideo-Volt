@@ -97,6 +97,8 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_LOG_FORMAT` | `text` | `text` (logfmt-style) or `json`. |
 | `VOLT_LOG_MAX_MB` | `10` | Size at which a log file rotates. |
 | `VOLT_LOG_BACKUPS` | `5` | Rotated files kept per process. |
+| `VOLT_CONTROL_DSN` | `VOLT_DB` when that is a Postgres DSN | The Postgres database holding the tenant registry (hosted multi-tenant only). Read by `volt tenant`. |
+| `VOLT_CONTROL_SCHEMA` | `volt_control` | The schema in that database that holds the registry. |
 | `VOLT_REQUEST_TIMEOUT` | `30` | Seconds a client socket may stall before `serve` drops it and frees the thread. Matters because connections are kept alive (HTTP/1.1). |
 | `VOLT_ROOM_OBSERVE_TTL` | `1` | Seconds the room's observation is shared between desks. 50 desks polling `/api/state` cost one `observe()` per second per `serve` process, not 25. `room.observedAgeMs` in the payload says how old it is. |
 | `VOLT_BACKUP_DIR` | none | A folder of `volt backup` directories (or one). Only read by the metrics: `volt_backup_last_age_seconds` is the age of the newest complete one (manifest readable, data file at its recorded size; not a re-hash). |
@@ -190,6 +192,26 @@ Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_PO
 | 100,000 assets (26.6 MB per response) | 1, back to back | 514 ms each; at 50 desks the first poll of every desk timed out at 30 s |
 
 What this says, and does not: one `serve` process serves a 100-asset library to 50 desks with room to spare, and **cannot** serve a 10,000-asset library to 50 desks, because every poll rebuilds and sends the whole asset list (the spec's open item: paginate `assets`, or conditional requests). Concurrent polls cost far more than the sum of one (a Python process with an interpreter lock doing CPU work per request); more `serve` processes behind a balancer is the lever the design already supports, but a second process was not measured here. Two defects were found and fixed by this measurement: the asset list scanned the whole `essence` table once per asset (about 2.8 s at 10,000 assets; migration 36 adds the index; 0.03 s after), and on SQLite every request re-ran the schema bootstrap and took the write lock (now once per file per process). The keep-alive figure at 10,000 assets is not better than the new-connection figure: the limit is the work per response, not the connection. The room cache (`VOLT_ROOM_OBSERVE_TTL`) was exercised by tests with a fake room, not in this run.
+
+### Several organisations in one deployment (tenancy, hosted only)
+
+Off by default, Postgres only, and installed single-tenant use never touches it. A hosted deployment gives each organisation its own **schema** in one Postgres database (or, for one that must be kept apart, its own database), plus a registry in a control schema (`volt_control`, with its own numbered migrations and `control_schema_version`). Row-level `tenant_id` was rejected: a missed filter is a silent cross-tenant read, whereas a missing table fails loudly.
+
+Platform operators work from the command line only (there is no platform HTTP surface and no platform role inside a tenant). Each action is appended to `control_audit` with the operating-system user and a reason; a DSN or password never goes in it.
+
+```
+volt tenant create --slug acme --domain acme.volt.example     # schema t_acme, every migration, a registry row, the first domain
+volt tenant adopt --slug legacy --schema public --domain volt.example   # register today's data where it is; nothing moves
+volt tenant list
+volt tenant suspend acme --reason "unpaid"   /   volt tenant resume acme
+volt tenant limit acme max_assets 50000      # max_assets, max_storage_bytes, max_jobs_per_day, max_running_jobs (enforced by a later slice)
+volt tenant domain add acme news.acme.example
+volt tenant migrate [--tenants all|acme,legacy]   # idempotent; a tenant that fails is reported and the rest still run
+```
+
+How a connection is kept inside its tenant: every `Store` for a tenant sets `search_path` to that schema when it is checked out, prefixes advisory-lock names with the schema (two tenants never serialise on `show:1`), and resets `search_path` before the connection returns to the pool. A connection that cannot be reset is closed, not lent on. The pool stays keyed by cluster DSN, never by tenant. This is **application-level isolation**: one pool and one database role serve every tenant, so it does not defend against SQL that names another schema. Per-tenant Postgres roles would; they are not done.
+
+Proven by `control/tests/test_tenancy.py` on Postgres 16 only (a pooled connection handed from tenant A to tenant B shows none of A's tables; lock names do not collide across tenants; control migrations forward and refuse a newer schema). **Not yet wired to requests**: `serve` does not resolve a tenant from the Host header in this slice, so a deployment cannot be put into tenant mode yet.
 
 ### More than one serve process
 

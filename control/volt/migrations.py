@@ -438,6 +438,33 @@ def run(db: _Backend) -> list:
     return ran
 
 
+def run_all_tenants(registry, slugs=None) -> dict:
+    """Bring each tenant's schema to the latest migration, one tenant at a time. A tenant that fails is reported and the rest still run.
+    `registry` has `all()` (volt.tenancy.Registry). Returns {slug: {ok, applied, error}}; idempotent (a second run applies []).
+    `slugs` limits the run; an unknown slug raises before anything runs."""
+    from volt.store import Store
+    from volt.tenancy import TenantError
+
+    refs = list(registry.all())
+    if slugs is not None:
+        known = {r.slug: r for r in refs}
+        missing = [s for s in slugs if s not in known]
+        if missing:
+            raise TenantError(f"no such tenant: {', '.join(missing)}")
+        refs = [known[s] for s in slugs]
+    report = {}
+    for ref in refs:
+        try:
+            store = Store(ref.dsn, schema=ref.schema)
+            try:
+                report[ref.slug] = {"ok": True, "applied": list(store.last_migrations), "error": None}
+            finally:
+                store.close()
+        except Exception as exc:  # noqa: BLE001 - the report says which tenant and why; the others still run
+            report[ref.slug] = {"ok": False, "applied": [], "error": str(exc) or exc.__class__.__name__}
+    return report
+
+
 def current_version(db: _Backend) -> int:
     done = db.applied()
     return max(done) if done else 0

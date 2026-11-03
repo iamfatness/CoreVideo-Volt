@@ -8,6 +8,7 @@
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
     volt user     per-user tokens: add, list, disable, enable, rotate (operator and admin roles)
+    volt tenant   platform commands for a hosted multi-tenant deployment: create, adopt, list, suspend, resume, limit, domain, migrate
     volt watch    enqueue ingest for files sitting still in VOLT_INGEST_ROOTS
     volt mos      volt mos export <show> [--out file]: the rundown as a MOS roCreate message (read-only)
     volt version  the build
@@ -204,6 +205,9 @@ def main(argv=None) -> int:
         return users.main(rest)
     if command == "mos":
         return _mos(rest)
+    if command == "tenant":
+        from volt import tenancy
+        return tenancy.main(rest)
     if command == "watch":
         from volt import watch
         _bridge_break_signal()

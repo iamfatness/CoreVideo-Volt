@@ -42,6 +42,16 @@ _ADDED_COLUMNS = (
 )
 
 
+_SCHEMA_NAME = __import__("re").compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def _check_schema(name: str) -> str:
+    """A schema name is interpolated into SET search_path (it cannot be a bound parameter), so it is checked, never trusted."""
+    if not isinstance(name, str) or not _SCHEMA_NAME.match(name):
+        raise ValueError(f"bad schema name {name!r}")
+    return name
+
+
 def is_dsn(target: str) -> bool:
     return target.startswith(("postgres://", "postgresql://"))
 
@@ -199,7 +209,10 @@ def configure_pool_from_env(dsn: str, env=None, **overrides):
 # ---- connection --------------------------------------------------------------------------------
 
 class PgConnection:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn: str, schema=None):
+        """`schema` points this connection at one tenant's schema (volt/tenancy.py): `search_path` is set to it on checkout, lock names
+        are prefixed with it, and `search_path` is reset before the connection goes back to the pool. None is the single-tenant behaviour,
+        byte for byte."""
         try:
             import psycopg
         except ImportError as exc:
@@ -212,6 +225,14 @@ class PgConnection:
         self._conn = self._pool.getconn() if self._pool else psycopg.connect(dsn, row_factory=_row_factory)
         self._writing = False  # a statement that is not a plain read ran since the last commit/rollback
         self._depth = 0        # > 0 inside transaction(): nothing ends the transaction but its exit
+        self._schema = schema
+        if schema is not None:
+            try:
+                self._conn.execute(f'SET search_path TO "{_check_schema(schema)}"')
+                self._conn.commit()   # a plain SET is undone by a rollback of its own transaction; commit makes it the session's
+            except BaseException:
+                self._discard()
+                raise
 
     def execute(self, sql: str, params=()):
         try:
@@ -243,6 +264,8 @@ class PgConnection:
         self._depth = 1
         try:
             if lock is not None:
+                if self._schema is not None:   # two tenants never contend on, or are serialised by, the same lock name
+                    lock = f"{self._schema}:{lock}"
                 self._conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock,))
             yield
         except BaseException:
@@ -254,14 +277,14 @@ class PgConnection:
         self._writing = False
         self._conn.commit()
 
-    def apply_schema(self) -> None:
-        """Apply schema.sql and the migrations. Idempotent; serialized across concurrent callers."""
+    def apply_schema(self) -> list:
+        """Apply schema.sql and the migrations. Idempotent; serialized across concurrent callers. Returns the versions applied."""
         from volt import migrations
 
         with self._conn.transaction():
             self._conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK,))
             self._conn.execute(SCHEMA_FILE.read_text())
-            migrations.run(migrations.PostgresBackend(self._conn))
+            return migrations.run(migrations.PostgresBackend(self._conn))
 
     def commit(self) -> None:
         if self._depth:
@@ -282,7 +305,36 @@ class PgConnection:
         conn, self._conn = self._conn, None
         if conn is None:
             return
+        if self._schema is not None and not self._reset(conn):
+            self._drop(conn)       # a connection that cannot be proved clean is never lent to the next tenant
+            return
         if self._pool:
             self._pool.putconn(conn)
         else:
             conn.close()
+
+    def _reset(self, conn) -> bool:
+        """Roll back anything open and RESET search_path, committed. False when that did not work."""
+        try:
+            conn.rollback()
+            conn.execute("RESET search_path")
+            conn.commit()
+            return True
+        except Exception:  # noqa: BLE001 - dead socket, aborted session: do not reuse it
+            return False
+
+    def _drop(self, conn) -> None:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._pool:
+            try:
+                self._pool.putconn(conn)   # the pool sees a closed connection and discards it, then opens a replacement
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _discard(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            self._drop(conn)
