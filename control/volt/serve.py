@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
+from volt import tenancy, collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -193,8 +193,31 @@ def check_bind(host: str, token, has_admin_user: bool = False) -> None:
         raise ConfigError(f"refusing to bind {host!r}: VOLT_TOKEN must be at least {MIN_REMOTE_TOKEN} characters")
 
 
+def current_tenant():
+    """The TenantContext of the request being handled on this thread, or None (tenancy off, or no request)."""
+    return getattr(_REQUEST, "tenant", None)
+
+
+def _out_dir() -> Path:
+    """Thumbnails and publish output: the process default, or the tenant's own folder under it."""
+    ctx = current_tenant()
+    return ctx.settings.out_dir if ctx is not None else OUT_DIR
+
+
+def _media_secret():
+    """The key media and prompter tickets are signed with: per tenant in tenant mode (HMAC of the master key and the slug), never the
+    legacy shared token."""
+    ctx = current_tenant()
+    if ctx is not None:
+        return ctx.settings.media_key
+    return MEDIA_KEY or TOKEN
+
+
 def _room_key() -> str:
-    """Names the room for the record lease: one recorder per room, across every serve process that talks to it."""
+    """Names the room for the record lease and the observation cache: one recorder per room, across every serve process that talks to it."""
+    ctx = current_tenant()
+    if ctx is not None:
+        return f"{ctx.ref.slug}:{ctx.settings.room_url or 'none'}"
     return os.environ.get("VOLT_ROOM_URL") or "default"
 
 
@@ -237,6 +260,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+TENANTS = None   # a tenancy.TenantResolver when VOLT_TENANCY=on (set in main()); None is today's single-tenant behaviour
 REGISTRY = telemetry.REGISTRY      # request, pool and job series (volt/telemetry.py); tests swap it for a fresh one
 INFLIGHT = telemetry.Inflight()
 ROOM_CACHE = RoomObservationCache(ttl=_env_float("VOLT_ROOM_OBSERVE_TTL", 1.0))
@@ -250,6 +274,9 @@ _BOOTSTRAP_LOCK = threading.Lock()
 def open_request_store() -> Store:
     """A Store for one request. Postgres is bootstrapped once in main(). A SQLite file is bootstrapped by the first request that names
     it (main() has usually done it already) and never again: the bootstrap takes the write lock, and a poll must not."""
+    ctx = current_tenant()
+    if ctx is not None:
+        return ctx.open_store()
     if not is_dsn(DB_PATH) and DB_PATH not in _BOOTSTRAPPED:
         with _BOOTSTRAP_LOCK:
             if DB_PATH not in _BOOTSTRAPPED:
@@ -266,6 +293,11 @@ class VoltServer(ThreadingHTTPServer):
 def get_room():
     if ROOM is not None:
         return ROOM
+    ctx = current_tenant()
+    if ctx is not None:   # a tenant's own room; the process-wide VOLT_ROOM_URL is never a fallback (it would be another tenant's core)
+        if not ctx.settings.room_url:
+            raise ApiError(503, "no_room", "no room is configured for this tenant")
+        return CoreVideoProRoom(ctx.settings.room_url, ctx.settings.room_token)
     url = os.environ.get("VOLT_ROOM_URL")
     if not url:
         raise ApiError(503, "no_room", "no room is configured (set VOLT_ROOM_URL)")
@@ -771,7 +803,7 @@ def act_unpublish(store, version_id, body):
     a 502 `storage_failed` with the version already withdrawn, and calling again retries just the delete."""
     _unknown_keys(body, set())
     try:
-        out = publish_mod.unpublish(store, version_id, backend=UNPUBLISH_BACKEND, local_root=OUT_DIR)
+        out = publish_mod.unpublish(store, version_id, backend=UNPUBLISH_BACKEND, local_root=_out_dir())
     except KeyError:
         raise ApiError(404, "not_found", f"no such version: {version_id}") from None
     except publish_mod.UnpublishError as exc:
@@ -793,7 +825,7 @@ def act_publish(store, span_id, body):
     except NotClearedError:
         raise ApiError(409, "not_cleared", "the asset is not cleared, or is on legal hold") from None
     versions = [{"id": v.id, "kind": v.kind, "status": v.status, "url": v.url}
-                for v in PUBLISH(store, span_id, OUT_DIR)]
+                for v in PUBLISH(store, span_id, _out_dir())]
     payload = {"ok": all(v["status"] == "done" for v in versions), "span": span_id, "versions": versions}
     if not payload["ok"] and any(v["status"] == "busy" for v in versions) \
             and not any(v["status"] == "failed" for v in versions):
@@ -1379,7 +1411,7 @@ def act_prompter_ticket(store, show_id, body):
     if isinstance(ttl, bool) or not isinstance(ttl, int) or not 60 <= ttl <= PROMPTER_TTL_MAX:
         raise ApiError(422, "bad_input", f"ttlSeconds must be a whole number from 60 to {PROMPTER_TTL_MAX}")
     _show_exists(store, show_id)
-    secret = MEDIA_KEY or TOKEN
+    secret = _media_secret()
     if not secret:
         raise ApiError(503, "no_media_key", "no signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
     token, exp = tickets.issue(secret, show_id, "prompter", ttl, int(time.time()))
@@ -1457,7 +1489,8 @@ def act_ingest(store, _unused, body):
     path = _str(body, "path", required=True, limit=4096)
     owner = _str(body, "owner", default="desk", limit=100)
     out = _build_errors(lambda: building.ingest_allowed(
-        store, path, Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine"), owner,
+        store, path, (current_tenant().settings.quarantine_dir if current_tenant() is not None
+         else Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine")), owner,
         _str(body, "show", limit=200), _str(body, "camera", limit=100)))
     return {"ok": True, **out, "assetState": asset_payload(store, out["asset"]), "httpStatus": 202}
 
@@ -2129,7 +2162,7 @@ class Handler(BaseHTTPRequestHandler):
         given = self._bearer()
         if not given:
             return None
-        if TOKEN and hmac.compare_digest(given.encode("utf-8"), TOKEN.encode("utf-8")):
+        if TOKEN and current_tenant() is None and hmac.compare_digest(given.encode("utf-8"), TOKEN.encode("utf-8")):
             return Principal(LEGACY_ACTOR, "admin", True)
         try:
             user = users.authenticate(self._store(), given)
@@ -2174,8 +2207,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, "bad_csrf", "missing or wrong X-Volt-Csrf; read it from /api/whoami")
 
     def _auth_configured(self) -> bool:
-        """Is a token required? Yes with VOLT_TOKEN or any user row; otherwise this is the open loopback mode."""
-        if TOKEN:
+        """Is a token required? Yes with VOLT_TOKEN or any user row; otherwise this is the open loopback mode. Always yes for a tenant:
+        a tenant with no users is locked, never open."""
+        if TOKEN or current_tenant() is not None:
             return True
         try:
             return users.any_users(self._store())
@@ -2232,7 +2266,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(422, "bad_input", "ticket may be given once")
         if self._bearer_principal() is not None:
             return
-        secret = MEDIA_KEY or TOKEN
+        secret = _media_secret()
         try:
             if not secret:
                 raise tickets.TicketError("ticket_invalid")
@@ -2271,7 +2305,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(422, "bad_input", "ticket may be given once")
         if self._bearer_principal() is not None:
             return
-        secret = MEDIA_KEY or TOKEN
+        secret = _media_secret()
         try:
             if not secret:
                 raise tickets.TicketError("ticket_invalid")
@@ -2280,7 +2314,7 @@ class Handler(BaseHTTPRequestHandler):
             raise TicketDenied() from None
 
     def _issue_media_ticket(self, query: dict) -> None:
-        secret = MEDIA_KEY or TOKEN
+        secret = _media_secret()
         if not secret:
             raise ApiError(503, "no_media_key",
                            "no media signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
@@ -2316,13 +2350,40 @@ class Handler(BaseHTTPRequestHandler):
     def _timed(self, method: str, run) -> None:
         self._req_store, self._body_read, self._status, self._fn_name = None, method != "POST", 0, None
         started = time.perf_counter()
+        _REQUEST.tenant = None
         with INFLIGHT:
             try:
-                run()
+                if self._resolve_tenant():
+                    run()
             finally:
                 self._close_store()
+                _REQUEST.tenant = None
                 telemetry.record_request(method, self._fn_name, urlparse(self.path).path, self._status or 500,
                                          time.perf_counter() - started, REGISTRY)
+
+    def _resolve_tenant(self) -> bool:
+        """Tenant mode: find the tenant from the Host header, before anything else (before auth). The tenant is never taken from a body, a
+        query or any other header. False when the request has been answered (unknown host, suspended, registry unreadable)."""
+        if TENANTS is None:
+            return True
+        try:
+            ctx = TENANTS.resolve(self.headers.get("Host"))
+        except Exception:  # noqa: BLE001 - the registry could not be read: say so, name nothing
+            log.exception("tenant registry lookup failed")
+            self._error(ApiError(503, "tenant_unavailable", "cannot look up the tenant right now"))
+            return False
+        if ctx is None:   # the same answer as an unknown route, with nothing that confirms a tenant exists
+            if self.command == "POST":
+                self._error(ApiError(404, "not_found", "no such route"))
+            else:
+                self._send(404, "text/plain", b"not found")
+            return False
+        path = urlparse(self.path).path
+        if ctx.ref.state == "suspended" and path not in ("/health", "/ready"):
+            self._error(ApiError(403, "tenant_suspended", "this account is suspended"))
+            return False
+        _REQUEST.tenant = ctx
+        return True
 
     def do_GET(self):
         self._timed("GET", self._do_GET)
@@ -2385,7 +2446,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _auth(self, path: str):
         cfg = OIDC_CONFIG
-        if cfg is None or path not in ("/auth/providers", "/auth/login", "/auth/callback"):
+        if cfg is None or current_tenant() is not None or path not in ("/auth/providers", "/auth/login", "/auth/callback"):
             self._error(ApiError(404, "not_found", "no such route"))
             return
         parsed = urlparse(self.path)
@@ -2513,10 +2574,14 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self, STORE):
         parsed = urlparse(self.path)
         if parsed.path in ("/api/health", "/metrics"):  # behind the same gate as every data route
-            report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
+            ctx = current_tenant()
+            if ctx is None:
+                report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
+            else:   # this tenant's tables and folders only: no process-wide env, no database path, no other tenant's directory
+                report = health.collect(STORE, ctx.settings.out_dir, env=tenancy.health_env(ctx), db_target=None)
             if parsed.path == "/metrics":
                 self._send(200 if report["status"] != "down" else 503, "text/plain; version=0.0.4; charset=utf-8",
-                           health.prometheus(report, REGISTRY).encode())
+                           health.prometheus(report, REGISTRY if ctx is None else None).encode())
             else:
                 self._json(200 if report["status"] != "down" else 503, report)
             return
@@ -2661,7 +2726,7 @@ class Handler(BaseHTTPRequestHandler):
             span_id = m.group(1)
             row = STORE.conn.execute("SELECT asset_id FROM span WHERE id = ?", (span_id,)).fetchone()
             self._accept_media_ticket(row["asset_id"] if row else "", "thumb", query)
-            path = media.ensure_thumb(STORE, span_id, OUT_DIR)
+            path = media.ensure_thumb(STORE, span_id, _out_dir())
             self._send_headers(200, "image/jpeg", path.stat().st_size,
                                {"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
             self.wfile.write(path.read_bytes())
@@ -2855,6 +2920,20 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def tenancy_start_problems(token, env, db_path="") -> list:
+    """Why `serve` must not start with VOLT_TENANCY=on, as sentences. Empty when it may."""
+    problems = []
+    if token:
+        problems.append("VOLT_TOKEN is a shared admin credential and would work across every tenant; unset it and use `volt tenant user` "
+                        "(refused with VOLT_TENANCY=on)")
+    if env.get("VOLT_OIDC_CONFIG"):
+        problems.append("browser sign-in (VOLT_OIDC_CONFIG) is not built for tenant mode yet; unset it and use per-user tokens")
+    control = env.get("VOLT_CONTROL_DSN") or db_path or ""
+    if not pg.is_dsn(control):
+        problems.append("tenancy needs a Postgres control database: set VOLT_CONTROL_DSN (or point --db at the cluster)")
+    return problems
+
+
 def _config_exit(message: str):
     print(f"volt: {message}", file=sys.stderr)
     raise SystemExit(EX_CONFIG)
@@ -2877,14 +2956,27 @@ def main(argv=None):
     except (ValueError, OSError) as exc:
         _config_exit(str(exc))
     host, port = args.host, args.port
-    global OIDC_CONFIG
+    global OIDC_CONFIG, TENANTS
+    tenant_mode = os.environ.get("VOLT_TENANCY", "").lower() == "on"
+    if tenant_mode:
+        for problem in tenancy_start_problems(TOKEN, os.environ, DB_PATH):
+            _config_exit(problem)
+        try:
+            control_dsn = os.environ.get("VOLT_CONTROL_DSN") or DB_PATH
+            registry = tenancy.Registry(control_dsn, os.environ.get("VOLT_CONTROL_SCHEMA") or tenancy.DEFAULT_CONTROL_SCHEMA)
+            registry.epoch()    # opens the control schema now, so a bad DSN fails at start
+            TENANTS = tenancy.TenantResolver(registry, out_root=OUT_DIR, master_key=MEDIA_KEY)
+        except tenancy.TenantError as exc:
+            _config_exit(str(exc))
+        except Exception as exc:  # noqa: BLE001 - unreachable database, missing psycopg
+            _config_exit(f"tenant registry: {logs.redact(str(exc))}")
     try:
         OIDC_CONFIG = oidc.load_config(os.environ.get("VOLT_OIDC_CONFIG"))
     except oidc.ConfigError as exc:
         _config_exit(str(exc))
     try:
-        check_bind(host, TOKEN, has_admin_user=(not TOKEN and not _is_loopback(host)
-                                                and users.db_has_enabled_admin(DB_PATH)))
+        check_bind(host, TOKEN, has_admin_user=(tenant_mode or (not TOKEN and not _is_loopback(host)
+                                                and users.db_has_enabled_admin(DB_PATH))))
         configured_actions()
     except ConfigError as exc:
         _config_exit(str(exc))
@@ -2903,17 +2995,18 @@ def main(argv=None):
                              lambda: os.environ.get("VOLT_BACKUP_DIR") or None)
     try:
         try:
-            Store(DB_PATH).close()  # bootstrap the schema once
+            if not tenant_mode:   # a tenant's schema is made and migrated by `volt tenant create` / `migrate`, not by a request
+                Store(DB_PATH).close()  # bootstrap the schema once
             server = VoltServer((host, port), Handler)
         except SchemaTooNewError as exc:  # version-skew guard: never serve a database newer than this code
             _config_exit(str(exc))
         except OSError as exc:
             _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
         port = server.server_address[1]
-        print(f"Volt session on http://{host}:{port}" + (" (token required)" if TOKEN or users.db_has_enabled_admin(DB_PATH) else "")
+        print(f"Volt session on http://{host}:{port}" + (" (tenancy on: tokens required per tenant)" if tenant_mode else " (token required)" if TOKEN or users.db_has_enabled_admin(DB_PATH) else "")
               + (f" (postgres pool of up to {pool.max_size})" if pool else ""), flush=True)
         log.info("serve started version=%s host=%s port=%d db=%s auth=%s access_log=%s", health.__version__, host,
-                 port, logs.redact_dsn(DB_PATH), "required" if TOKEN else "users" if users.db_has_enabled_admin(DB_PATH) else "none", ACCESS_LOG)
+                 port, logs.redact_dsn(DB_PATH), "per-tenant" if tenant_mode else "required" if TOKEN else "users" if users.db_has_enabled_admin(DB_PATH) else "none", ACCESS_LOG)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

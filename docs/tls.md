@@ -191,3 +191,6 @@ None were needed. The checks above show the loopback `Host` guard, the bearer ga
 limitation is the access log's client address (always the proxy); a trusted-proxy option that reads
 `X-Forwarded-For` from `127.0.0.1` only could be added later and is deliberately not part of this change.
 
+## Host-based tenants (`VOLT_TENANCY=on`)
+
+With tenancy on, `serve` picks the organisation from the `Host` header, so the proxy must pass the original host through unchanged (Caddy does by default; with nginx set `proxy_set_header Host $host;`) and one certificate (or a wildcard) must cover every tenant domain. A proxy that rewrites `Host` to its own name makes every request an unknown host (404). The proxy's `X-Forwarded-Host` is deliberately **not** used: only the `Host` the proxy sends is trusted, and `serve` should be reachable only from the proxy. Unvalidated behind a real proxy with several domains.

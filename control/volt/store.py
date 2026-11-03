@@ -690,7 +690,7 @@ class Job:
 
 
 class Store:
-    def __init__(self, path: str = ":memory:", init: bool = True):
+    def __init__(self, path: str = ":memory:", init: bool = True, schema: Optional[str] = None):
         """`path` is a SQLite path, or a postgres:// DSN (needs psycopg).
 
         init=False skips the schema bootstrap, for callers that already did it (a server does it once at start, then opens a
@@ -698,12 +698,16 @@ class Store:
         """
         self.postgres = pg.is_dsn(path)
         self.path = path
+        self.schema = schema
+        self.last_migrations: list = []   # the versions the bootstrap applied in this open (Postgres), for `volt tenant migrate`
+        if schema is not None and not self.postgres:
+            raise ValueError("a tenant schema needs Postgres; tenancy has no SQLite form")
         if self.postgres:
-            self.conn = pg.PgConnection(path)
+            self.conn = pg.PgConnection(path, schema=schema)
             self.IntegrityError = self.conn.IntegrityError
             if init:
                 try:
-                    self.conn.apply_schema()
+                    self.last_migrations = self.conn.apply_schema()
                 except BaseException:
                     self.conn.close()  # a failed bootstrap must not strand a connection (or pool slot)
                     raise
