@@ -517,3 +517,25 @@ CREATE TABLE IF NOT EXISTS show_acl (
 );
 
 CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject);
+
+CREATE TABLE IF NOT EXISTS lease (
+  resource_kind TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  holder TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  acquired_at TIMESTAMPTZ NOT NULL,
+  renewed_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (resource_kind, resource_id)
+);
+
+CREATE TABLE IF NOT EXISTS presence (
+  user_name TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  show_id TEXT,
+  view TEXT NOT NULL,
+  seen_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_name, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS presence_by_show ON presence (show_id);

@@ -7,6 +7,8 @@
 Scenarios: normal, held, take_fail, record_requested, record_producing, record_finalizing,
 record_completed, publish_progress, publish_partial, library, export, scripts, find. The page is then at /operator.
 `scripts` gives the Scripts screen stories in each editorial state (see seed_scripts).
+`lease_held_by_other`, `lease_lost` and `presence_two_users` are `scripts` plus collaboration state (see seed_collab): dana holds the
+lease on Game action and two other people are looking at the show; `lease_lost` is the same, for taking the lease over from a second tab.
 `library` adds assets for the Library screen (see seed_library). `find` is `library` plus typed fields, metadata, a second
 show with speech, a saved search and a bin (see seed_find). `export` is `library` plus assets that make each
 export refusal reachable (see seed_export) and a path map. `--token T` makes the server require a bearer token.
@@ -36,7 +38,8 @@ from volt.rundown import add_item, attach, open_show
 from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
-             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find"]
+             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find",
+             "lease_held_by_other", "lease_lost", "presence_two_users"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -273,6 +276,24 @@ def seed_scripts(store: Store) -> None:
     store.conn.commit()
 
 
+COLLAB_SCENARIOS = ("lease_held_by_other", "lease_lost", "presence_two_users")
+
+
+def seed_collab(store: Store, scenario: str) -> None:
+    """Edit leases and presence for the Scripts and Show screens. The rows are dated far ahead so they stay live for as long as the harness
+    runs. lease_held_by_other / lease_lost: dana holds Game action from another tab. Every one: dana and sam are in the show, sam in two tabs."""
+    far = "2099-01-01T00:00:00.000Z"
+    show = store.conn.execute("SELECT show_id FROM item LIMIT 1").fetchone()["show_id"]
+    game = store.conn.execute("SELECT id FROM item WHERE slug = 'Game action'").fetchone()["id"]
+    spotlight = store.conn.execute("SELECT id FROM item WHERE slug = 'Player spotlight'").fetchone()["id"]
+    if scenario in ("lease_held_by_other", "lease_lost"):
+        store.conn.execute("INSERT INTO lease (resource_kind, resource_id, holder, client_id, acquired_at, renewed_at, expires_at) "
+                           "VALUES ('item', ?, 'dana', 'dana-tab', ?, ?, ?)", (game, far, far, far))
+    for user, client, view in (("dana", "dana-tab", "item:" + game), ("sam", "sam-tab", "item:" + spotlight), ("sam", "sam-tab-2", "library")):
+        store.conn.execute("INSERT INTO presence (user_name, client_id, show_id, view, seen_at) VALUES (?, ?, ?, ?, ?)", (user, client, show, view, far))
+    store.conn.commit()
+
+
 def seed(store: Store, scenario: str, media_dir=None):
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
@@ -303,8 +324,10 @@ def seed(store: Store, scenario: str, media_dir=None):
     store.conn.commit()
     if scenario == "held":
         hold(store, show, "Waiting on the producer for the replay cue")
-    if scenario == "scripts":
+    if scenario == "scripts" or scenario in COLLAB_SCENARIOS:
         seed_scripts(store)
+    if scenario in COLLAB_SCENARIOS:
+        seed_collab(store, scenario)
 
     # The room. Take succeeds only where its cues have evidence: a lower third on air and a sender
     # producing. take_fail never shows a sender, so stream.start fails after overlay.take fires.

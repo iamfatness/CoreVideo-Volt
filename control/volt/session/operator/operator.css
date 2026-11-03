@@ -480,3 +480,17 @@ dialog.wide{max-width:min(900px,94vw);width:min(900px,94vw)}
 .sc-pane textarea{min-height:12em}
 @media(max-width:1180px){.scripts{grid-template-columns:minmax(200px,240px) minmax(0,1fr)}.sc-sidecol{grid-column:1 / -1}}
 @media(max-width:1000px){.scripts{grid-template-columns:minmax(0,1fr)}.sc-pair,.sc-two{grid-template-columns:minmax(0,1fr)}}
+
+/* edit leases and presence: only existing colour tokens, so both themes are covered by the contrast pairs already measured */
+.presence:empty{display:none}
+.presence{display:grid;gap:var(--space-2);padding:var(--space-2) var(--space-4) 0}
+.presence .info{margin:0}
+.presence-row{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;font-size:var(--fs-sm);color:var(--muted)}
+.avatars{display:flex;margin:0;padding:0;list-style:none}
+.avatar{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-right:-6px;border-radius:50%;border:2px solid var(--panel);background:var(--raise);color:var(--text);font-size:var(--fs-xs);font-weight:700;box-shadow:0 0 0 1px var(--hair)}
+.avatar.you{box-shadow:0 0 0 2px var(--blue-hi)}
+.presence-list{display:flex;gap:var(--space-4);flex-wrap:wrap;margin:0;padding:0;list-style:none}
+.lease-banner{display:flex;gap:var(--space-3);align-items:flex-start;border:1px solid var(--signal);border-left:6px solid var(--signal);background:var(--signal-bg);padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);margin-bottom:var(--space-3)}
+.lease-banner .msg{flex:1;color:var(--text)}
+.lease-banner strong{color:var(--signal-ink)}
+.lease-banner .ic{color:var(--signal-ink);margin-top:2px}

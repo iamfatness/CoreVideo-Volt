@@ -14,18 +14,22 @@ Only an item that is `ready` can be edited. Once it is on air or has aired, the 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
 from volt import cues as cue_mod
-from volt import story
+from volt import leases, story
 from volt.dispatch import HANDLERS
 from volt.disk import DiskLowError
 from volt.ingest import IngestError, request as ingest_request
 from volt.rundown import show_lock
 from volt.store import Store, _id, _now
+
+log = logging.getLogger("volt.building")
 
 CUE_ROOM = "corevideo.pro"
 # Commands whose adapter has been run against a live core and recorded in rooms.md.
@@ -98,9 +102,36 @@ def add_item(store: Store, show_id: str, slug: str, script: str = "",
     return new_id, True
 
 
-def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optional[str], actor: str = "desk") -> None:
+def item_version(store: Store, item_id: str) -> str:
+    """A token for an item's content (its slug and script): sha256, first 16 hex, like `order_version`. It changes when either changes, so a
+    write that quotes it fails if someone else saved since the page loaded. No column: it is computed from what is there."""
+    row = _item_row(store, item_id)
+    if row is None:
+        raise BuildError(404, "not_found", f"no such item: {item_id}")
+    return hashlib.sha256(f"{row['slug']}\x00{row['script'] or ''}".encode("utf-8")).hexdigest()[:16]
+
+
+def guard_edit(store: Store, item_id: str, actor: str, client_id: Optional[str], now: Optional[float]) -> None:
+    """Refuse (409 `leased`) a write to an item whose live lease belongs to someone else. Call it inside the show's transaction. With the lease
+    tables unreadable it passes: a lease is advisory, and the versioned write still protects the text. Never used by the on-air path."""
+    try:
+        if not leases.available(store):
+            return
+        leases.check_write(store, "item", item_id, actor, client_id, time.time() if now is None else now)
+    except leases.LeaseError as exc:
+        raise BuildError(exc.status, exc.code, exc.reason, **exc.extra) from None
+    except Exception:  # noqa: BLE001 - the lease tables cannot be read: no lease to honour; the version check still guards the text
+        log.warning("lease check skipped: the lease tables cannot be read", exc_info=True)
+
+
+def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optional[str], actor: str = "desk",
+                version: Optional[str] = None, client_id: Optional[str] = None, now: Optional[float] = None) -> None:
     """Set the slug and/or script of a ready item. The change goes through story.set_script (same revision history,
-    approval drop and limits as the script route), with no base revision: the old callers never sent one."""
+    approval drop and limits as the script route), with no base revision: the old callers never sent one.
+
+    Two optional guards, both checked inside the same transaction as the write: a live lease held by someone else (or another tab of the same
+    person) is 409 `leased`; a `version` that no longer matches the item's content is 409 `stale_item` carrying the current text. With neither
+    a lease nor a `version` (older clients, scripts) it behaves as it always did. A refusal changes nothing."""
     row = _item_row(store, item_id)
     if row is None:
         raise BuildError(404, "not_found", f"no such item: {item_id}")
@@ -109,6 +140,10 @@ def rename_item(store: Store, item_id: str, slug: Optional[str], script: Optiona
         if row is None:
             raise BuildError(404, "not_found", f"no such item: {item_id}")
         _need_ready(row, "rename")
+        guard_edit(store, item_id, actor, client_id, now)
+        if version is not None and version != item_version(store, item_id):
+            raise BuildError(409, "stale_item", "someone changed this item since you opened it; nothing was saved",
+                             current={"slug": row["slug"], "script": row["script"] or "", "version": item_version(store, item_id)})
         story.set_script(store, item_id, script=script, slug=slug, base_rev=None, actor=actor)
 
 

@@ -286,6 +286,9 @@
     storyKilled: { icon: 'close',  word: 'Story killed', cls: 'st fail' },
     floated:     { icon: 'float',  word: 'Floated',      cls: 'st done' },
     unsaved:     { icon: 'pending', word: 'Unsaved',     cls: 'st pend' },
+    // Edit leases: who has an item open for editing. Never red: red is only for a live path.
+    editing:     { icon: 'lock',    word: 'Editing',     cls: 'st hold' },
+    yours:       { icon: 'ready',   word: 'You',         cls: 'st ok' },
 
   };
   // The state-language kind of an item's story status (draft, ready, approved, killed). Not the playout status.
@@ -552,7 +555,7 @@
   }
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow ,
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow, leaseView, leaseOutcome, leaseAllowsSave, presenceGroups, presenceLines ,
       SEARCH_SCOPES, FACET_BUILTIN, buildSearchRequest, savedQueryOf, searchParams, uiFromRequest, parseSearchResponse, queryTerms, splitHighlight, facetValueText, findKeyAction, metaValues, monthRange };
     return;
   }
@@ -638,6 +641,10 @@
     templateDelete: ['POST', '/api/templates/{id}/delete'],
     stories:     ['GET',  '/api/stories'],
     itemCopy:    ['POST', '/api/items/{id}/copy'],
+    leaseAcquire: ['POST', '/api/items/{id}/lease'],
+    leaseRelease: ['POST', '/api/items/{id}/lease/release'],
+    leaseTakeover: ['POST', '/api/items/{id}/lease/takeover'],
+    presence:    ['POST', '/api/presence'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -668,6 +675,7 @@
     field_exists: 'Field exists', type_locked: 'Type is locked', bin_full: 'Bin is full',
     stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
     not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken', wrong_kind: 'Wrong template kind',
+    leased: 'Being edited', lease_lost: 'Edit lease lost', stale_item: 'Item changed', not_leased: 'Not being edited', collab_unavailable: 'Collaboration unavailable',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -1122,6 +1130,7 @@
     if (S.screen === 'activity') renderActivity();
     if (S.screen === 'scripts') renderScripts();
     if (S.screen === 'access') renderAccess();
+    leaseSync();
   }
 
   // ---- Library: Find and Details --------------------------------------------------------------------------------------------
@@ -1892,7 +1901,7 @@
         d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
           'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
     });
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back], () => {
+    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back, (S.data.leases || []).map((l) => [l.item, l.holder, l.clientId])], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
       return [el('div', { class: 'rhead' + (hasSlot ? ' hb' : ''), 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
@@ -1900,6 +1909,7 @@
         el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id], hasSlot ? back.rows[idx] : null)))];
     });
 
+    paint('presence', [S.data.presence, S.data.collab, WHO.name, LS.client, S.show], presenceStrip);
     const sItem = items.find((i) => i.id === S.selected);
     $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
     paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
@@ -1997,7 +2007,7 @@
   function renameItem(it) {
     const slug = S.build.rename.trim();
     if (!slug) { needName('item'); return; }
-    act('itemRename', it.id, { slug }, { key: 'item-rename', okTitle: 'Renamed.', ok: () => 'Now "' + slug + '".' });
+    act('itemRename', it.id, { slug, clientId: LS.client }, { key: 'item-rename', okTitle: 'Renamed.', ok: () => 'Now "' + slug + '".' });
   }
   function removeItem(it) {
     armedAction('remove:' + it.id, () => act('itemRemove', it.id, {}, { key: 'item-remove', okTitle: 'Removed.',
@@ -2128,7 +2138,9 @@
             it.scheduleNote ? ' · ' + it.scheduleNote : '') : null,
           // The story: its editorial chip once there is text or a status to show, and a marker when it is a backup.
           it.words > 0 || it.storyStatus !== 'draft' ? el('span', { class: 'sched' }, ' ', stateChip(storyKind(it.storyStatus))) : null,
-          it.floated ? el('span', { class: 'sched' }, ' ', stateChip('floated')) : null)),
+          it.floated ? el('span', { class: 'sched' }, ' ', stateChip('floated')) : null,
+          // Who has the item open for editing (an edit lease): icon, word and name, from the server's state.
+          (() => { const lv = it.status === 'ready' ? leaseView(S.data && S.data.leases, it.id, leaseMe()) : null; return lv ? el('span', { class: 'sched' }, ' ', stateChip(lv.kind, lv.word)) : null; })())),
       it.lengthSource === 'read' && !(tm && tm.offset == null)
         ? el('span', { class: 'dur mono', title: 'No media is attached, so the planned length is the read time of the script' }, '~' + fmtOffset(secs), el('small', { class: 'rd', text: 'read' }))
         : el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
@@ -4253,11 +4265,12 @@
   async function scSave() {
     const id = SC.sel, d = scDraftOf(id), it = scItem();
     if (!d || SC.saving || !it || scReason(it, scLoaded())) return;
+    if (!leaseAllowsSave(leaseState())) { announce('Saving is off: this tab does not hold the edit lease. Your text is still here.'); return; }
     if (!d.slug.trim()) { setFlash({ kind: 'bad', title: 'Name the story first.', code: 'bad_input', reason: 'A story needs a slug.' }); render(); return; }
     SC.saving = true; render();
     const sent = { slug: d.slug, script: d.script };
     try {
-      const { status, data } = await call('scriptSave', id, { slug: d.slug, script: d.script, baseRev: d.base });
+      const { status, data } = await call('scriptSave', id, { slug: d.slug, script: d.script, baseRev: d.base, clientId: LS.client });
       if (status === 401) { setConn('token'); openToken(); }
       if (data && data.ok) {
         const cur = SC.drafts[id];
@@ -4269,6 +4282,10 @@
       } else {
         const e = codeOf(data, status);
         if (e.code === 'stale_script' && data && data.current) { SC.conflict = { id, mine: sent, theirs: data.current }; scOpenConflict(); }
+        else if ((e.code === 'leased' || e.code === 'lease_lost') && LS.item === id) {   // someone holds the item: the editor goes read-only, the text stays
+          leaseApply({ state: e.code === 'leased' ? 'blocked' : 'lost', fails: 0, holder: (data && data.holder) || '', secondsLeft: (data && data.secondsLeft) || 0 }, false);
+          announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason + ' Nothing was saved.');
+        }
         else { setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason }); announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason); }
       }
     } catch (err) {
@@ -4384,7 +4401,7 @@
     const old = $('sc-text'), top = old ? old.scrollTop : 0;
     const newer = d && st.rev > d.base;
     const moves = legalMoves(st.storyStatus);
-    const ta = el('textarea', { id: 'sc-text', 'data-fk': 'sc-text', rows: '16', spellcheck: 'true', readonly: !!reason, maxlength: String(SC_MAX), 'aria-keyshortcuts': 'Control+S',
+    const ta = el('textarea', { id: 'sc-text', 'data-fk': 'sc-text', rows: '16', spellcheck: 'true', readonly: !!reason || !leaseAllowsEdit(), maxlength: String(SC_MAX), 'aria-keyshortcuts': 'Control+S',
       'aria-describedby': reason ? 'sc-reason' : null,
       oninput: (e) => scEdit('script', e.target.value),
       // Ctrl+S saves from inside the editor only; the page-wide key handler never sees it.
@@ -4395,12 +4412,12 @@
       newer ? el('p', { class: 'info', role: 'status' }, icon('alert', 's'), ' ', el('strong', { text: 'Newer revision. ' }),
         'Revision ' + st.rev + ' was saved while you were typing. Saving will show you both versions; nothing is overwritten.') : null,
       el('label', { for: 'sc-slug', text: 'Slug' }),
-      el('input', { id: 'sc-slug', type: 'text', 'data-fk': 'sc-slug', value: scSlug(), maxlength: '200', autocomplete: 'off', readonly: !!reason,
+      el('input', { id: 'sc-slug', type: 'text', 'data-fk': 'sc-slug', value: scSlug(), maxlength: '200', autocomplete: 'off', readonly: !!reason || !leaseAllowsEdit(),
         oninput: (e) => scEdit('slug', e.target.value) }),
       el('label', { for: 'sc-text', text: 'Script' }), ta,
       el('p', { class: 'hint' }, 'A line in [brackets] is an instruction for the crew: it is not read and does nothing on air. A line starting // is a private note and never leaves the editing screens.'),
       el('div', { class: 'bar flush' },
-        btn(SC.saving ? 'Saving…' : 'Save', { key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving, title: 'Ctrl+S inside the script', onclick: scSave }),
+        btn(SC.saving ? 'Saving…' : 'Save', { key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving || !leaseAllowsEdit(), title: 'Ctrl+S inside the script', onclick: scSave }),
         el('span', { class: 'sep', 'aria-hidden': 'true' }),
         moves.map((to) => {
           const arm = to === 'approved' && S.armed === 'scappr:' + SC.sel;
@@ -4636,7 +4653,9 @@
       el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
         SC_FILTERS.map(([v, label]) => el('option', { value: v, selected: v === SC.filter }, label))))));
     paint('sc-list', [items, SC.sel, SC.filter, Object.keys(SC.drafts)], scList);
-    paint('sc-edit', [SC.sel, !!st, st && [st.rev, st.storyStatus, st.approvedBy], it && [it.status, it.floated], SC.loadErr, SC.saving, !!scDraftOf(SC.sel),
+    paint('sc-presence', [S.data.presence, S.data.collab, WHO.name, LS.client, S.show], presenceStrip);
+    paint('sc-lease', [SC.sel, leaseState(), LS.holder, leaseState() === 'blocked' ? Math.floor(((leaseView(S.data.leases, SC.sel, leaseMe()) || {}).secondsLeft || 0) / 15) : 0, LS.copied, S.armed === 'takeover:' + SC.sel], leaseBanner);
+    paint('sc-edit', [SC.sel, !!st, leaseAllowsEdit(), st && [st.rev, st.storyStatus, st.approvedBy], it && [it.status, it.floated], SC.loadErr, SC.saving, !!scDraftOf(SC.sel),
       scDraftOf(SC.sel) && scDraftOf(SC.sel).base < (st ? st.rev : 0), S.armed, [...S.pending].filter((k) => k.startsWith('sc-'))], scEditor);
     paint('sc-foot', [SC.sel, st && [st.rev, st.storyStatus, st.approvedBy, st.approvedAt, (st.revisions || []).length], !!scDraftOf(SC.sel)], scFoot);
     scCountNow();
@@ -4653,6 +4672,225 @@
       const n = $(SC.returnTo || 'sc-text') || $('sc-text');
       if (n) n.focus();
     });
+  }
+
+  // ---- Edit leases and presence (docs/superpowers/specs/2026-11-01-collaboration-identity-design.md) ------------------------------
+  // A lease says "this person has this item open for editing". The server decides and enforces it; this section asks for one when the
+  // Scripts editor opens an item, renews it every 15 seconds, gives it back when the editor closes, and shows what the server said.
+  // The text typed in the editor lives in SC.drafts and is never touched here: losing a lease changes what the page lets you do, not
+  // what you typed. Nothing on the on-air path (take, go, hold, release, skip, kill) reads or waits for any of this.
+  const LEASE_RENEW_MS = 15000, PRESENCE_MS = 10000;
+
+  // What a lease means for the row chip. `me` is {user, client}: a lease is yours only when both match, so a second tab of the same
+  // person sees the first tab's lease as someone else's ("in another tab").
+  function leaseView(leases, item, me) {
+    const l = (leases || []).find((x) => x.item === item);
+    if (!l) return null;
+    const mine = l.holder === me.user && l.clientId === me.client;
+    if (mine) return { kind: 'yours', word: 'You editing', holder: l.holder, secondsLeft: l.secondsLeft, mine: true };
+    return { kind: 'editing', word: l.holder + ' editing' + (l.holder === me.user ? ' in another tab' : ''), holder: l.holder, secondsLeft: l.secondsLeft, mine: false };
+  }
+
+  // The server's answer to an acquire or renew, as the state the editor is in. A failure to get an answer is not yet a loss of the lease
+  // (the 45 s lease outlives one missed renew); two in a row means the page can no longer tell, so it stops saving and says so.
+  function leaseOutcome(status, data, fails) {
+    const code = data && data.error && data.error.code;
+    if (status === 200 && data && data.ok) return { state: 'held', fails: 0, secondsLeft: data.lease ? data.lease.secondsLeft : 0 };
+    if (status === 409 && code === 'leased') return { state: 'blocked', fails: 0, holder: data.holder || '', secondsLeft: data.secondsLeft || 0 };
+    if (status === 409 && code === 'lease_lost') return { state: 'lost', fails: 0, holder: data.holder || '' };
+    if (status === 409 && code === 'not_editable') return { state: 'ended', fails: 0 };
+    if (code === 'collab_unavailable') return { state: 'unavailable', fails: 0 };
+    if (status === 403) return { state: 'none', fails: 0 };   // a viewer, or no edit access to this show: the server refuses the save in its own words
+    const n = (fails || 0) + 1;
+    return { state: n >= 2 ? 'unsure' : 'held', fails: n };
+  }
+  // A save goes out only while the lease is held, or when there is no lease system to ask. The server checks again either way.
+  function leaseAllowsSave(state) { return state === 'held' || state === 'unavailable' || state === 'none'; }
+
+  // Who is here: one entry per person, however many tabs. `initials` are for the circles; the words below carry the same information.
+  function presenceGroups(presence, me) {
+    const out = [];
+    for (const p of presence || []) {
+      let g = out.find((x) => x.user === p.user);
+      if (!g) {
+        const words = String(p.name || p.user).trim().split(/\s+/).filter(Boolean);
+        g = { user: p.user, name: p.name || p.user, initials: words.slice(0, 2).map((w) => w[0].toUpperCase()).join(''), tabs: 0, views: [], you: p.user === me.user };
+        out.push(g);
+      }
+      g.tabs += 1;
+      g.views.push(p.view);
+    }
+    return out;
+  }
+  function presenceViewWords(view, slugOf) {
+    if (view === 'library') return 'in the library';
+    if (view === 'show') return 'viewing the rundown';
+    if (typeof view === 'string' && view.startsWith('item:')) return 'working on ' + ((slugOf && slugOf[view.slice(5)]) || 'an item');
+    return 'here';
+  }
+  function presenceLines(presence, me, slugOf) {
+    return presenceGroups(presence, me).map((g) => {
+      const words = [];
+      for (const v of g.views) { const w = presenceViewWords(v, slugOf); if (!words.includes(w)) words.push(w); }
+      return (g.you ? 'You' : g.name) + ': ' + words.join(', ');
+    });
+  }
+
+  // This tab's id: random, kept for the life of the tab (sessionStorage) so a reload does not leave the tab fighting its own lease.
+  function leaseClientId() {
+    try { const v = sessionStorage.getItem('volt.client'); if (v && v.length <= 64 && /^[\w.:-]+$/.test(v)) return v; } catch (e) { /* works without it */ }
+    let id = 'c';
+    try { id += Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''); }
+    catch (e) { id += Math.random().toString(16).slice(2, 18); }
+    try { sessionStorage.setItem('volt.client', id); } catch (e) { /* works without it */ }
+    return id;
+  }
+
+  // item: the item this tab holds or wants; state: none | held | blocked | lost | unsure | ended | unavailable.
+  const LS = { client: leaseClientId(), item: null, state: 'none', holder: '', secondsLeft: 0, fails: 0, timer: null, busy: false, copied: false };
+  const leaseMe = () => ({ user: WHO.name || 'desk', client: LS.client });
+  const leaseState = () => (LS.item && LS.item === SC.sel ? LS.state : 'none');
+  const slugMap = () => { const m = {}; for (const i of (S.data && S.data.rundown ? S.data.rundown.items : [])) m[i.id] = i.slug; return m; };
+
+  // Which item should this tab hold right now: the Scripts editor's open item, when it is ready and editable.
+  function leaseWant() {
+    if (S.screen !== 'scripts' || !SC.sel || !S.data || !S.data.rundown) return null;
+    const it = scItem(), st = scLoaded();
+    return it && it.status === 'ready' && !(st && scReason(it, st)) ? SC.sel : null;
+  }
+  function leaseSync() {
+    const want = leaseWant();
+    if (want === LS.item) return;
+    leaseGiveBack();
+    LS.item = want; LS.state = 'none'; LS.holder = ''; LS.secondsLeft = 0; LS.fails = 0; LS.copied = false;
+    if (want) leaseAsk(false);
+  }
+  function leaseApply(res, wasRenew) {
+    const was = LS.state;
+    if (res.state === 'held' && res.fails === 0) { LS.state = 'held'; LS.fails = 0; }
+    else if (res.state === 'held') { LS.fails = res.fails; if (was !== 'held') LS.state = 'unsure'; }   // never held: a missing answer is not a lease
+    else { LS.state = res.state; LS.fails = res.fails; }
+    if (res.holder != null) LS.holder = res.holder;
+    if (res.secondsLeft != null) LS.secondsLeft = res.secondsLeft;
+    clearTimeout(LS.timer); LS.timer = null;
+    if (LS.state === 'held' || LS.state === 'blocked' || LS.state === 'unsure') LS.timer = setTimeout(() => leaseAsk(LS.state === 'held' || wasRenew), LEASE_RENEW_MS);
+    if (LS.state !== was) announce(LS.state === 'lost' ? (LS.holder || 'Someone') + ' took this item over. Your text is still in the editor and was not saved.'
+      : LS.state === 'blocked' ? (LS.holder || 'Someone') + ' is editing this item.' : LS.state === 'unsure' ? 'Cannot confirm you still hold this item. Saving is off until it can.' : '');
+    S.sigs['sc-edit'] = null; S.sigs['sc-lease'] = null;
+    render();
+  }
+  async function leaseAsk(renew) {
+    const id = LS.item;
+    if (!id || LS.busy) return;
+    LS.busy = true;
+    let res;
+    try {
+      const { status, data } = await call('leaseAcquire', id, renew ? { clientId: LS.client, renew: true } : { clientId: LS.client });
+      res = leaseOutcome(status, data, LS.fails);
+    } catch (e) { res = leaseOutcome(0, null, LS.fails); }
+    LS.busy = false;
+    if (LS.item === id) leaseApply(res, renew);
+  }
+  async function leaseTakeover() {
+    const id = LS.item;
+    if (!id || LS.busy) return;
+    LS.busy = true;
+    try {
+      const { status, data } = await call('leaseTakeover', id, { clientId: LS.client });
+      LS.busy = false;
+      if (LS.item === id) {
+        if (status === 409 && data && data.error && data.error.code === 'not_leased') { leaseApply({ state: 'none', fails: 0 }, false); leaseAsk(false); }
+        else leaseApply(leaseOutcome(status, data, 0), false);
+        if (status === 200) setFlash({ kind: 'good', title: 'You are editing now.', reason: 'The previous editor is told. Their next save is refused and their text stays in their editor.' });
+        else if (data && data.error) setFlash({ kind: 'bad', title: (ERR_LABEL[data.error.code] || 'Refused') + '.', code: data.error.code, reason: data.error.reason || '' });
+      }
+    } catch (e) { LS.busy = false; setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'Nothing changed. Try again.' }); render(); }
+  }
+  // Give the lease back (the editor closed). Fire and forget: a lease that does not get back lapses on its own in 45 seconds.
+  function leaseGiveBack(onUnload) {
+    const id = LS.item;
+    clearTimeout(LS.timer); LS.timer = null;
+    if (!id || (LS.state !== 'held' && LS.state !== 'unsure')) return;
+    try {
+      if (onUnload) {
+        const headers = authHeaders('POST', getToken(), SESS.csrf); headers['Content-Type'] = 'application/json';
+        fetch('/api/items/' + encodeURIComponent(id) + '/lease/release', { method: 'POST', headers, body: JSON.stringify({ clientId: LS.client }), keepalive: true, cache: 'no-store' });
+      } else call('leaseRelease', id, { clientId: LS.client }).catch(() => {});
+    } catch (e) { /* the lease lapses by itself */ }
+  }
+  function leaseReopen() { LS.state = 'none'; LS.fails = 0; LS.copied = false; S.sigs['sc-edit'] = null; S.sigs['sc-lease'] = null; leaseAsk(false); render(); }
+  async function leaseCopy() {
+    const d = scDraftOf(SC.sel);
+    const text = d ? d.script : scText();
+    try { await navigator.clipboard.writeText(text); LS.copied = true; announce('Your text is copied.'); }
+    catch (e) { const t = $('sc-text'); if (t) { t.focus(); t.select(); } announce('Your text is selected: press Ctrl+C to copy it.'); }
+    S.sigs['sc-lease'] = null; render();
+  }
+
+  // The banner above the editor: why it is read-only, in words, with the one action that fits. An icon and words, never colour alone.
+  function leaseBanner() {
+    const state = leaseState(), who = LS.holder || 'Someone';
+    const lv = leaseView(S.data && S.data.leases, SC.sel, leaseMe());
+    const left = lv ? lv.secondsLeft : LS.secondsLeft;
+    if (state === 'blocked') {
+      const armed = S.armed === 'takeover:' + SC.sel;
+      return el('div', { class: 'lease-banner', role: 'status' }, icon('lock', 's'),
+        el('div', { class: 'msg' }, el('strong', { text: who + ' is editing this item. ' }),
+          'The editor is read-only' + (left && left <= 60 ? '; their lease ends in ' + left + ' seconds if they stop' : '') + '. You can take over: they are told, and their next save is refused.'),
+        btn(armed ? 'Confirm take over' : 'Take over', { key: 'lease-takeover', cls: 'ghost small' + (armed ? ' armed' : ''), onclick: () => armedAction('takeover:' + SC.sel, leaseTakeover) }));
+    }
+    if (state === 'lost') {
+      return el('div', { class: 'lease-banner', role: 'alert' }, icon('alert', 's'),
+        el('div', { class: 'msg' }, el('strong', { text: who + ' took this item over. ' }),
+          'Your text is still here and was not saved. Copy it, then open the item again once they are done.'),
+        btn(LS.copied ? 'Copied' : 'Copy my text', { key: 'lease-copy', cls: 'ghost small', onclick: leaseCopy }),
+        btn('Try to edit again', { key: 'lease-reopen', cls: 'ghost small', onclick: leaseReopen }));
+    }
+    if (state === 'unsure') {
+      return el('div', { class: 'lease-banner', role: 'alert' }, icon('alert', 's'),
+        el('div', { class: 'msg' }, el('strong', { text: 'Cannot confirm you still hold this item. ' }),
+          'Saving is off until the server answers. Your text is still here.'),
+        btn(LS.copied ? 'Copied' : 'Copy my text', { key: 'lease-copy', cls: 'ghost small', onclick: leaseCopy }));
+    }
+    if (state === 'ended') {
+      return el('div', { class: 'lease-banner', role: 'status' }, icon('lock', 's'),
+        el('div', { class: 'msg' }, el('strong', { text: 'This item is no longer editable. ' }), 'It went to air or was passed over, so editing ended. Your text is still here.'),
+        btn(LS.copied ? 'Copied' : 'Copy my text', { key: 'lease-copy', cls: 'ghost small', onclick: leaseCopy }));
+    }
+    if (state === 'unavailable') {
+      return el('div', { class: 'lease-banner', role: 'status' }, icon('alert', 's'),
+        el('div', { class: 'msg' }, el('strong', { text: 'Collaboration is unavailable. ' }),
+          'Editing leases are off, so nothing stops two people editing this item. Saving still checks the revision. The on-air controls are not affected.'));
+    }
+    return null;
+  }
+  // The editor is read-only unless this tab holds the lease (or there is no lease system to ask).
+  const leaseAllowsEdit = () => leaseAllowsSave(leaseState());
+
+  // The strip of who is here, under the Show header and above the editor. Initials in circles are for sighted people (and say the name in a
+  // tooltip); the visible list beside them is the same information in words for keyboard and screen-reader users.
+  function presenceStrip() {
+    const d = S.data || {}, me = leaseMe(), groups = presenceGroups(d.presence, me), lines = presenceLines(d.presence, me, slugMap());
+    const off = d.collab && d.collab.available === false;
+    return [off ? el('p', { class: 'info presence-off', role: 'status' }, icon('alert', 's'), ' ', el('strong', { text: 'Collaboration is unavailable. ' }),
+        'Who is here and who is editing cannot be shown, and edits are not protected by a lease. The on-air controls (take, go, hold, release, skip, kill) are not affected.') : null,
+      groups.length ? el('div', { class: 'presence-row' },
+        el('ul', { class: 'avatars', 'aria-hidden': 'true' }, groups.map((g) => el('li', { class: 'avatar' + (g.you ? ' you' : ''), title: g.name + (g.tabs > 1 ? ' (' + g.tabs + ' tabs)' : ''), text: g.initials }))),
+        el('ul', { class: 'presence-list', 'aria-label': 'Who is here' }, lines.map((t) => el('li', { text: t })))) : null];
+  }
+
+  // Presence: one heartbeat every 10 s from a visible tab; the page reads everyone's from the state poll. Best effort, never audited.
+  function presenceView() {
+    if (S.screen === 'scripts' && SC.sel) return 'item:' + SC.sel;
+    return S.screen === 'library' ? 'library' : 'show';
+  }
+  async function presenceBeat() {
+    if (document.hidden || !S.data || !S.show || S.conn !== 'ok') return;
+    try { await call('presence', null, { clientId: LS.client, show: S.show, view: presenceView() }); } catch (e) { /* the next beat tries again */ }
+  }
+  function presenceInit() {
+    setInterval(presenceBeat, PRESENCE_MS);
+    window.addEventListener('pagehide', () => leaseGiveBack(true));
   }
 
   // ---- dialogs, keys, screens ----------------------------------------------
@@ -4682,6 +4920,7 @@
     S.screen = SCREENS.includes(name) ? name : 'show';
     for (const s of SCREENS) $('screen-' + s).hidden = s !== S.screen;
     S.sigs = {};
+    if (was === 'scripts' && S.screen !== 'scripts') leaseSync();   // the editor closed: give the lease back
     if (was === 'library' && S.screen !== 'library') libLeave();
     if (S.screen === 'library' && was !== 'library') libEnter();
     render();
@@ -4753,6 +4992,7 @@
     $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
     libInit();
     scConflictInit();
+    presenceInit();
     $('keys-close').addEventListener('click', () => $('keys-dlg').close());
     document.addEventListener('keydown', onKey);
     // A mouse click leaves focus on the button it pressed. Drop it so Space is TAKE, not that button again.
