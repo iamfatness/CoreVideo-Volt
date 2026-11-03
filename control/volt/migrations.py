@@ -249,9 +249,16 @@ MIGRATIONS = (
               postgres=("CREATE TABLE IF NOT EXISTS auth_flow (state TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, provider TEXT NOT NULL, next TEXT NOT NULL, binder_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)",
                         "CREATE TABLE IF NOT EXISTS identity (issuer TEXT NOT NULL, sub TEXT NOT NULL, user_name TEXT NOT NULL, email TEXT, display_name TEXT, last_login_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (issuer, sub))",
                         "CREATE TABLE IF NOT EXISTS oidc_group_map (provider TEXT NOT NULL, claim_value TEXT NOT NULL, group_name TEXT NOT NULL, PRIMARY KEY (provider, claim_value, group_name))")),
+    # Per-show access (volt/access.py): who may view, edit or run a show. A new table, so SCHEMA makes it on a fresh database. A show with no
+    # rows stays open, so nothing changes on upgrade. The index serves "is this group still named in an access list".
+    Migration(31, "show access table",
+              sqlite=("CREATE TABLE IF NOT EXISTS show_acl (show_id TEXT NOT NULL, subject_kind TEXT NOT NULL, subject TEXT NOT NULL, level TEXT NOT NULL, PRIMARY KEY (show_id, subject_kind, subject))",
+                      "CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject)"),
+              postgres=("CREATE TABLE IF NOT EXISTS show_acl (show_id TEXT NOT NULL, subject_kind TEXT NOT NULL, subject TEXT NOT NULL, level TEXT NOT NULL, PRIMARY KEY (show_id, subject_kind, subject))",
+                        "CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject)")),
     # Wire intake (volt/wire.py): one row per configured feed with its last attempt, last success, last error and next attempt, so one bad
     # feed shows up in the inbox without stopping the others. A new table, so SCHEMA makes it on a fresh database.
-    Migration(31, "wire feed state",
+    Migration(32, "wire feed state",
               sqlite=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TEXT, last_ok_at TEXT, last_error TEXT, next_attempt_at TEXT)",),
               postgres=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TIMESTAMPTZ, last_ok_at TIMESTAMPTZ, last_error TEXT, next_attempt_at TIMESTAMPTZ)",)),
 )

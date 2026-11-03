@@ -535,6 +535,16 @@ CREATE TABLE IF NOT EXISTS oidc_group_map (
   group_name TEXT NOT NULL,
   PRIMARY KEY (provider, claim_value, group_name)
 );
+
+CREATE TABLE IF NOT EXISTS show_acl (
+  show_id TEXT NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  level TEXT NOT NULL,
+  PRIMARY KEY (show_id, subject_kind, subject)
+);
+
+CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject);
 """
 
 
