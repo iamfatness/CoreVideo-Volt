@@ -43,7 +43,7 @@
 | `control/volt/playout.py` | `advance(pending=)`, `commit_take`, skip/kill refuse `taking` |
 | `control/volt/take.py` | pending advance, dispatch unlocked, commit or rewind |
 | `control/volt/rundown.py` | `take(..., status="on air"\|"taking")`; kill/attach refuse `taking` |
-| `control/volt/serve.py` | 202 ingest, media-ticket, ticket gate, actor, `/` → operator, drop `_SEQ` as contract |
+| `control/volt/serve.py` | 202 ingest, media-ticket, ticket gate, actor, `/` → operator, drop the in-process lock as contract (later removed entirely) |
 | `control/volt/media.py` | Ticket issue/verify |
 | `control/volt/tickets.py` | HMAC create/check (new, small) |
 | `control/session/` → `control/volt/session/` | Pages travel with the package |

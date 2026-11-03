@@ -7,7 +7,7 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 - JSON in, JSON out. `Content-Type: application/json` is required on every POST. A body is optional; an empty body is `{}`. Unknown fields are refused.
 - Success: HTTP 200, `{"ok": true, ...}`, always including the changed state (`rundown` in the `/rundown` shape for show and item actions, `asset` for rights and record actions, `versions` for publish). `POST /api/ingest` is `202` with `status: queued` (the runner copies).
 - Refusal: `{"ok": false, "error": {"code": "<stable code>", "reason": "<human text>"}, ...}`. A refusal changes nothing. Clients switch on `code`; `reason` is for display.
-- One store connection per request. Sequencing writes (go, take, skip, kill, reorder, record start/stop) run one at a time in the server process. Hold, release, rights and publish do not wait on them, so HOLD lands while a take is waiting on the room.
+- One store connection per request. Go, take, skip, kill and reorder decide under the show's lock in the database, so they are ordered across every `serve` process, not only within one. Record start and stop hold a lease row (`exclusive_lease`) for the room; a second caller gets 409 `record_busy` instead of waiting. Hold, release, rights and publish do not wait on them, so HOLD lands while a take is waiting on the room.
 - No CORS headers are ever sent. JSON-only POSTs mean a browser page on another origin cannot send one without a preflight, which is never answered.
 - Request body limit 64 KiB (`413 too_large`). Chunked bodies are refused (`411`).
 
@@ -83,8 +83,8 @@ IDs are path segments. All are `POST`.
 | `/api/items/{item}/skip` | none | Mark a ready item skipped. | 404; 409 `taking`; 409 `not_skippable` (on air or already past) |
 | `/api/items/{item}/kill` | none | Kill a ready item. The asset stays. | 404; 409 `taking`; 409 `not_killable` |
 | `/api/items/{item}/attach` | `span` | Attach a span to a ready item. One transaction under the show's lock ending in `UPDATE ... WHERE status = 'ready'`, so an attach racing a take is either applied before the item airs or refused; it never changes the media of an item that is on air. | 404 (item or span); 409 `not_attachable`; 422 |
-| `/api/record/start` | `owner?`, `camera?`, `show?` | Ask the room to record; mint only once output is observed (`start_recording`). Returns `asset`, `minted`, `essence`. | 503 `no_room`; 502 `room_refused` (nothing minted); 422 |
-| `/api/record/stop` | `asset` | Stop and wrap only on completed + finalized (`finish_recording`). Returns `checksum`, `asset`. | 404; 503; 502 `not_wrapped` (nothing wrapped); 422 |
+| `/api/record/start` | `owner?`, `camera?`, `show?` | Ask the room to record; mint only once output is observed (`start_recording`). Returns `asset`, `minted`, `essence`. | 503 `no_room`; 502 `room_refused` (nothing minted); 409 `record_busy` (another start or stop holds the room's lease); 422 |
+| `/api/record/stop` | `asset` | Stop and wrap only on completed + finalized (`finish_recording`). Returns `checksum`, `asset`. | 404; 503; 502 `not_wrapped` (nothing wrapped); 409 `record_busy`; 422 |
 | `/api/assets/{asset}/cleared` | `cleared`: boolean | Set the cleared flag. | 404; 422 (must be a real boolean) |
 | `/api/assets/{asset}/legal-hold` | `held`: boolean | Set the legal hold. A held asset cannot air or publish. It can still be marked, detected and exported to an NLE (the export leaves the source untouched). | 404; 422 |
 | `/api/assets/{asset}/delete` | none | Soft delete (tombstone) the asset: hidden from the library, search and the operator lists, every file kept, undone by `/restore`. The runner purges it after the retention window (`docs/specs/retention.md`). Returns `alreadyDeleted`, `deletedAt`, `asset`. Refused when the asset is on legal hold, attached to a rundown item, has an active (not withdrawn) publish version, is still recording, or has retention class `permanent`: `409 delete_refused` with `reasons` (a list) at the top level of the body, nothing changed. | 404; 409 `delete_refused`; 422 |
@@ -112,7 +112,7 @@ IDs are path segments. All are `POST`.
 
 Endpoints that let an operator make a show without a developer. The rules live in `control/volt/building.py`; the handlers in `serve.py` (a separate block) read the body, call it, and map its refusals. Same auth, JSON, unknown-field and body-size rules as every POST. Every success carries `rundown` (the `/rundown` shape, unchanged) and `orderVersion`. A refusal writes nothing.
 
-Each edit is one transaction under the show's lock (the lock `go`, `take`, `skip` and `kill` also take, in any process, on SQLite and Postgres) and ends in a write that restates its condition (`WHERE status = 'ready'`), so an edit that races a take gets one outcome. They do not take the in-process sequencing lock, so editing stays possible while a take waits on the room. Only a `ready` item can be edited; once an item is on air or has aired, the as-run log is its record.
+Each edit is one transaction under the show's lock (the lock `go`, `take`, `skip` and `kill` also take, in any process, on SQLite and Postgres) and ends in a write that restates its condition (`WHERE status = 'ready'`), so an edit that races a take gets one outcome. They take no process-wide lock, so editing stays possible while a take waits on the room. Only a `ready` item can be edited; once an item is on air or has aired, the as-run log is its record.
 
 | Path | Body | Does | Refusals |
 | --- | --- | --- | --- |
@@ -284,7 +284,7 @@ Design: `docs/superpowers/specs/2026-11-01-search-indexing-design.md`. Reads nee
 ## Known limits
 
 - Atomicity is per underlying function. `take_item` commits the advance, then the cues, then a rewind on failure, so a crash of the server process mid-take can leave the rundown advanced with cues unsent. The rewind-on-failure path is covered; crash-mid-take is not.
-- Two `serve` processes and the clock serialise on item status `taking`, not on a thread lock. `_SEQ` only orders requests inside one process.
+- Two `serve` processes and the clock serialise on item status `taking`, not on a thread lock. There is no in-process sequencing lock.
 - Dispatch waits on the room with no show lock. Hold, release, attach to a *different* ready item, rights and publish do not wait. A second take or go is `409 taking`.
 
 ## Newsroom scripts

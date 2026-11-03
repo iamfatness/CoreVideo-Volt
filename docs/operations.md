@@ -8,7 +8,7 @@ For the person who installs and runs Volt. Developer docs are in [architecture](
 
 | Process | Command | Needs | What it does |
 |---|---|---|---|
-| serve | `volt serve` | database | Operator API, `/` operator desk, health. Two processes serialise a take on item status `taking`. |
+| serve | `volt serve` | database | Operator API, `/` operator desk, health. Two processes serialise a take on item status `taking`; go, skip and kill decide under the show's database lock; record start and stop hold an `exclusive_lease` row (a second caller gets 409 `record_busy`). More than one `serve` needs Postgres (see "More than one serve process"). |
 | runner | `volt runner` | database, ffmpeg | Claims queued jobs (ingest, proxy, transcript, publish, shot detection) and retries them. Several are safe. A crashed runner loses no work: its leases lapse and the jobs are re-queued. With `VOLT_WATCH=1` it also scans ingest folders. |
 | clock | `volt clock` | database, `VOLT_ROOM_URL` | Takes scheduled rundown items on time. Run one. |
 | run | `volt run` | all of the above | Starts the three as child processes, restarts any that crashes, stops them together. The clock is started only when `VOLT_ROOM_URL` is set. |
@@ -173,6 +173,14 @@ Run against it on 2026-10-30 (Windows 11, Docker Desktop 29.8.2, postgres:16, Py
 
 Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_POOL_MIN`, `VOLT_PG_POOL_TIMEOUT`,
 `VOLT_PG_POOL_MAX_IDLE`, `VOLT_PG_POOL_MAX_LIFETIME`.
+
+### More than one serve process
+
+Two or more `volt serve` processes behind a balancer are supported on **Postgres only** (SQLite is one host; the guarantees below are tested on Postgres). Set `VOLT_PG_POOL_MAX` on every node, and give every node the same `VOLT_MEDIA_KEY` (or `VOLT_TOKEN`) so a media ticket from one verifies on the other. Pool arithmetic: `nodes * VOLT_PG_POOL_MAX + runners * 2 + reserve` must not exceed the server's `max_connections`.
+
+What keeps two nodes from fighting: go, skip, kill and take decide under the show's advisory lock (and the `taking` row) in the database, so there is no process lock to share. Record start and stop take a lease row named `record:<room>` in `exclusive_lease` (TTL 120 s, released when the call ends; a node that dies mid-call simply stops renewing and the row expires). A second Record click while the first is in flight is refused with `409 record_busy`; before this it queued behind the first. Lease expiry compares epoch seconds written by each node, so keep node clocks within a few seconds (use NTP).
+
+Proven by `control/tests/test_multi_serve.py`: threads on two connections, and two real `serve` subprocesses on loopback sharing one database and one fake core. **Unvalidated:** a real load balancer, two hosts, a network partition, a Postgres failover. Rehearse before relying on it.
 
 
 ## Users and tokens

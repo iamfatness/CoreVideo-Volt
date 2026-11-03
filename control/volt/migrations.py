@@ -287,6 +287,11 @@ MIGRATIONS = (
                       "CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id)",
                       "CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at)",
                       "CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id)")),
+    # Exclusive leases (volt/sequencing.py): cross-process exclusion for record start and stop, replacing an in-process lock. A new table, so
+    # SCHEMA makes it on a fresh database. (The edit-lease table `lease` from migration 33 is a different thing, so this one has its own name.)
+    Migration(35, "exclusive lease",
+              sqlite=("CREATE TABLE IF NOT EXISTS exclusive_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at REAL NOT NULL)",),
+              postgres=("CREATE TABLE IF NOT EXISTS exclusive_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at DOUBLE PRECISION NOT NULL)",)),
 )
 
 LATEST = MIGRATIONS[-1].version

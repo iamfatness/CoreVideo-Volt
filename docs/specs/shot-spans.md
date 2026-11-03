@@ -158,7 +158,7 @@ Writes (all POST):
 
 Attach and publish stay where they are: the panel calls `/api/items/{item}/attach` and `/api/spans/{span}/publish` with the span ID. Delete and trim of a span refuse with `span_in_use` while those reference it.
 
-Serialisation: split, merge, trim, delete and detect's write step take the same per-asset lock the way `Store.transaction(lock)` does for rundown position inserts, so two operators marking the same asset see the overlap rule hold. Create of a clip needs no lock. (Single server process only, as with `_SEQ`; same caveat as `operator-api.md`.)
+Serialisation: split, merge, trim, delete and detect's write step take the same per-asset lock the way `Store.transaction(lock)` does for rundown position inserts, so two operators marking the same asset see the overlap rule hold. Create of a clip needs no lock. (On Postgres the lock is an advisory lock and holds across `serve` processes; on SQLite there is one writer at a time.)
 
 ### Thumbnails
 

@@ -37,6 +37,7 @@ from volt.rooms import CoreVideoProRoom, LiveError
 from volt.rundown import ItemNotReady, attach, kill, reorder, show_lock
 from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
+from volt.sequencing import LeaseBusy, exclusive, record_lease_name
 from volt.store import ArchivedError, NotClearedError, Store
 from volt.show_input import configured_actions
 from volt.take import take_item
@@ -84,8 +85,6 @@ UNPUBLISH_BACKEND = None
 # Take, go and the other sequencing writes run one at a time in this process, so two
 # operators cannot both advance the same rundown. Hold and release stay outside it:
 # a hold must land while a take is still waiting on the room.
-_SEQ = threading.Lock()
-_REC = threading.Lock()
 # Who is making the POST being handled. The action handlers take (store, match, body) only, so the request's actor
 # and principal ride here (one value per handler thread, set in do_POST and cleared after).
 _REQUEST = threading.local()
@@ -192,6 +191,15 @@ def check_bind(host: str, token, has_admin_user: bool = False) -> None:
                           "(or create an admin with `volt user add NAME --role admin`)")
     if len(token) < MIN_REMOTE_TOKEN:
         raise ConfigError(f"refusing to bind {host!r}: VOLT_TOKEN must be at least {MIN_REMOTE_TOKEN} characters")
+
+
+def _room_key() -> str:
+    """Names the room for the record lease: one recorder per room, across every serve process that talks to it."""
+    return os.environ.get("VOLT_ROOM_URL") or "default"
+
+
+def _record_busy(busy: LeaseBusy) -> "ApiError":
+    return ApiError(409, "record_busy", "another record start or stop is in progress for this room; try again when it finishes")
 
 
 def get_room():
@@ -413,10 +421,9 @@ def _advance_errors(fn):
 def act_go(store, show_id, body):
     _unknown_keys(body, set())
     _show_exists(store, show_id)
-    with _SEQ:
-        adv = _advance_errors(lambda: advance(store, show_id))
-        return {"ok": True, "target": adv.target, "previous": adv.previous, "passed": adv.passed,
-                "over": adv.target is None, "rundown": rundown_payload(store, show_id)}
+    adv = _advance_errors(lambda: advance(store, show_id))   # decided under the show's lock in the database
+    return {"ok": True, "target": adv.target, "previous": adv.previous, "passed": adv.passed,
+            "over": adv.target is None, "rundown": rundown_payload(store, show_id)}
 
 
 def act_hold(store, show_id, body):
@@ -506,7 +513,7 @@ def act_take(store, show_id, body):
     owner = _str(body, "owner", default="desk", limit=100)
     _show_exists(store, show_id)
     room = get_room()
-    # Dispatch waits on the room with no _SEQ; the taking row is the contract across processes.
+    # Dispatch waits on the room with no process lock; the taking row is the contract across processes.
     result = _advance_errors(
         lambda: take_item(store, room, show_id, owner=owner, show_input_actions=configured_actions(), **POLL))
     results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
@@ -538,30 +545,29 @@ def act_reorder(store, show_id, body):
 def act_skip(store, item_id, body):
     _unknown_keys(body, set())
     show_id, _ = _item_show(store, item_id)
-    with _SEQ:
-        try:
-            skip(store, item_id)
-        except TakingError as exc:
-            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
-        except PlayoutError as exc:
-            raise ApiError(409, "not_skippable", str(exc)) from None
-        return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
+    # skip() decides under the show's lock in the database, so it is safe against a go or take on any process.
+    try:
+        skip(store, item_id)
+    except TakingError as exc:
+        raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+    except PlayoutError as exc:
+        raise ApiError(409, "not_skippable", str(exc)) from None
+    return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
 
 
 def act_kill(store, item_id, body):
     _unknown_keys(body, set())
     show_id, _ = _item_show(store, item_id)
-    with _SEQ:
-        # _SEQ only orders requests inside this process; kill() decides with one conditional write, so a go
-        # or take from another process cannot slip between a read here and the write.
-        try:
-            killed = kill(store, item_id)
-        except TakingError as exc:
-            raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
-        if not killed:
-            status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
-            raise ApiError(409, "not_killable", f"cannot kill a {status} item")
-        return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
+    # kill() decides with one conditional write under the show's lock, so a go or take on another process
+    # cannot land between a read here and the write.
+    try:
+        killed = kill(store, item_id)
+    except TakingError as exc:
+        raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
+    if not killed:
+        status = store.conn.execute("SELECT status FROM item WHERE id = ?", (item_id,)).fetchone()["status"]
+        raise ApiError(409, "not_killable", f"cannot kill a {status} item")
+    return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
 
 
 def act_attach(store, item_id, body):
@@ -570,8 +576,8 @@ def act_attach(store, item_id, body):
     show_id, _ = _item_show(store, item_id)
     if store.conn.execute("SELECT 1 FROM span WHERE id = ?", (span_id,)).fetchone() is None:
         raise ApiError(404, "not_found", f"no such span: {span_id}")
-    # The decision is made inside attach(): one transaction under the show's lock, a conditional write. No _SEQ,
-    # like the other building edits, so attaching stays possible while a take waits on the room.
+    # The decision is made inside attach(): one transaction under the show's lock, a conditional write. No process
+    # lock, like the other building edits, so attaching stays possible while a take waits on the room.
     try:
         attach(store, item_id, span_id)
     except ItemNotReady as exc:
@@ -587,13 +593,16 @@ def act_record_start(store, _unused, body):
     camera = _str(body, "camera", limit=100)
     show = _str(body, "show", limit=200)
     room = get_room()
-    with _REC:
-        try:
-            rec = start_recording(store, room, owner, camera=camera, show_name=show, **POLL)
-        except LiveError as exc:
-            raise ApiError(502, "room_refused", str(exc)) from None
-        return {"ok": True, "minted": rec.minted, "essence": rec.essence_id,
-                "asset": asset_payload(store, rec.asset_id)}
+    try:
+        with exclusive(store, record_lease_name(_room_key())):
+            try:
+                rec = start_recording(store, room, owner, camera=camera, show_name=show, **POLL)
+            except LiveError as exc:
+                raise ApiError(502, "room_refused", str(exc)) from None
+            return {"ok": True, "minted": rec.minted, "essence": rec.essence_id,
+                    "asset": asset_payload(store, rec.asset_id)}
+    except LeaseBusy as busy:
+        raise _record_busy(busy) from None
 
 
 def act_record_stop(store, _unused, body):
@@ -601,12 +610,15 @@ def act_record_stop(store, _unused, body):
     asset_id = _str(body, "asset", required=True, limit=128)
     _asset_exists(store, asset_id)
     room = get_room()
-    with _REC:
-        try:
-            checksum = finish_recording(store, room, asset_id, **POLL)
-        except (LiveError, RecordError) as exc:
-            raise ApiError(502, "not_wrapped", str(exc)) from None
-        return {"ok": True, "checksum": checksum, "asset": asset_payload(store, asset_id)}
+    try:
+        with exclusive(store, record_lease_name(_room_key())):
+            try:
+                checksum = finish_recording(store, room, asset_id, **POLL)
+            except (LiveError, RecordError) as exc:
+                raise ApiError(502, "not_wrapped", str(exc)) from None
+            return {"ok": True, "checksum": checksum, "asset": asset_payload(store, asset_id)}
+    except LeaseBusy as busy:
+        raise _record_busy(busy) from None
 
 
 def act_cleared(store, asset_id, body):
@@ -844,7 +856,7 @@ def act_export_nle(store, _unused, body):
 
 # ---- show building: create, edit, cue and ingest (docs/specs/operator-api.md, "Show building") ------------------
 # Rules live in volt/building.py; these handlers read the body, call it, and map BuildError to HTTP. They take no
-# _SEQ: each edit is one transaction under the show's own lock, which go and take also take, in every process.
+# No process lock: each edit is one transaction under the show's own lock, which go and take also take, in every process.
 
 def _build_errors(fn):
     try:
