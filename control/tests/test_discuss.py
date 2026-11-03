@@ -530,9 +530,11 @@ class Http(Base, Api):
         self.refused(403, "forbidden_role", f"/api/comments/{cid}/delete", {}, token=self.t["vic"])
         self.assertEqual(self.post(f"/api/comments/{cid}/delete", {}, token=self.t["root"])[0], 200)
 
-    def test_a_viewer_gets_no_roster_but_an_operator_does(self):
+    def test_a_viewer_gets_the_mention_roster_like_an_operator(self):
+        # Owner ruling 2026-11-03: viewers may receive the roster again (they can still comment and mention).
         s, out, _ = self.listing(self.t["vic"], "item", self.a)
-        self.assertEqual((s, out["people"]), (200, []))
+        self.assertEqual(s, 200)
+        self.assertIn("bob", [p["name"] for p in out["people"]])
         s, out, _ = self.listing(self.t["alice"], "item", self.a)
         self.assertIn("bob", [p["name"] for p in out["people"]])
 

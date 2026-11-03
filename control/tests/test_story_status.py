@@ -190,6 +190,77 @@ class Status(Behaviour):
         with mock.patch.dict(os.environ, {"VOLT_APPROVERS": ""}):
             self.ok(f"/api/items/{self.item}/story-status", {"status": "approved", "baseRev": 1}, token=bob)
 
+    # ---- a writer cannot approve their own story (owner ruling 2026-11-03; applies when VOLT_APPROVERS names the approvers) ----
+    def save_as(self, token, script, base):
+        return self.ok(f"/api/items/{self.item}/script", {"script": script, "baseRev": base}, token=token)
+
+    def approve_as(self, token, base):
+        return self.post(f"/api/items/{self.item}/story-status", {"status": "approved", "baseRev": base}, token=token)
+
+    def test_the_last_editor_cannot_approve_their_own_revision(self):
+        alice, carol = self.user("alice"), self.user("carol")
+        self.force("ready")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "alice, carol"}):
+            self.save_as(alice, "Council voted six to three.", 1)          # rev 2, alice; an edit drops nothing here (ready)
+            s, p = self.approve_as(alice, 2)
+            self.assertEqual((s, p["error"]["code"]), (403, "own_story"), p)
+            self.assertTrue(p["error"]["reason"])
+            self.assertEqual(self.row(self.item)["story_status"], "ready")
+            s, p = self.approve_as(carol, 2)
+            self.assertEqual((s, p["ok"]), (200, True), p)
+            self.assertEqual(self.row(self.item)["approved_by"], "carol")
+
+    def test_after_another_user_edits_the_earlier_writer_may_approve(self):
+        alice, carol = self.user("alice"), self.user("carol")
+        self.force("ready")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "alice, carol"}):
+            self.save_as(alice, "Alice's version.", 1)
+            self.save_as(carol, "Carol's version.", 2)                      # rev 3: carol is now the last editor
+            self.assertEqual(self.approve_as(carol, 3)[0], 403)
+            s, p = self.approve_as(alice, 3)
+            self.assertEqual((s, p["ok"]), (200, True), p)
+
+    def test_a_revert_makes_the_reverter_the_last_editor(self):
+        alice, carol = self.user("alice"), self.user("carol")
+        self.force("ready")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "alice, carol"}):
+            self.save_as(alice, "Alice's version.", 1)
+            self.save_as(carol, "Carol's version.", 2)
+            self.save_as(alice, "Alice's version.", 3)                      # a revert to rev 2's text is a new revision (4) by alice
+            self.assertEqual(self.approve_as(alice, 4)[0], 403)
+            self.assertEqual(self.approve_as(carol, 4)[0], 200)
+
+    def test_the_rule_names_the_revision_actor_not_the_header(self):
+        alice, carol = self.user("alice"), self.user("carol")
+        self.force("ready")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "alice, carol"}):
+            self.save_as(alice, "Alice's version.", 1)
+            s, p = self.post(f"/api/items/{self.item}/story-status", {"status": "approved", "baseRev": 2}, token=alice,
+                             headers={"X-Volt-Actor": "carol"})
+            self.assertEqual((s, p["error"]["code"]), (403, "own_story"), p)
+
+    def test_taking_an_approval_back_is_not_blocked_by_the_rule(self):
+        alice = self.user("alice")
+        self.force("approved")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "alice"}):
+            self.ok(f"/api/items/{self.item}/story-status", {"status": "ready", "baseRev": 1}, token=alice)
+
+    def test_the_shared_token_cannot_approve_even_when_it_is_not_the_editor(self):
+        carol = self.user("carol")
+        self.force("ready")
+        from volt import serve
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": "carol"}), mock.patch.object(serve, "TOKEN", "shared-secret"):
+            self.save_as(carol, "Carol's version.", 1)
+            self.refused(403, "not_approver", f"/api/items/{self.item}/story-status", {"status": "approved", "baseRev": 2},
+                         token="shared-secret", headers={"X-Volt-Actor": "carol"})
+
+    def test_without_an_approver_list_the_rule_does_not_apply(self):
+        alice = self.user("alice")
+        self.force("ready")
+        with mock.patch.dict(os.environ, {"VOLT_APPROVERS": ""}):
+            self.save_as(alice, "Alice's version.", 1)
+            self.assertEqual(self.approve_as(alice, 2)[0], 200)
+
     def test_can_approve_seam(self):
         class P:
             def __init__(self, name, legacy=False):

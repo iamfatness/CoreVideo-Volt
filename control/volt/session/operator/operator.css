@@ -526,3 +526,5 @@ dialog.wide{max-width:min(900px,94vw);width:min(900px,94vw)}
 .nt-row.read{color:var(--muted)}
 .nt-text{flex:1;min-width:12em}
 .nt-row time{color:var(--muted);font-size:var(--fs-sm)}
+/* A viewer is not offered a control the server would refuse: hidden, so it is out of the tab order and the accessibility tree too. */
+:root[data-role="viewer"] [data-write]{display:none !important}
