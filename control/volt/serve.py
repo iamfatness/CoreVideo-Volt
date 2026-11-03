@@ -319,6 +319,8 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "group_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("group"), dict):
             captured = out["group"].get("name") or ""
+    if len(parts) >= 3 and parts[1] == "shows" and parts[-1] == "access":
+        action = "show_access"
     if len(parts) >= 2 and parts[1] == "session":
         action = {"start": "login", "end": "logout"}.get(parts[-1], "session_" + parts[-1])
     if len(parts) >= 2 and parts[1] == "users":
@@ -1027,6 +1029,7 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
         if query:
             raise ApiError(422, "bad_input", "this route takes no parameters")
         who = getattr(handler, "principal", None)
+        _show_gate(store, who, "item", s.group(1), "view")
         handler._json(200, _build_errors(lambda: story.get_story(store, s.group(1), include_notes=who is None or who.role != "viewer")))
         return True
     m = re.fullmatch(rf"/api/items/{_ID}/cues", path)
@@ -1036,6 +1039,7 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
         raise ApiError(422, "bad_input", "this route takes no parameters")
     if m:
         _item_show(store, m.group(1))
+        _show_gate(store, getattr(handler, "principal", None), "item", m.group(1), "view")
         handler._json(200, {"ok": True, "item": m.group(1),
                             "cues": [_cue_json(store, c.id) for c in cues_of(store, m.group(1))],
                             "commands": building.cue_commands()})
@@ -1116,6 +1120,18 @@ def act_group_delete(store, name, body):
             raise ApiError(404, "not_found", err.reason) from None
         raise
     return {"ok": True, "deleted": name}
+
+
+def act_show_access(store, show_id, body):
+    """Give a user or group a level on a show (view, edit or run), or take it away (level null). {subject_kind, subject, level}.
+    Adding the first row restricts the show to the people listed (and every admin); removing the last opens it again."""
+    _unknown_keys(body, {"subject_kind", "subject", "level"})
+    for key in ("subject_kind", "subject", "level"):
+        if key not in body:
+            raise ApiError(422, "bad_input", f"{key} is required (level null removes the row)")
+    rows = _access_error(lambda: acl.set_acl(store, show_id, body["subject_kind"], body["subject"], body["level"]))
+    return {"ok": True, "access": rows,
+            "auditDetail": json.dumps({"subject_kind": body["subject_kind"], "subject": body["subject"], "level": body["level"]}, sort_keys=True)}
 
 
 def act_user_role(store, name, body):
@@ -1432,6 +1448,7 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
+    (re.compile(rf"^/api/shows/{_ID}/access$"), act_show_access),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1475,7 +1492,7 @@ ROUTES += [  # sessions: any signed-in role
 ROUTE_ROLES = {
     # show control
     "act_group_create": "admin", "act_group_members": "admin", "act_group_delete": "admin", "act_user_role": "admin",
-    "act_group_claims": "admin", "act_user_identity": "admin",
+    "act_group_claims": "admin", "act_user_identity": "admin", "act_show_access": "admin",
     "act_device_safe_mode": "operator", "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
@@ -1504,6 +1521,76 @@ ROUTE_ROLES = {
     # sessions: a viewer may sign in with a token and sign out
     "act_session_start": "viewer", "act_session_end": "viewer",
 }
+
+
+# ---- per-show access ---------------------------------------------------------
+# Every POST function is classified once, here: either it acts on one show (ROUTE_SHOW_LEVEL gives the least level it needs, SHOW_RESOLVER
+# says how to get from the id in its path to that show) or it does not (NOT_SHOW_SCOPED). A test walks serve.ROUTES and fails for a
+# function in neither, in both, or with no resolver, and for any route under /api/shows/{id}/, /api/items/ or /api/cues/ that is exempt.
+# do_POST checks the level right after the role check and before it reads the body or opens the handler's work. A function in neither map
+# is refused (fail closed) for everyone but an admin and the desk token. The clock and the runner never come through here.
+# view reads and comments, edit builds the rundown, run is edit plus go, take, hold, release, skip and kill.
+ROUTE_SHOW_LEVEL = {
+    # run the show
+    "act_go": "run", "act_take": "run", "act_hold": "run", "act_release": "run", "act_skip": "run", "act_kill": "run",
+    "act_mos_resolve": "run", "act_show_access": "run",
+    # build the rundown
+    "act_show_slot": "edit", "act_show_recurrence": "edit", "act_reorder": "edit", "act_show_pace": "edit", "act_show_delete": "edit",
+    "act_item_add": "edit", "act_item_schedule": "edit", "act_attach": "edit", "act_item_rename": "edit", "act_story_script": "edit",
+    "act_story_status": "edit", "act_item_float": "edit", "act_item_remove": "edit", "act_item_detach": "edit", "act_cue_add": "edit",
+    "act_cue_remove": "edit",
+}
+# How to find the show from the id the path captured: the show itself, an item, a cue, or a MOS "device:show" id.
+SHOW_RESOLVER = {
+    "act_go": "show", "act_take": "show", "act_hold": "show", "act_release": "show", "act_show_access": "show",
+    "act_show_slot": "show", "act_show_recurrence": "show", "act_reorder": "show", "act_show_pace": "show", "act_show_delete": "show",
+    "act_item_add": "show", "act_mos_resolve": "mos",
+    "act_skip": "item", "act_kill": "item", "act_item_schedule": "item", "act_attach": "item", "act_item_rename": "item",
+    "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
+    "act_cue_add": "item", "act_cue_remove": "cue",
+}
+NOT_SHOW_SCOPED = frozenset({
+    "act_show_create",                                                       # there is no show yet
+    "act_record_start", "act_record_stop", "act_ingest",                     # assets: they name a show only as free text
+    "act_cleared", "act_legal_hold", "act_delete", "act_restore", "act_asset_archive", "act_asset_rehydrate", "act_asset_metadata",
+    "act_publish", "act_unpublish", "act_export_nle", "act_detect", "act_span_frames",
+    "act_span_create", "act_span_trim", "act_span_label", "act_span_delete", "act_span_split", "act_span_merge",
+    "act_device_safe_mode",
+    "act_schema_field", "act_schema_retire", "act_schema_terms", "act_schema_term_retire",
+    "act_search_save", "act_search_delete", "act_bin_create", "act_bin_add", "act_bin_remove", "act_bin_delete",
+    "act_user_add", "act_user_disable", "act_user_enable", "act_user_rotate", "act_user_end_sessions", "act_user_identity", "act_user_role",
+    "act_group_create", "act_group_members", "act_group_delete", "act_group_claims",
+    "act_session_start", "act_session_end",
+})
+
+
+def _show_gate(store, principal, kind: str, ident: str, need: str) -> None:
+    """Raise 403 forbidden_show unless `principal` has at least level `need` on the show that (kind, ident) belongs to.
+
+    An id that names nothing passes (the handler answers 404). Admins and the desk token pass without the table being read. If the
+    table cannot be read the answer is no (503), never a pass."""
+    if acl.bypasses(principal):
+        return
+    try:
+        if kind == "mos":
+            kind, ident = "show", ident.partition(":")[2]
+        show_id = acl.show_of(store, kind, ident)
+        have = None if show_id is None else acl.show_level(store, principal, show_id)
+    except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
+        log.exception("show access check failed")
+        raise ApiError(503, "access_unavailable", "cannot check show access right now") from None
+    if show_id is None:
+        return
+    if have is None or acl.LEVELS[have] < acl.LEVELS[need]:
+        raise ApiError(403, "forbidden_show", f"{need} access to this show is required")
+
+
+def _view_filter(store, principal):
+    try:
+        return acl.view_filter(store, principal)
+    except Exception:  # noqa: BLE001 - fail closed
+        log.exception("show access check failed")
+        raise ApiError(503, "access_unavailable", "cannot check show access right now") from None
 
 
 # ---- HTTP -----------------------------------------------------------------
@@ -1813,11 +1900,19 @@ class Handler(BaseHTTPRequestHandler):
             if acl.RANK[need] > acl.RANK.get(self.principal.role, -1):
                 raise ApiError(403, "forbidden_role",
                                f"{need} role required; {self.principal.name} is {self.principal.role}")
+            if not acl.bypasses(self.principal):   # which show, and may this caller touch it: decided before any of the handler's work
+                level = ROUTE_SHOW_LEVEL.get(fn.__name__)
+                if level is not None:
+                    store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+                    _show_gate(store, self.principal, SHOW_RESOLVER[fn.__name__], m.group(1), level)
+                elif fn.__name__ not in NOT_SHOW_SCOPED:
+                    raise ApiError(403, "forbidden_show", "this route is not classified for show access")
             body = self._read_json()
             actor = _actor(self.headers, body, self.principal)
             _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
             _CALLER.actor, _CALLER.role = actor, self.principal.role
-            store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+            if store is None:
+                store = Store(DB_PATH, init=not is_dsn(DB_PATH))
             out = fn(store, m.group(1), body, self) if fn in REQUEST_AWARE else fn(store, m.group(1), body)
             headers = out.pop("_headers", None) if isinstance(out, dict) else None
             detail = out.pop("auditDetail", None) if isinstance(out, dict) else None
@@ -1894,6 +1989,7 @@ class Handler(BaseHTTPRequestHandler):
             if not show_id:
                 self._json(200, {"hold": None, "items": []})
                 return
+            _show_gate(STORE, self.principal, "show", show_id, "view")
             try:
                 payload = rundown_payload(STORE, show_id)
             except KeyError:
@@ -1959,6 +2055,15 @@ class Handler(BaseHTTPRequestHandler):
                 who["csrf"] = p.csrf   # the page keeps it in memory and sends it back as X-Volt-Csrf
             self._json(200, who)
             return
+        m = re.fullmatch(rf"/api/shows/{_ID}/access", parsed.path)
+        if m:   # who may see, edit or run a show: an operator who can view it may read the list; nobody else learns who is on it
+            if acl.RANK.get(self.principal.role, -1) < acl.RANK["operator"]:
+                raise ApiError(403, "forbidden_role", "operator role required")
+            _show_gate(STORE, self.principal, "show", m.group(1), "view")
+            if acl.show_of(STORE, "show", m.group(1)) is None:
+                raise ApiError(404, "not_found", f"no such show: {m.group(1)}")
+            self._json(200, {"ok": True, "show": m.group(1), "access": acl.list_acl(STORE, m.group(1))})
+            return
         if parsed.path == "/api/groups":
             self._require_admin()
             self._json(200, {"ok": True, "groups": [dict(g, claims=acl.claims_of(STORE, g["name"])) for g in acl.list_groups(STORE)]})
@@ -1980,6 +2085,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         m = MOS_ROUTE.match(parsed.path)
         if m:  # read-only MOS roCreate export (docs/specs/mos.md)
+            _show_gate(STORE, self.principal, "show", m.group(1), "view")
             try:
                 self._json(200, mos.export(STORE, m.group(1), **mos.parse_query(parse_qs(parsed.query, keep_blank_values=True))))
             except mos.MosError as exc:
@@ -2075,7 +2181,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _operator_state(self, store, show_id: str) -> dict:
         """GET /api/state?show=<id>. No show means the newest. The /rundown shape stays in rundown_payload."""
-        listing = operator_state.shows(store)
+        visible = _view_filter(store, self.principal)
+        listing = operator_state.shows(store, visible)
+        if show_id and not visible(show_id):   # a remembered show this caller can no longer see: the same as one that is gone
+            show_id = ""
         if not show_id and listing:
             show_id = listing[-1]["id"]
         rundown = None
@@ -2085,7 +2194,7 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError:  # a remembered show that no longer exists: fall back to the newest
                 show_id = listing[-1]["id"] if listing else None
                 rundown = rundown_payload(store, show_id) if show_id else None
-        state = operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room))
+        state = operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room), visible)
         # What a reorder must quote to be conditional on the list the page is showing (building.order_version).
         state["orderVersion"] = building.order_version(store, show_id) if show_id and rundown is not None else None
         return state

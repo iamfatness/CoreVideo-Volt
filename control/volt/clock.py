@@ -288,6 +288,10 @@ def _clone_show(store: Store, template_id: str, title: str, occ: datetime, day: 
             (new_id, f"{title} {day}", _now(), slot, template_id, day))
         if cur.rowcount != 1:
             return None
+        # A repeat of a restricted show is restricted the same way: the clock must not publish a private rundown by cloning it.
+        store.conn.execute(
+            "INSERT INTO show_acl (show_id, subject_kind, subject, level) SELECT ?, subject_kind, subject, level FROM show_acl WHERE show_id = ?",
+            (new_id, template_id))
         items = store.conn.execute(
             "SELECT id, position, slug, script, span_id, scheduled_at, schedule_mode, schedule_offset_seconds, status FROM item "
             "WHERE show_id = ? ORDER BY position", (template_id,)).fetchall()
