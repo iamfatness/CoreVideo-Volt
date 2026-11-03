@@ -337,6 +337,20 @@ def cache_gc_task(config: Config) -> Callable[[Store], dict]:
     return task
 
 
+def notifications_task(clock=time.time) -> Callable[[Store], dict]:
+    """Housekeeping: in-app notifications older than 90 days are deleted. Comments are kept. Always on; it only ever deletes those rows."""
+    def task(store: Store) -> dict:
+        from volt import discuss
+
+        try:
+            return {"purged": discuss.purge_notifications(store, now=clock())}
+        except Exception:  # noqa: BLE001 - a store without the table yet: nothing to purge, nothing to fail
+            store.conn.rollback()
+            log.warning("notification purge skipped", exc_info=True)
+            return {"purged": 0}
+    return task
+
+
 def refresh_urls_task(config: Config) -> Callable[[Store], publish_mod.RefreshReport]:
     """The periodic URL refresh: one `publish.refresh_expiring` pass over the configured storage.
 
@@ -690,6 +704,8 @@ def main(argv: list[str]) -> int:
         runner.periodic.append(Periodic("purge", config.purge_every, purge_task(config)))
     if args.refresh_urls_every > 0:
         runner.periodic.append(Periodic("refresh-urls", args.refresh_urls_every, refresh_urls_task(config)))
+    if not args.once:
+        runner.periodic.append(Periodic("notifications-gc", 3600.0, notifications_task()))
     gc_every = float(os.environ.get("VOLT_CACHE_GC_EVERY") or 600)
     if gc_every > 0 and not args.once:
         runner.periodic.append(Periodic("cache-gc", gc_every, cache_gc_task(config)))

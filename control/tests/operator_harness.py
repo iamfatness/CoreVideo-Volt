@@ -9,6 +9,8 @@ record_completed, publish_progress, publish_partial, library, export, scripts, f
 `scripts` gives the Scripts screen stories in each editorial state (see seed_scripts).
 `lease_held_by_other`, `lease_lost` and `presence_two_users` are `scripts` plus collaboration state (see seed_collab): dana holds the
 lease on Game action and two other people are looking at the show; `lease_lost` is the same, for taking the lease over from a second tab.
+`comments_thread` is `scripts` plus people and comments (see seed_comments): threads on Game action, one resolved, one deleted, a body full of markup
+that must stay text, and unread notifications for dana. The people's tokens are printed at start (dana operator, sam viewer, marcus operator).
 `library` adds assets for the Library screen (see seed_library). `find` is `library` plus typed fields, metadata, a second
 show with speech, a saved search and a bin (see seed_find). `export` is `library` plus assets that make each
 export refusal reachable (see seed_export) and a path map. `--token T` makes the server require a bearer token.
@@ -39,7 +41,7 @@ from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
              "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find",
-             "lease_held_by_other", "lease_lost", "presence_two_users"]
+             "lease_held_by_other", "lease_lost", "presence_two_users", "comments_thread"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -294,6 +296,32 @@ def seed_collab(store: Store, scenario: str) -> None:
     store.conn.commit()
 
 
+COMMENT_TOKENS: dict = {}
+
+
+def seed_comments(store: Store) -> None:
+    """People, threads and notifications for the comment panel and the bell. Their tokens are kept in COMMENT_TOKENS and printed at start."""
+    import time as _time
+    from volt import discuss, leases, users
+    for name, role in (("dana", "operator"), ("sam", "viewer"), ("marcus", "operator")):
+        COMMENT_TOKENS[name] = users.add(store, name, role)[1]
+    now = _time.time() - 600
+    item = lambda slug: store.conn.execute("SELECT id FROM item WHERE slug = ?", (slug,)).fetchone()["id"]  # noqa: E731
+    game, review, spot = item("Game action"), item("Under review"), item("Player spotlight")
+    root = discuss.add_comment(store, "marcus", "item", game, "Can we cut the second sentence? @dana it runs long. @sam what do you think?", now=now)
+    discuss.add_comment(store, "sam", "item", game, "Agree, it repeats the lead.", root["id"], now=now + 60)
+    discuss.add_comment(store, "dana", "item", game, "Cut. I will fix it now.", root["id"], now=now + 120)
+    done = discuss.add_comment(store, "dana", "item", spot, "Spelling of Okonkwo checked against the roster.", now=now + 30)
+    discuss.resolve(store, done["id"], "marcus", True, now=now + 90)
+    gone = discuss.add_comment(store, "marcus", "item", review, "Wrong item, ignore.", now=now + 40)
+    discuss.delete(store, gone["id"], "marcus", False, now=now + 50)
+    discuss.add_comment(store, "sam", "item", review, "<b>bold</b> & <img src=x onerror=alert(1)> and @nobody and a line\nbreak. Ping @marcus.", now=now + 70)
+    discuss.add_comment(store, "marcus", "show", store.conn.execute("SELECT show_id FROM item LIMIT 1").fetchone()["show_id"], "Rundown total is 4 minutes over.", now=now + 80)
+    leases.acquire(store, "item", game, "dana", "dana-tab", now)
+    leases.takeover(store, "item", game, "marcus", "marcus-tab", now + 5)
+    store.conn.commit()
+
+
 def seed(store: Store, scenario: str, media_dir=None):
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
@@ -324,8 +352,10 @@ def seed(store: Store, scenario: str, media_dir=None):
     store.conn.commit()
     if scenario == "held":
         hold(store, show, "Waiting on the producer for the replay cue")
-    if scenario == "scripts" or scenario in COLLAB_SCENARIOS:
+    if scenario == "scripts" or scenario == "comments_thread" or scenario in COLLAB_SCENARIOS:
         seed_scripts(store)
+    if scenario == "comments_thread":
+        seed_comments(store)
     if scenario in COLLAB_SCENARIOS:
         seed_collab(store, scenario)
 
@@ -429,6 +459,8 @@ if __name__ == "__main__":
     server, _tmp, _show, _spans = serve_scenario(args.scenario, args.port, token=args.token, runner=not args.no_runner)
     args.port = server.server_port
     print(f"{args.scenario}: http://127.0.0.1:{args.port}/operator", flush=True)
+    for _name, _token in COMMENT_TOKENS.items():
+        print(f"  {_name}: {_token}", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         while True:

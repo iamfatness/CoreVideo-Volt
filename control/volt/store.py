@@ -567,6 +567,45 @@ CREATE TABLE IF NOT EXISTS presence (
 );
 
 CREATE INDEX IF NOT EXISTS presence_by_show ON presence (show_id);
+
+CREATE TABLE IF NOT EXISTS comment (
+  id TEXT PRIMARY KEY,
+  target_kind TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  show_id TEXT,
+  author TEXT NOT NULL,
+  body TEXT NOT NULL,
+  parent_id TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by TEXT,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS comment_mention (
+  comment_id TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  PRIMARY KEY (comment_id, user_name)
+);
+
+CREATE TABLE IF NOT EXISTS notification (
+  id TEXT PRIMARY KEY,
+  user_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  show_id TEXT,
+  target_kind TEXT,
+  target_id TEXT,
+  comment_id TEXT,
+  actor TEXT,
+  created_at TEXT NOT NULL,
+  read_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS comment_by_target ON comment (target_kind, target_id, created_at);
+CREATE INDEX IF NOT EXISTS comment_by_author ON comment (author, created_at);
+CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id);
+CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at);
+CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id);
 """
 
 

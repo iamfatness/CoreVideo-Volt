@@ -15,7 +15,7 @@ from tests.pgutil import PgCase
 from tests.test_clock import Now, T0, _state, _tick
 from tests.test_operator_api import Api
 from tests.test_take import _show
-from volt import access, building, clock, migrations, serve, users
+from volt import access, building, clock, discuss, migrations, serve, users
 from volt.clock import set_schedule
 from volt.store import Store
 
@@ -155,6 +155,7 @@ class Routes(Api):
         self.show, (self.item, self.item2) = _show(self.store, [[("overlay.take", "on")], []])
         self.open_show, (self.open_item,) = mkshow(self.store)
         self.cue = self.store.conn.execute("SELECT id FROM cue WHERE item_id = ?", (self.item,)).fetchone()["id"]
+        self.comment = discuss.add_comment(self.store, "alice", "item", self.item, "a note", now=T0.timestamp())["id"]
 
     def acl(self, subject_kind, subject, level, show=None, token=None):
         s, out = self.post(f"/api/shows/{show or self.show}/access",
@@ -341,7 +342,7 @@ class Routes(Api):
         self.assertEqual(set(serve.SHOW_RESOLVER), scoped, "every scoped route needs a resolver, and only those")
         for name, level in serve.ROUTE_SHOW_LEVEL.items():
             self.assertIn(level, access.LEVELS, name)
-            self.assertIn(serve.SHOW_RESOLVER[name], ("show", "item", "cue", "mos"), name)
+            self.assertIn(serve.SHOW_RESOLVER[name], ("show", "item", "cue", "mos", "comment"), name)
 
     def test_a_route_under_shows_items_or_cues_cannot_hide_in_the_exempt_list(self):
         for pattern, fn in serve.ROUTES:
@@ -352,13 +353,16 @@ class Routes(Api):
     def test_the_levels_are_what_the_spec_says(self):
         run = {"act_go", "act_take", "act_hold", "act_release", "act_skip", "act_kill"}
         for name, level in serve.ROUTE_SHOW_LEVEL.items():
+            if name == "act_comment_delete":       # the author (or an admin) deletes; the show only has to be viewable
+                self.assertEqual(level, "view", name)
+                continue
             self.assertEqual(level, "run" if name in run | {"act_mos_resolve", "act_show_access"} else "edit", name)
 
     def test_the_resolvers_are_the_kind_the_path_names(self):
         for pattern, fn in serve.ROUTES:
             if fn.__name__ in serve.SHOW_RESOLVER:
                 kind = serve.SHOW_RESOLVER[fn.__name__]
-                want = {"shows": "show", "items": "item", "cues": "cue", "mos": "mos"}[re.match(r"^\^/api/(\w+)/", pattern.pattern).group(1)]
+                want = {"shows": "show", "items": "item", "cues": "cue", "mos": "mos", "comments": "comment"}[re.match(r"^\^/api/(\w+)/", pattern.pattern).group(1)]
                 self.assertEqual(kind, "mos" if fn.__name__ == "act_mos_resolve" else want, fn.__name__)
 
     def _path(self, pattern, ident):
@@ -368,16 +372,16 @@ class Routes(Api):
         """Walk the real route table: a user with no row, or a row one level too low, is refused with forbidden_show before the body
         is read; a user with exactly the needed level is not refused for access (the body is empty, so another refusal is fine)."""
         self.acl("user", "alice", "run")                                # makes the show restricted
-        ident = {"show": self.show, "item": self.item, "cue": self.cue, "mos": f"ncs:{self.show}"}
+        ident = {"show": self.show, "item": self.item, "cue": self.cue, "mos": f"ncs:{self.show}", "comment": self.comment}
         routes = [(self._path(p, ident[serve.SHOW_RESOLVER[fn.__name__]]), fn.__name__) for p, fn in serve.ROUTES
                   if fn.__name__ in serve.ROUTE_SHOW_LEVEL]
         self.assertGreaterEqual(len(routes), 18)
         for path, name in routes:
             need = serve.ROUTE_SHOW_LEVEL[name]
-            code = "forbidden_show" if serve.ROUTE_ROLES[name] == "operator" else "forbidden_role"
+            code = "forbidden_role" if serve.ROUTE_ROLES[name] == "admin" else "forbidden_show"
             s, out, _ = self.call("POST", path, raw=b"{not json", token=self.bob)                 # no row at all
             self.assertEqual((s, out["error"]["code"]), (403, code), path)
-            if need in BELOW and serve.ROUTE_ROLES[name] == "operator":
+            if need in BELOW and serve.ROUTE_ROLES[name] != "admin":
                 self.acl("user", "bob", BELOW[need])
                 s, out, _ = self.call("POST", path, raw=b"{not json", token=self.bob)
                 self.assertEqual((s, out["error"]["code"]), (403, "forbidden_show"), path)

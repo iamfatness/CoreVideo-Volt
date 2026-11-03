@@ -270,6 +270,23 @@ MIGRATIONS = (
               postgres=("CREATE TABLE IF NOT EXISTS lease (resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, holder TEXT NOT NULL, client_id TEXT NOT NULL, acquired_at TIMESTAMPTZ NOT NULL, renewed_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (resource_kind, resource_id))",
                       "CREATE TABLE IF NOT EXISTS presence (user_name TEXT NOT NULL, client_id TEXT NOT NULL, show_id TEXT, view TEXT NOT NULL, seen_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_name, client_id))",
                       "CREATE INDEX IF NOT EXISTS presence_by_show ON presence (show_id)")),
+    Migration(34, "comments and notifications",
+              sqlite=("CREATE TABLE IF NOT EXISTS comment (id TEXT PRIMARY KEY, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, show_id TEXT, author TEXT NOT NULL, body TEXT NOT NULL, parent_id TEXT, created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT, deleted_at TEXT)",
+                      "CREATE TABLE IF NOT EXISTS comment_mention (comment_id TEXT NOT NULL, user_name TEXT NOT NULL, PRIMARY KEY (comment_id, user_name))",
+                      "CREATE TABLE IF NOT EXISTS notification (id TEXT PRIMARY KEY, user_name TEXT NOT NULL, kind TEXT NOT NULL, show_id TEXT, target_kind TEXT, target_id TEXT, comment_id TEXT, actor TEXT, created_at TEXT NOT NULL, read_at TEXT)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_target ON comment (target_kind, target_id, created_at)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_author ON comment (author, created_at)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id)",
+                      "CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at)",
+                      "CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id)"),
+              postgres=("CREATE TABLE IF NOT EXISTS comment (id TEXT PRIMARY KEY, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, show_id TEXT, author TEXT NOT NULL, body TEXT NOT NULL, parent_id TEXT, created_at TIMESTAMPTZ NOT NULL, resolved_at TIMESTAMPTZ, resolved_by TEXT, deleted_at TIMESTAMPTZ)",
+                      "CREATE TABLE IF NOT EXISTS comment_mention (comment_id TEXT NOT NULL, user_name TEXT NOT NULL, PRIMARY KEY (comment_id, user_name))",
+                      "CREATE TABLE IF NOT EXISTS notification (id TEXT PRIMARY KEY, user_name TEXT NOT NULL, kind TEXT NOT NULL, show_id TEXT, target_kind TEXT, target_id TEXT, comment_id TEXT, actor TEXT, created_at TIMESTAMPTZ NOT NULL, read_at TIMESTAMPTZ)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_target ON comment (target_kind, target_id, created_at)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_author ON comment (author, created_at)",
+                      "CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id)",
+                      "CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at)",
+                      "CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id)")),
 )
 
 LATEST = MIGRATIONS[-1].version

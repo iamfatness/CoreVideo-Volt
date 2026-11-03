@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -119,9 +119,12 @@ _AUDIT_KIND = {
     "wire": "wire",
     "templates": "template",
     "presence": "presence",
+    "comments": "comment",
+    "notifications": "notification",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
+leases.ON_TAKEN = discuss.on_lease_taken   # a taken-over lease pings the person who lost it (volt/discuss.py); a failure there never undoes the takeover
 # The OIDC sign-in configuration (volt/oidc.py), loaded from VOLT_OIDC_CONFIG at start. None = sign-in is off and /auth/* answers 404.
 OIDC_CONFIG = None
 
@@ -354,6 +357,12 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("bin"), dict):
             captured = out["bin"].get("id") or ""
+    if len(parts) >= 2 and parts[1] == "comments":
+        action = "comment_" + (parts[-1] if len(parts) > 2 else "add")
+        if not captured and isinstance(out.get("comment"), dict):
+            captured = out["comment"].get("id") or ""
+    if len(parts) >= 2 and parts[1] == "notifications":
+        action = "notifications_read"
     if len(parts) >= 4 and parts[1] == "items" and parts[3] == "lease":
         action = "lease_" + {"lease": "acquire"}.get(parts[-1], parts[-1])
     kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
@@ -987,6 +996,120 @@ def act_presence(store, _unused, body):
         _show_gate(store, principal, "show", show, "view")     # presence names a show: only someone who can see it may say they are looking
     _collab(lambda: leases.beat(store, actor, client, show, view, CLOCK()))
     return {"ok": True}
+
+
+# ---- comments, mentions and notifications (volt/discuss.py) -----------------------------------------------------------
+# A comment is readable, writable and notifiable only by someone who can view its show. A body travels in the POST body and the JSON answer and
+# is stored in the comment table: never in the audit table, the log or a URL (the audit detail carries ids and the names that were pinged).
+
+def _discuss(fn):
+    try:
+        return fn()
+    except discuss.DiscussError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
+    except ApiError:
+        raise
+    except Exception:  # noqa: BLE001 - a missing or locked comment table: say so, change nothing
+        log.exception("comment tables unavailable")
+        raise ApiError(503, "collab_unavailable", "comments are unavailable right now; the show itself is unaffected") from None
+
+
+def _no_asset_comments(principal, kind) -> None:
+    """Conservative default until the owner decides who may see comments on an asset (assets are not show-scoped): admins only."""
+    if kind == "asset" and not acl.bypasses(principal):
+        raise ApiError(403, "forbidden_role", "comments on an asset need the admin role until it is decided who may see them")
+
+
+def act_comment_add(store, _unused, body):
+    """Post a comment or a one-level reply: {kind: item|show|asset, target, body, parent?}. The author must be able to view the show."""
+    _unknown_keys(body, {"kind", "target", "body", "parent"})
+    kind, target = body.get("kind"), body.get("target")
+    text, parent = body.get("body"), body.get("parent")
+    for name, value in (("kind", kind), ("target", target), ("body", text)):
+        if not isinstance(value, str):
+            raise ApiError(422, "bad_input", f"{name} is required")
+    if parent is not None and not isinstance(parent, str):
+        raise ApiError(422, "bad_input", "parent must be a comment id")
+    actor, principal = _who()
+    _no_asset_comments(principal, kind)
+    show_id = _discuss(lambda: discuss.show_of(store, kind, target))
+    if show_id is not None:
+        _show_gate(store, principal, "show", show_id, "view")      # whoever cannot view the show cannot talk on it
+    made = _discuss(lambda: discuss.add_comment(store, actor, kind, target, text, parent, now=CLOCK()))
+    detail = {"kind": kind, "target": target, "show": show_id, "parent": parent, "mentions": made["mentions"]}
+    return {"ok": True, "comment": made, "auditDetail": json.dumps(detail, sort_keys=True)}
+
+
+def _comment_ref(store, comment_id: str):
+    row = store.conn.execute("SELECT target_kind, target_id, show_id FROM comment WHERE id = ?", (comment_id,)).fetchone()
+    return {"kind": row["target_kind"], "target": row["target_id"], "show": row["show_id"]} if row else {}
+
+
+def act_comment_resolve(store, comment_id, body):
+    """Resolve a thread or reopen it: {resolved: true|false}. Needs edit on the show (the route table checked it)."""
+    _unknown_keys(body, {"resolved"})
+    resolved = body.get("resolved")
+    if not isinstance(resolved, bool):
+        raise ApiError(422, "bad_input", "resolved must be true or false")
+    actor, principal = _who()
+    _no_asset_comments(principal, _comment_ref(store, comment_id).get("kind"))
+    made = _discuss(lambda: discuss.resolve(store, comment_id, actor, resolved, now=CLOCK()))
+    return {"ok": True, "comment": made, "auditDetail": json.dumps(dict(_comment_ref(store, comment_id), resolved=resolved), sort_keys=True)}
+
+
+def act_comment_delete(store, comment_id, body):
+    """Delete a comment (soft; the body is blanked): its author, or an admin."""
+    _unknown_keys(body, set())
+    actor, principal = _who()
+    _no_asset_comments(principal, _comment_ref(store, comment_id).get("kind"))
+    made = _discuss(lambda: discuss.delete(store, comment_id, actor, acl.bypasses(principal), now=CLOCK()))
+    return {"ok": True, "comment": made, "auditDetail": json.dumps(_comment_ref(store, comment_id), sort_keys=True)}
+
+
+def act_notifications_read(store, _unused, body):
+    """Mark some of your own notifications read ({ids: [...]}) or all of them ({all: true}); anyone else's ids change nothing."""
+    _unknown_keys(body, {"ids", "all"})
+    ids, everything = body.get("ids"), body.get("all")
+    if (ids is None) == (everything is None):
+        raise ApiError(422, "bad_input", "give ids (a list) or all: true, not both and not neither")
+    if everything is not None and everything is not True:
+        raise ApiError(422, "bad_input", "all must be true")
+    if ids is not None and (not isinstance(ids, list) or len(ids) > 200 or not all(isinstance(i, str) and 0 < len(i) <= 128 for i in ids)):
+        raise ApiError(422, "bad_input", "ids must be a list of at most 200 notification ids")
+    actor = _who()[0]
+    marked = _discuss(lambda: discuss.mark_read(store, actor, None if everything else ids, now=CLOCK()))
+    left = _discuss(lambda: discuss.unread_count(store, actor))
+    return {"ok": True, "marked": marked, "unread": left, "auditDetail": json.dumps({"all": bool(everything), "marked": marked}, sort_keys=True)}
+
+
+def discuss_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/comments?kind=&target= and GET /api/notifications[?unread=1]."""
+    if path == "/api/comments":
+        if sorted(query) != ["kind", "target"] or any(len(v) != 1 or not v[0] for v in query.values()):
+            raise ApiError(422, "bad_input", "this route takes kind and target, each once")
+        kind, target = query["kind"][0], query["target"][0]
+        _no_asset_comments(handler.principal, kind)
+        show_id = _discuss(lambda: discuss.show_of(store, kind, target))
+        if show_id is not None:
+            _show_gate(store, handler.principal, "show", show_id, "view")
+        me = handler.principal.name if handler.principal else LEGACY_ACTOR
+        # A viewer is not handed the list of other users (conservative default): operators and admins get the roster for the picker.
+        viewer = handler.principal is not None and not handler.principal.legacy and handler.principal.role == "viewer"
+        got = _discuss(lambda: {"comments": discuss.list_comments(store, kind, target, me), "people": [] if viewer else discuss.roster(store, show_id)})
+        handler._json(200, {"ok": True, "kind": kind, "target": target, "show": show_id, **got})
+        return True
+    if path == "/api/notifications":
+        extra = sorted(set(query) - {"unread"})
+        if extra or any(len(v) != 1 for v in query.values()):
+            raise ApiError(422, "bad_input", "this route takes unread (0 or 1), once")
+        if query.get("unread", ["0"])[0] not in ("0", "1"):
+            raise ApiError(422, "bad_input", "unread must be 0 or 1")
+        me = handler.principal.name if handler.principal else LEGACY_ACTOR
+        got = _discuss(lambda: {"notifications": discuss.notifications(store, me, unread_only=query.get("unread") == ["1"]),
+                                "unread": discuss.unread_count(store, me)})
+        handler._json(200, {"ok": True, **got})
+        return True
+    return False
 
 
 # ---- stories: the script save and the story read (docs/superpowers/specs/2026-11-01-newsroom-scripts-design.md) -----------
@@ -1717,6 +1840,10 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/items/{_ID}/lease/release$"), act_item_lease_release),
     (re.compile(rf"^/api/items/{_ID}/lease/takeover$"), act_item_lease_takeover),
     (re.compile(r"^/api/presence$()"), act_presence),
+    (re.compile(r"^/api/comments$()"), act_comment_add),
+    (re.compile(rf"^/api/comments/{_ID}/resolve$"), act_comment_resolve),
+    (re.compile(rf"^/api/comments/{_ID}/delete$"), act_comment_delete),
+    (re.compile(r"^/api/notifications/read$()"), act_notifications_read),
     (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
@@ -1801,6 +1928,8 @@ ROUTE_ROLES = {
     "act_session_start": "viewer", "act_session_end": "viewer",
     # collaboration: a lease is an edit, so it needs an operator; presence is only "I am looking", so a viewer may send it
     "act_item_lease": "operator", "act_item_lease_release": "operator", "act_item_lease_takeover": "operator", "act_presence": "viewer",
+    # comments: a viewer may read, comment and delete their own comment, and mark their own notifications read; closing a thread is an edit
+    "act_comment_add": "viewer", "act_comment_delete": "viewer", "act_notifications_read": "viewer", "act_comment_resolve": "operator",
 }
 
 
@@ -1821,6 +1950,7 @@ ROUTE_SHOW_LEVEL = {
     "act_story_status": "edit", "act_item_float": "edit", "act_item_remove": "edit", "act_item_detach": "edit", "act_cue_add": "edit",
     "act_cue_remove": "edit",
     "act_item_lease": "edit", "act_item_lease_release": "edit", "act_item_lease_takeover": "edit",
+    "act_comment_resolve": "edit", "act_comment_delete": "view",
 }
 # How to find the show from the id the path captured: the show itself, an item, a cue, or a MOS "device:show" id.
 SHOW_RESOLVER = {
@@ -1831,6 +1961,7 @@ SHOW_RESOLVER = {
     "act_prompter_ticket": "show", "act_item_copy": "item", "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
     "act_cue_add": "item", "act_cue_remove": "cue",
     "act_item_lease": "item", "act_item_lease_release": "item", "act_item_lease_takeover": "item",
+    "act_comment_resolve": "comment", "act_comment_delete": "comment",
 }
 NOT_SHOW_SCOPED = frozenset({
     "act_show_create",                                                       # there is no show yet
@@ -1845,6 +1976,8 @@ NOT_SHOW_SCOPED = frozenset({
     "act_group_create", "act_group_members", "act_group_delete", "act_group_claims",
     "act_session_start", "act_session_end",
     "act_presence",                                                          # names a show in the body and checks view access on it itself
+    "act_comment_add",                                                       # names its target in the body and checks view access on that show itself
+    "act_notifications_read",                                                # your own notifications; nothing show-scoped to check
     "act_template_create", "act_template_instantiate", "act_template_delete",   # the show is in the body: act_template_instantiate and _create check it themselves
     "act_wire_take", "act_wire_dismiss",                                     # the show is in the body: act_wire_take checks it itself
 })
@@ -2230,7 +2363,7 @@ class Handler(BaseHTTPRequestHandler):
             skip_audit = bool(isinstance(out, dict) and out.pop("auditSkip", False)) or fn.__name__ in HEARTBEAT_ROUTES
             if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300 and not skip_audit:
                 action, kind, target = _audit_fields(path, m.group(1), body, out)
-                if kind == "session":
+                if kind in ("session", "notification"):
                     target = actor
                 store.append_audit(actor, action, kind, target, detail)
             self._json(status, out, headers)
@@ -2388,6 +2521,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if wire_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
+        if discuss_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
         if stories_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if schema_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
@@ -2523,6 +2658,22 @@ class Handler(BaseHTTPRequestHandler):
                     store.conn.rollback()
                 except Exception:  # noqa: BLE001
                     pass
+        # Unread pings and open threads per row: the bell and the chip. Same rule as above: unreadable tables cost the page only these.
+        state["notifications"], state["commentCounts"] = {"unread": 0}, {}
+        try:
+            if discuss.available(store):
+                state["notifications"] = {"unread": discuss.unread_count(store, self.principal.name if self.principal else LEGACY_ACTOR)}
+                if show_id and rundown is not None:
+                    state["commentCounts"] = discuss.open_counts(store, show_id)
+            else:
+                state["collab"] = {"available": False}
+        except Exception:  # noqa: BLE001
+            log.warning("comment state unavailable for the poll", exc_info=True)
+            state["notifications"], state["commentCounts"], state["collab"] = {"unread": 0}, {}, {"available": False}
+            try:
+                store.conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
         return state
 
     def _json(self, status: int, payload: dict, headers=None):

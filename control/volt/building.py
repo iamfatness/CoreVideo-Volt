@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from volt import cues as cue_mod
-from volt import leases, story
+from volt import discuss, leases, story
 from volt.dispatch import HANDLERS
 from volt.disk import DiskLowError
 from volt.ingest import IngestError, request as ingest_request
@@ -197,6 +197,7 @@ def remove_item(store: Store, item_id: str) -> str:
         if cur.rowcount != 1:
             raise BuildError(409, "not_removable", "the item changed while it was being removed")
         story.forget(store, item_id)
+        discuss.forget_item(store, item_id)        # its comments go with it (quietly skipped if those tables are not there)
         return row["show_id"]
 
 
@@ -246,6 +247,7 @@ def delete_show(store: Store, show_id: str) -> dict:
             raise BuildError(409, "show_not_deletable", "an item changed while the show was being deleted")
         # Its access list goes with it: a later show given the same id must not inherit who could see this one.
         store.conn.execute("DELETE FROM show_acl WHERE show_id = ?", (show_id,))
+        discuss.forget_show(store, show_id)        # and its comments, and those on its items
         store.conn.execute("DELETE FROM show WHERE id = ?", (show_id,))
         return {"items": items, "cues": cues}
 

@@ -119,6 +119,12 @@ class Endpoints(Api):
             elif tpl in ("/api/search", "/api/searches", "/api/bins", "/api/schema"):   # lists: they have no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
+            elif tpl == "/api/comments":     # a thread needs kind and target: refused as bad input, never a missing route
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["error"]["code"]), (422, "bad_input"), tpl)
+            elif tpl == "/api/notifications":    # your own list: empty on a fresh database
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"], payload["notifications"]), (200, True, []), tpl)
             elif tpl == "/api/media-ticket":
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (401, 422, 503), tpl)
@@ -666,7 +672,7 @@ class Tokens(unittest.TestCase):
 
 ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
               "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
-              "lower3 mark signin script float wire bin tag").split()
+              "lower3 mark signin script float wire bin tag comment bell edit history").split()
 
 
 class Icons(unittest.TestCase):
@@ -701,7 +707,8 @@ class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
         self.assertEqual(sorted(state), sorted(["incomplete", "required", "shared", "aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped",
-                                       "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved", "editing", "yours"]))
+                                       "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved", "editing", "yours",
+                                       "threadOpen", "threadResolved", "commentGone", "unread", "mention", "reply", "tookOver"]))
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -1802,3 +1809,144 @@ class LeaseUi(unittest.TestCase):
             self.assertIn(cls, self.CSS)
         for name in set(re.findall(r"var\(--([a-z0-9-]+)\)", self.CSS[self.CSS.index(".presence"):])):
             self.assertRegex(self.CSS, r"--%s:" % re.escape(name))
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class CommentsUi(unittest.TestCase):
+    """Comments, mentions and the bell on the page (identity plan, task 8). The server decides who may read or write; the page shows what it
+    said, and draws a comment body as text only."""
+    HTML, JS, CSS = FILES["index.html"], FILES["operator.js"], FILES["operator.css"]
+
+    def section(self):
+        return self.JS[self.JS.index("// ---- Comments and notifications (docs"):self.JS.index("// ---- Edit leases and presence")]
+
+    def pure(self):
+        return self.JS[self.JS.index("// ---- comments and notifications: the pure parts"):self.JS.index("// Workspaces are saved layouts")]
+
+    def test_comment_states_in_state_map_and_sprite(self):
+        (state,) = _node(["STATE"])
+        self.assertEqual(state["threadOpen"], {"icon": "comment", "word": "Open", "cls": "st inform"})
+        self.assertEqual(state["threadResolved"], {"icon": "ready", "word": "Resolved", "cls": "st done"})
+        self.assertEqual(state["commentGone"], {"icon": "trash", "word": "Deleted", "cls": "st done"})
+        self.assertEqual(state["unread"], {"icon": "bell", "word": "Unread", "cls": "st inform"})
+        self.assertEqual(state["tookOver"], {"icon": "edit", "word": "Took over", "cls": "st hold"})
+        for kind in ("threadOpen", "threadResolved", "commentGone", "unread", "mention", "reply", "tookOver"):
+            self.assertIn(state[kind]["icon"], Icons.SPRITE_IDS, kind)
+            self.assertNotIn("fail", state[kind]["cls"])                  # red is only for a live path
+            self.assertNotIn("air", state[kind]["cls"].split())
+
+    def test_sprite_gains_comment_bell_edit_history(self):
+        for name in ("comment", "bell", "edit", "history"):
+            self.assertIn(name, Icons.SPRITE_IDS)
+            self.assertIn(name, ICON_NAMES)
+
+    def test_mention_markup_from_server_list_not_from_body(self):
+        got = _node(["mentionPieces", "hi @bob and @eve.", ["bob"]],
+                    ["mentionPieces", "hi @bob", []],
+                    ["mentionPieces", "mail a@bob.com or @bob.", ["bob"]],
+                    ["mentionPieces", "@bob, @carol.", ["bob", "carol"]],
+                    ["mentionPieces", "", ["bob"]],
+                    ["mentionPieces", "<img src=x onerror=alert(1)> @bob", ["bob"]])
+        self.assertEqual(got[0], [{"text": "hi "}, {"text": "@bob", "mention": "bob"}, {"text": " and @eve."}])      # eve is not in the list: plain text
+        self.assertEqual(got[1], [{"text": "hi @bob"}])                                                               # nothing from the server: nothing marked
+        self.assertEqual(got[2], [{"text": "mail a@bob.com or "}, {"text": "@bob", "mention": "bob"}, {"text": "."}])
+        self.assertEqual(got[3], [{"text": "@bob", "mention": "bob"}, {"text": ", "}, {"text": "@carol", "mention": "carol"}, {"text": "."}])
+        self.assertEqual(got[4], [{"text": ""}])
+        self.assertEqual(got[5], [{"text": "<img src=x onerror=alert(1)> "}, {"text": "@bob", "mention": "bob"}])   # markup stays text
+        self.assertEqual("".join(p["text"] for p in got[2]), "mail a@bob.com or @bob.")                                # pieces always rebuild the body
+
+    def test_the_picker_finds_the_token_and_inserts_a_name(self):
+        people = [{"name": "bob", "displayName": "Bob Ross"}, {"name": "bella", "displayName": "Bella"}, {"name": "carol", "displayName": "Carol Bobby"}]
+        got = _node(["mentionToken", "hello @bo", 9], ["mentionToken", "hello @bo", 7], ["mentionToken", "a@bo", 4], ["mentionToken", "hello", 5],
+                    ["mentionToken", "x @", 3], ["mentionMatches", people, "b", 6], ["mentionMatches", people, "bob", 6], ["mentionMatches", people, "", 2],
+                    ["mentionMatches", people, "zzz", 6],
+                    ["mentionInsert", "hello @bo and more", {"start": 6, "query": "bo"}, 9, "bob"])
+        self.assertEqual(got[0], {"start": 6, "query": "bo"})
+        self.assertEqual(got[1], {"start": 6, "query": ""})                  # the caret just after the @
+        self.assertIsNone(got[2])                                            # inside a word (an address) it is not a mention
+        self.assertIsNone(got[3])
+        self.assertEqual(got[4], {"start": 2, "query": ""})
+        self.assertEqual([p["name"] for p in got[5]], ["bob", "bella", "carol"])      # names that start with it first, then display names that contain it
+        self.assertEqual([p["name"] for p in got[6]], ["bob", "carol"])
+        self.assertEqual([p["name"] for p in got[7]], ["bob", "bella"])
+        self.assertEqual(got[8], [])
+        self.assertEqual(got[9], {"text": "hello @bob  and more", "caret": 11})
+
+    def test_threads_group_replies_under_their_first_comment(self):
+        rows = [{"id": "a", "parent": None}, {"id": "b", "parent": "a"}, {"id": "c", "parent": None}, {"id": "d", "parent": "a"}, {"id": "e", "parent": "gone"}]
+        (got,) = _node(["threadsOf", rows])
+        self.assertEqual([(t["root"]["id"], [r["id"] for r in t["replies"]]) for t in got], [("a", ["b", "d"]), ("c", [])])
+
+    def test_notifications_read_as_a_sentence_with_a_state_kind(self):
+        got = _node(["notificationLine", {"kind": "mention", "actor": "ann", "label": "Lead"}],
+                    ["notificationLine", {"kind": "reply", "actor": "dan", "label": "Weather"}],
+                    ["notificationLine", {"kind": "lease_taken", "actor": "eve", "label": None}],
+                    ["notificationLine", {"kind": "future", "actor": None, "label": "X"}],
+                    ["unreadText", 0], ["unreadText", 7], ["unreadText", 99], ["unreadText", 100], ["unreadText", None])
+        self.assertEqual(got[0], {"kind": "mention", "text": 'ann mentioned you on "Lead"'})
+        self.assertEqual(got[1], {"kind": "reply", "text": 'dan replied in a thread you are in on "Weather"'})
+        self.assertEqual(got[2], {"kind": "tookOver", "text": "eve took over editing an item"})
+        self.assertEqual(got[3]["kind"], "mention")                           # an unknown kind from a newer server still reads as something
+        self.assertEqual(got[4:], ["0", "7", "99", "99+", "0"])
+
+    def test_ui_renders_body_with_textcontent(self):
+        for src in (self.section(), self.pure()):
+            for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "createContextualFragment", "DOMParser"):
+                self.assertNotIn(banned, src)
+        self.assertIn("mentionPieces(c.body, c.mentions)", self.section())
+        self.assertIn("text: p.text", self.section())                         # a mention span is filled with textContent
+        self.assertNotIn("localStorage", self.section())                      # a draft is not kept across sessions
+        self.assertNotRegex(self.section() + self.pure(), r"https?://")
+
+    def test_the_mention_picker_is_a_keyboard_operable_listbox(self):
+        sec = self.section()
+        for needle in ("role: 'listbox'", "role: 'option'", "'aria-selected'", "aria-activedescendant", "'ArrowDown'", "'ArrowUp'", "'Enter'", "'Escape'",
+                       "e.stopPropagation()", "aria-controls", "People you can mention"):
+            self.assertIn(needle, sec)
+        self.assertNotIn("role: 'combobox'", sec)                             # a textarea is a textbox; the popup rides aria-activedescendant
+
+    def test_delete_is_two_press_and_resolve_is_hidden_from_viewers(self):
+        sec = self.section()
+        self.assertIn("armedAction(delKey", sec)
+        self.assertIn("WHO.role !== 'viewer'", sec)
+        self.assertNotRegex(sec, r"onclick: \(\) => cmAct\('commentDelete'")      # the button never deletes in one press
+
+    def test_markup_has_the_bell_the_panel_and_the_dialog(self):
+        self.assertRegex(self.HTML, r'<button[^>]*id="bell-btn"[^>]*aria-haspopup="dialog"')
+        self.assertIn('id="bell-count"', self.HTML)
+        self.assertRegex(self.HTML, r'id="bell-unread" class="vh"')           # "unread" is a word for screen readers, beside the number
+        self.assertIn('<span>Notifications</span>', self.HTML)                 # the button says its word, not only an icon
+        self.assertRegex(self.HTML, r'<section class="panel" aria-labelledby="h-comments">.*?id="comments"')
+        self.assertRegex(self.HTML, r'<dialog id="notif-dlg" aria-labelledby="notif-h"')
+        self.assertIn("'comments'", self.JS[self.JS.index("const SC_TABS"):self.JS.index("const SC_TABS") + 600])
+        self.assertIn("$('notif-dlg').open", self.JS[self.JS.index("function anyDialog"):self.JS.index("function anyDialog") + 200])
+
+    def test_the_show_and_scripts_panels_do_not_share_element_ids(self):
+        sec = self.section()
+        self.assertIn("pre + '-text'", sec)
+        self.assertIn("where === 'scripts' ? 'scm' : 'cm'", sec)
+
+    def test_the_endpoints_exist_and_never_wait_on_the_take_lock(self):
+        for pair in ("commentList: ['GET',  '/api/comments']", "commentAdd:  ['POST', '/api/comments']", "commentResolve: ['POST', '/api/comments/{id}/resolve']",
+                     "commentDelete: ['POST', '/api/comments/{id}/delete']", "notifList:   ['GET',  '/api/notifications']",
+                     "notifRead:   ['POST', '/api/notifications/read']"):
+            self.assertIn(pair, self.JS)
+        seq = re.search(r"const SEQUENCED = new Set\(\[(.*?)\]\)", self.JS).group(1)
+        for name in ("commentList", "commentAdd", "commentResolve", "commentDelete", "notifList", "notifRead"):
+            self.assertNotIn(name, seq)
+        labels = self.JS[self.JS.index("const ERR_LABEL"):self.JS.index("const INGEST_WHY")]
+        for code in ("rate_limited", "reply_depth", "parent_deleted", "not_a_thread"):
+            self.assertIn(code + ": ", labels)
+
+    def test_the_row_chip_and_the_bell_come_from_the_state_poll(self):
+        self.assertIn("S.data.commentCounts", self.JS[self.JS.index("function rundownRow"):self.JS.index("function rundownRow") + 6000])
+        self.assertIn("S.data.notifications", self.section())
+        self.assertIn("bellPaint();", self.JS[self.JS.index("function renderChrome"):self.JS.index("function renderChrome") + 1800])
+
+    def test_the_styles_use_only_existing_tokens_in_both_themes(self):
+        start = self.CSS.index("/* comments and notifications")
+        for cls in (".bell-count", ".cm-thread", ".cm-mention", ".cm-list", ".cm-opt", ".nt-row"):
+            self.assertIn(cls, self.CSS[start:])
+        for name in set(re.findall(r"var\(--([a-z0-9-]+)\)", self.CSS[start:])):
+            self.assertRegex(self.CSS, r"--%s:" % re.escape(name))
+        self.assertNotRegex(self.CSS[start:], r"#[0-9a-fA-F]{3,6}\b")           # no new colour: the measured tokens only
