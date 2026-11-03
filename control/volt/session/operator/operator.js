@@ -289,6 +289,14 @@
     // Edit leases: who has an item open for editing. Never red: red is only for a live path.
     editing:     { icon: 'lock',    word: 'Editing',     cls: 'st hold' },
     yours:       { icon: 'ready',   word: 'You',         cls: 'st ok' },
+    // Comments and notifications. Information, never red: nothing here is a live path.
+    threadOpen:     { icon: 'comment', word: 'Open',      cls: 'st inform' },
+    threadResolved: { icon: 'ready',   word: 'Resolved',  cls: 'st done' },
+    commentGone:    { icon: 'trash',   word: 'Deleted',   cls: 'st done' },
+    unread:         { icon: 'bell',    word: 'Unread',    cls: 'st inform' },
+    mention:        { icon: 'comment', word: 'Mention',   cls: 'st inform' },
+    reply:          { icon: 'comment', word: 'Reply',     cls: 'st inform' },
+    tookOver:       { icon: 'edit',    word: 'Took over', cls: 'st hold' },
 
   };
   // The state-language kind of an item's story status (draft, ready, approved, killed). Not the playout status.
@@ -305,6 +313,59 @@
     return known ? { icon: known.icon, word: word || known.word, cls: known.cls }
       : { icon: STATE.pending.icon, word: word || String(kind), cls: 'st' };
   }
+
+  // ---- comments and notifications: the pure parts (the page that uses them is further down) ----------------------------------
+  const COMMENT_MAX = 4000;
+  // Cut a comment body into pieces. A piece is a mention only when its name is in the list the *server* sent for that comment: an
+  // @name the server did not resolve (no such person, or someone who cannot see the show) stays plain text, and the page never
+  // decides on its own what a mention is. Every piece is shown as text, never as markup.
+  function mentionPieces(body, mentions) {
+    const text = String(body == null ? '' : body), names = new Set(mentions || []);
+    const re = /(?<![A-Za-z0-9._:@-])@([A-Za-z0-9._:-]{1,100})/g;
+    const out = [];
+    let at = 0, m;
+    while ((m = re.exec(text))) {
+      let name = m[1];
+      while (name && !names.has(name) && /[.:-]$/.test(name)) name = name.slice(0, -1);   // "@bob." ends a sentence
+      if (!names.has(name)) continue;
+      const end = m.index + 1 + name.length;
+      if (m.index > at) out.push({ text: text.slice(at, m.index) });
+      out.push({ text: text.slice(m.index, end), mention: name });
+      at = end;
+      re.lastIndex = end;
+    }
+    if (at < text.length || !out.length) out.push({ text: text.slice(at) });
+    return out;
+  }
+  // The @token the caret is inside, for the picker: {start, query}, or null when the caret is not in one.
+  function mentionToken(text, caret) {
+    const m = /(?<![A-Za-z0-9._:@-])@([A-Za-z0-9._:-]{0,100})$/.exec(String(text).slice(0, caret));
+    return m ? { start: m.index, query: m[1] } : null;
+  }
+  // The people the picker offers for what has been typed after the @: names that start with it, then display names that contain it.
+  function mentionMatches(people, query, limit) {
+    const q = String(query || '').toLowerCase(), list = people || [];
+    const starts = list.filter((p) => p.name.toLowerCase().startsWith(q));
+    const rest = q ? list.filter((p) => !p.name.toLowerCase().startsWith(q) && String(p.displayName || '').toLowerCase().includes(q)) : [];
+    return starts.concat(rest).slice(0, limit || 6);
+  }
+  function mentionInsert(text, token, caret, name) {
+    const head = String(text).slice(0, token.start) + '@' + name + ' ';
+    return { text: head + String(text).slice(caret), caret: head.length };
+  }
+  // Threads: each top-level comment with its replies, in the order the server sent them. A reply whose thread is missing is dropped.
+  function threadsOf(list) {
+    const all = list || [];
+    return all.filter((c) => !c.parent).map((root) => ({ root, replies: all.filter((c) => c.parent === root.id) }));
+  }
+  // One notification as the state language and a sentence: who did what, and to which item.
+  function notificationLine(n) {
+    const kind = n.kind === 'lease_taken' ? 'tookOver' : n.kind === 'reply' ? 'reply' : 'mention';
+    const who = n.actor || 'Someone', what = n.label ? '"' + n.label + '"' : 'an item';
+    const text = kind === 'tookOver' ? who + ' took over editing ' + what : kind === 'reply' ? who + ' replied in a thread you are in on ' + what : who + ' mentioned you on ' + what;
+    return { kind, text };
+  }
+  const unreadText = (n) => (n > 99 ? '99+' : String(n > 0 ? n : 0));
 
   // Workspaces are saved layouts (which screens the rail shows), not permissions: the server still decides what a user may do.
   const WORKSPACES = {
@@ -555,7 +616,7 @@
   }
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow, leaseView, leaseOutcome, leaseAllowsSave, presenceGroups, presenceLines ,
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow, leaseView, leaseOutcome, leaseAllowsSave, presenceGroups, presenceLines, mentionPieces, mentionToken, mentionMatches, mentionInsert, threadsOf, notificationLine, unreadText, COMMENT_MAX,
       SEARCH_SCOPES, FACET_BUILTIN, buildSearchRequest, savedQueryOf, searchParams, uiFromRequest, parseSearchResponse, queryTerms, splitHighlight, facetValueText, findKeyAction, metaValues, monthRange };
     return;
   }
@@ -645,6 +706,12 @@
     leaseRelease: ['POST', '/api/items/{id}/lease/release'],
     leaseTakeover: ['POST', '/api/items/{id}/lease/takeover'],
     presence:    ['POST', '/api/presence'],
+    commentList: ['GET',  '/api/comments'],
+    commentAdd:  ['POST', '/api/comments'],
+    commentResolve: ['POST', '/api/comments/{id}/resolve'],
+    commentDelete: ['POST', '/api/comments/{id}/delete'],
+    notifList:   ['GET',  '/api/notifications'],
+    notifRead:   ['POST', '/api/notifications/read'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -676,6 +743,7 @@
     stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
     not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken', wrong_kind: 'Wrong template kind',
     leased: 'Being edited', lease_lost: 'Edit lease lost', stale_item: 'Item changed', not_leased: 'Not being edited', collab_unavailable: 'Collaboration unavailable',
+    rate_limited: 'Too many comments', reply_depth: 'Replies go one level deep', parent_deleted: 'Comment was deleted', not_a_thread: 'Not a thread', deleted: 'Comment was deleted',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -1794,6 +1862,7 @@
     const show = shows.find((x) => x.id === S.show);
     $('foot-show').textContent = show ? show.title : 'No show';
     $('foot-count').textContent = S.data ? items.length + (items.length === 1 ? ' item' : ' items') : '';
+    bellPaint();
   }
 
   // The workspace is remembered per browser. Storage can be missing, blocked or hold junk: any of that means Operator.
@@ -1901,7 +1970,7 @@
         d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
           'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
     });
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back, (S.data.leases || []).map((l) => [l.item, l.holder, l.clientId])], () => {
+    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back, (S.data.leases || []).map((l) => [l.item, l.holder, l.clientId]), S.data.commentCounts], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
       return [el('div', { class: 'rhead' + (hasSlot ? ' hb' : ''), 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
@@ -1910,6 +1979,8 @@
     });
 
     paint('presence', [S.data.presence, S.data.collab, WHO.name, LS.client, S.show], presenceStrip);
+    cmSync('show');
+    paint('comments', cmSig('show'), () => cmPanel('show'));
     const sItem = items.find((i) => i.id === S.selected);
     $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
     paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
@@ -2140,7 +2211,9 @@
           it.words > 0 || it.storyStatus !== 'draft' ? el('span', { class: 'sched' }, ' ', stateChip(storyKind(it.storyStatus))) : null,
           it.floated ? el('span', { class: 'sched' }, ' ', stateChip('floated')) : null,
           // Who has the item open for editing (an edit lease): icon, word and name, from the server's state.
-          (() => { const lv = it.status === 'ready' ? leaseView(S.data && S.data.leases, it.id, leaseMe()) : null; return lv ? el('span', { class: 'sched' }, ' ', stateChip(lv.kind, lv.word)) : null; })())),
+          (() => { const lv = it.status === 'ready' ? leaseView(S.data && S.data.leases, it.id, leaseMe()) : null; return lv ? el('span', { class: 'sched' }, ' ', stateChip(lv.kind, lv.word)) : null; })(),
+          // Open comment threads on the item: the count comes with the state poll (the thread itself is read when the row is selected).
+          (() => { const n = S.data && S.data.commentCounts ? S.data.commentCounts[it.id] : 0; return n ? el('span', { class: 'sched' }, ' ', stateChip('threadOpen', n + (n === 1 ? ' open comment' : ' open comments'))) : null; })())),
       it.lengthSource === 'read' && !(tm && tm.offset == null)
         ? el('span', { class: 'dur mono', title: 'No media is attached, so the planned length is the read time of the script' }, '~' + fmtOffset(secs), el('small', { class: 'rd', text: 'read' }))
         : el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
@@ -4187,7 +4260,7 @@
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
     pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
-  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }, { id: 'archive', label: 'Archive', icon: 'library' }];
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }, { id: 'archive', label: 'Archive', icon: 'library' }, { id: 'comments', label: 'Comments', icon: 'comment' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
 
@@ -4630,6 +4703,8 @@
       sig: () => [ARC.rows, ARC.next, ARC.err, ARC.busy, ARC.q, ARC.status, ARC.from, ARC.to, S.show, [...S.pending].filter((k) => k.startsWith('arc-'))], build: () => arcPanel() },
   };
 
+  SC_PANELS.comments = { load: () => cmSync('scripts'), sig: () => cmSig('scripts'), build: () => cmPanel('scripts') };
+
   function renderScripts() {
     const items = scItems();
     if (S.data && S.data.rundown && !items.find((i) => i.id === SC.sel)) { SC.sel = null; SC.story = null; }
@@ -4672,6 +4747,243 @@
       const n = $(SC.returnTo || 'sc-text') || $('sc-text');
       if (n) n.focus();
     });
+  }
+
+  // ---- Comments and notifications (docs/superpowers/specs/2026-11-01-collaboration-identity-design.md) --------------------------
+  // A thread on an item (or on the whole show), a picker for @mentions, and a bell. The server decides who may read or write: it answers
+  // 403 for a show you cannot view, and its list of people holds only those who can. A comment body reaches the page only as text (text
+  // nodes and textContent), so a body can never become markup, and a mention is drawn from the server's list for that comment, never
+  // found by this page. Nothing on the on-air path (take, go, hold, release, skip, kill) reads or waits for any of this.
+  const CM_REFRESH_MS = 8000;
+  const CM = { cache: {}, drafts: {}, replyTo: null, err: null, busy: false, scope: 'item', mention: null };
+  const NT = { rows: [], err: null, loading: false, loaded: false };
+  const cmKey = (t) => t.kind + ':' + t.target;
+
+  // What the panel is about: on the Show screen the selected rundown row (or the whole show), on Scripts the story that is open.
+  function cmTarget(where) {
+    if (where === 'scripts') { const it = scItem(); return it ? { kind: 'item', target: it.id, label: it.slug } : null; }
+    if (!S.show || !S.data || !S.data.show) return null;
+    if (CM.scope === 'show') { const sh = (S.data.shows || []).find((x) => x.id === S.show); return { kind: 'show', target: S.show, label: sh ? sh.title : 'this show' }; }
+    const it = S.selected && S.data.rundown ? S.data.rundown.items.find((i) => i.id === S.selected) : null;
+    return it ? { kind: 'item', target: it.id, label: it.slug } : null;
+  }
+  const cmEntry = (t) => CM.cache[cmKey(t)] || null;
+  async function cmLoad(t, force) {
+    const key = cmKey(t);
+    const c = CM.cache[key] || (CM.cache[key] = { at: 0, loading: false, comments: [], people: [], err: null, loaded: false });
+    if (c.loading || (!force && Date.now() - c.at < CM_REFRESH_MS)) return;
+    c.loading = true;
+    try {
+      const { status, data } = await call('commentList', null, null, { kind: t.kind, target: t.target });
+      if (status === 200 && data && data.ok) { c.comments = data.comments || []; c.people = data.people || []; c.err = null; c.loaded = true; }
+      else {
+        const e = codeOf(data, status);
+        c.err = status === 401 ? 'A token is needed to read comments.'
+          : e.code === 'forbidden_show' ? 'You do not have access to this show, so its comments are not shown.'
+          : e.code === 'collab_unavailable' ? 'Comments are unavailable right now. The show itself is not affected.' : (e.reason || 'The server refused.');
+      }
+    } catch (e) { c.err = 'The server did not answer.'; }
+    c.loading = false; c.at = Date.now();
+    render();
+  }
+  function cmSync(where) { const t = cmTarget(where); if (t) cmLoad(t, false); }
+  function cmSig(where) {
+    const t = cmTarget(where), c = t && cmEntry(t);
+    return [where, t, c && [c.comments, c.people.map((p) => p.name), c.err, c.loaded], CM.replyTo, CM.err, CM.busy, CM.scope, WHO.name, WHO.role,
+      S.armed && String(S.armed).startsWith('cm-del:') ? S.armed : null, S.data && S.data.collab];
+  }
+  function cmWhen(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const day = d.toDateString() === new Date().toDateString() ? '' : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ';
+    return day + d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+  }
+
+  function cmComment(c, pre, reply) {
+    const delKey = 'cm-del:' + c.id;
+    const head = el('div', { class: 'cm-meta' }, el('strong', { text: c.author }), el('time', { datetime: c.createdAt, text: cmWhen(c.createdAt) }),
+      c.deleted ? stateChip('commentGone') : reply ? null : stateChip(c.resolved ? 'threadResolved' : 'threadOpen'),
+      !reply && c.resolved && c.resolvedBy ? el('span', { class: 'muted', text: 'by ' + c.resolvedBy }) : null);
+    const body = c.deleted ? el('p', { class: 'cm-body cm-gone', text: 'This comment was deleted.' })
+      : el('p', { class: 'cm-body' }, mentionPieces(c.body, c.mentions).map((p) => (p.mention ? el('span', { class: 'cm-mention', 'data-mention': p.mention, text: p.text }) : p.text)));
+    const acts = [];
+    if (!reply && !c.deleted) acts.push(btn([icon('comment', 's'), ' Reply'], { key: pre + '-reply:' + c.id, cls: 'ghost small', aria: 'Reply to ' + c.author,
+      onclick: () => { CM.replyTo = c.id; CM.err = null; render(); const n = $(pre + '-text'); if (n) n.focus(); } }));
+    if (!reply && !c.deleted && WHO.role !== 'viewer') acts.push(btn(c.resolved ? [icon('history', 's'), ' Reopen'] : [icon('ready', 's'), ' Resolve'], { key: pre + '-res:' + c.id, cls: 'ghost small',
+      aria: (c.resolved ? 'Reopen the thread by ' : 'Resolve the thread by ') + c.author, onclick: () => cmAct('commentResolve', c.id, { resolved: !c.resolved }, c.resolved ? 'Thread reopened.' : 'Thread resolved.') }));
+    if (!c.deleted && (c.mine || WHO.role === 'admin')) acts.push(btn([icon('trash', 's'), S.armed === delKey ? ' Confirm delete' : ' Delete'], { key: pre + '-del:' + c.id,
+      cls: 'ghost small' + (S.armed === delKey ? ' armed' : ''), aria: (S.armed === delKey ? 'Confirm delete of the comment by ' : 'Delete the comment by ') + c.author,
+      onclick: () => armedAction(delKey, () => cmAct('commentDelete', c.id, {}, 'Comment deleted.')) }));
+    return [head, body, acts.length ? el('div', { class: 'bar flush' }, acts) : null];
+  }
+
+  function cmOptions(pre) {
+    const m = CM.mention;
+    return m ? m.items.map((p, i) => el('li', { role: 'option', id: pre + '-opt-' + i, class: 'cm-opt', 'aria-selected': String(i === m.idx),
+      onmousedown: (e) => { e.preventDefault(); cmPick(pre, i); } },
+      el('strong', { text: '@' + p.name }), p.displayName && p.displayName !== p.name ? el('span', { class: 'muted', text: ' ' + p.displayName }) : null)) : [];
+  }
+  function cmListPaint(pre) {
+    const list = $(pre + '-list'), ta = $(pre + '-text'), m = CM.mention;
+    if (!list) return;
+    list.hidden = !m;
+    list.replaceChildren(...cmOptions(pre));
+    if (ta) { if (m) ta.setAttribute('aria-activedescendant', pre + '-opt-' + m.idx); else ta.removeAttribute('aria-activedescendant'); }
+    const status = $(pre + '-status');
+    if (status) status.textContent = m ? m.items.length + (m.items.length === 1 ? ' person matches' : ' people match') + '. Up and down choose, Enter adds, Escape closes.' : '';
+  }
+  function cmMentionUpdate(ta, t, pre) {
+    const c = cmEntry(t), tok = c ? mentionToken(ta.value, ta.selectionStart) : null;
+    const items = tok ? mentionMatches(c.people, tok.query, 6) : [];
+    CM.mention = items.length ? { tok, items, key: cmKey(t), idx: CM.mention && CM.mention.idx < items.length ? CM.mention.idx : 0 } : null;
+    cmListPaint(pre);
+  }
+  function cmPick(pre, i) {
+    const ta = $(pre + '-text'), m = CM.mention;
+    if (!ta || !m || !m.items[i]) return;
+    const r = mentionInsert(ta.value, m.tok, ta.selectionStart, m.items[i].name);
+    ta.value = r.text; CM.drafts[m.key] = r.text;
+    CM.mention = null; cmListPaint(pre);
+    ta.focus(); ta.setSelectionRange(r.caret, r.caret);
+    const count = $(pre + '-count'); if (count) count.textContent = r.text.length + ' of ' + COMMENT_MAX;
+  }
+  function cmKeydown(e, t, pre) {
+    const m = CM.mention;
+    if (m && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); m.idx = (m.idx + (e.key === 'ArrowDown' ? 1 : m.items.length - 1)) % m.items.length; cmListPaint(pre); return; }
+    if (m && (e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); cmPick(pre, m.idx); return; }
+    if (m && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); CM.mention = null; cmListPaint(pre); return; }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); cmPost(t); }
+  }
+
+  function cmComposer(t, c, pre, off) {
+    const key = cmKey(t), draft = CM.drafts[key] || '';
+    const replyTo = CM.replyTo ? c.comments.find((x) => x.id === CM.replyTo && !x.deleted) : null;
+    if (CM.replyTo && !replyTo) CM.replyTo = null;
+    const ta = el('textarea', { id: pre + '-text', 'data-fk': pre + '-text', rows: '3', maxlength: String(COMMENT_MAX), autocomplete: 'off', spellcheck: 'true', disabled: off,
+      'aria-describedby': pre + '-hint ' + pre + '-count', 'aria-controls': pre + '-list', 'aria-keyshortcuts': 'Control+Enter',
+      oninput: (e) => { CM.drafts[key] = e.target.value; const n = $(pre + '-count'); if (n) n.textContent = e.target.value.length + ' of ' + COMMENT_MAX; cmMentionUpdate(e.target, t, pre); },
+      onkeydown: (e) => cmKeydown(e, t, pre),
+      onkeyup: (e) => { if (e.key.startsWith('Arrow') && CM.mention) return; if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') cmMentionUpdate(e.target, t, pre); },
+      onclick: (e) => cmMentionUpdate(e.target, t, pre),
+      onblur: () => { if (CM.mention) { CM.mention = null; cmListPaint(pre); } } });
+    ta.value = draft;
+    return el('form', { class: 'cm-composer', 'aria-label': 'Add a comment', onsubmit: (e) => { e.preventDefault(); cmPost(t); } },
+      el('label', { for: pre + '-text', text: replyTo ? 'Reply to ' + replyTo.author : 'Add a comment' }),
+      replyTo ? el('p', { class: 'muted cm-replying' }, icon('comment', 's'), ' Replying in the thread by ' + replyTo.author + '. ',
+        btn('Cancel reply', { key: pre + '-cancel', cls: 'ghost small', onclick: () => { CM.replyTo = null; render(); } })) : null,
+      ta,
+      el('ul', { id: pre + '-list', class: 'cm-list', role: 'listbox', 'aria-label': 'People you can mention', hidden: !CM.mention }, cmOptions(pre)),
+      el('p', { id: pre + '-status', class: 'vh', role: 'status' }),
+      el('p', { id: pre + '-hint', class: 'hint', text: 'Type @ and a name to mention someone who can see this show; they get a notification. Ctrl+Enter posts.' }),
+      el('p', { id: pre + '-count', class: 'hint', text: draft.length + ' of ' + COMMENT_MAX }),
+      CM.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', CM.err) : null,
+      el('div', { class: 'bar flush' }, el('button', { type: 'submit', class: 'btn small', 'data-fk': pre + '-post', disabled: off || CM.busy }, CM.busy ? 'Posting…' : replyTo ? 'Post reply' : 'Post comment')));
+  }
+
+  function cmPanel(where) {
+    const pre = where === 'scripts' ? 'scm' : 'cm';
+    const t = cmTarget(where);
+    const scopeBar = where === 'show' && S.data && S.data.show ? el('div', { class: 'cm-scope', role: 'group', 'aria-label': 'What the comments are about' },
+      ['item', 'show'].map((sc) => el('button', { type: 'button', class: 'btn ghost small', 'data-fk': pre + '-scope-' + sc, 'aria-pressed': String(CM.scope === sc),
+        onclick: () => { CM.scope = sc; CM.replyTo = null; CM.err = null; CM.mention = null; render(); } }, sc === 'item' ? 'This item' : 'Whole show'))) : null;
+    if (!t) return [scopeBar, el('p', { class: 'empty', text: where === 'scripts' ? 'Choose a story to see its comments.' : 'Select a rundown row to see its comments.' })];
+    const c = cmEntry(t) || { comments: [], people: [], err: null, loaded: false };
+    const off = !!(S.data && S.data.collab && S.data.collab.available === false);
+    const threads = threadsOf(c.comments);
+    return [scopeBar,
+      el('p', { class: 'cm-about muted', text: 'Comments on ' + (t.kind === 'show' ? 'the show ' : '') + t.label }),
+      off ? el('p', { class: 'info presence-off', role: 'status' }, icon('alert', 's'), ' ', 'Comments are unavailable right now. The show itself is not affected.') : null,
+      c.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', c.err) : null,
+      threads.length ? el('ul', { class: 'cm-threads', 'aria-label': 'Comment threads' }, threads.map((th) => el('li', { class: 'cm-thread' + (th.root.resolved ? ' resolved' : '') },
+        cmComment(th.root, pre, false),
+        th.replies.length ? el('ul', { class: 'cm-replies', 'aria-label': 'Replies' }, th.replies.map((r) => el('li', { class: 'cm-reply' }, cmComment(r, pre, true)))) : null)))
+        : c.err || off ? null : el('p', { class: 'empty', text: c.loaded ? 'No comments yet.' : 'Reading the comments…' }),
+      c.err && !c.loaded ? null : cmComposer(t, c, pre, off)];
+  }
+
+  // Resolve, reopen, delete: one request, the server's refusal shown in the panel, then both the thread and the row chips read again.
+  async function cmAct(kind, id, body, done) {
+    CM.err = null;
+    try {
+      const { status, data } = await call(kind, id, body);
+      if (data && data.ok) announce(done);
+      else { const e = codeOf(data, status); CM.err = (ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason; announce(CM.err); }
+    } catch (e) { CM.err = 'The server did not answer.'; }
+    render();
+    const t = cmTarget(S.screen === 'scripts' ? 'scripts' : 'show');
+    if (t) cmLoad(t, true);
+    refresh();
+  }
+  async function cmPost(t) {
+    const key = cmKey(t), text = (CM.drafts[key] || '').trim();
+    if (CM.busy) return;
+    if (!text) { CM.err = 'Write something first.'; render(); return; }
+    CM.busy = true; CM.err = null; CM.mention = null;
+    render();
+    try {
+      const payload = { kind: t.kind, target: t.target, body: text };
+      if (CM.replyTo) payload.parent = CM.replyTo;
+      const { status, data } = await call('commentAdd', null, payload);
+      if (data && data.ok) { CM.drafts[key] = ''; CM.replyTo = null; announce('Comment posted.'); }
+      else { const e = codeOf(data, status); CM.err = (ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason; announce(CM.err); }
+    } catch (e) { CM.err = 'The server did not answer. The comment may or may not have been posted; check the thread before posting again.'; }
+    CM.busy = false;
+    render();
+    cmLoad(t, true);
+    refresh();
+  }
+
+  // The bell: the unread count comes with every state poll; the list is read when the dialog opens (and again while it is open and the count moves).
+  function bellPaint() {
+    const n = S.data && S.data.notifications ? S.data.notifications.unread : 0;
+    const b = $('bell-btn');
+    if (b.dataset.n === String(n)) return;
+    b.dataset.n = String(n);
+    $('bell-count').textContent = n > 0 ? unreadText(n) : '';
+    $('bell-count').hidden = n === 0;
+    $('bell-unread').hidden = n === 0;
+    b.classList.toggle('has-unread', n > 0);
+    if ($('notif-dlg').open) ntLoad();
+  }
+  function openNotifs() { const d = $('notif-dlg'); if (!d.open) { d.showModal(); ntPaint(); ntLoad(); } }
+  async function ntLoad() {
+    if (NT.loading) return;
+    NT.loading = true;
+    try {
+      const { status, data } = await call('notifList', null, null, {});
+      if (status === 200 && data && data.ok) { NT.rows = data.notifications || []; NT.err = null; NT.loaded = true; }
+      else NT.err = status === 401 ? 'A token is needed to read notifications.' : codeOf(data, status).code === 'collab_unavailable' ? 'Notifications are unavailable right now. The show itself is not affected.' : (codeOf(data, status).reason || 'The server refused.');
+    } catch (e) { NT.err = 'The server did not answer.'; }
+    NT.loading = false;
+    ntPaint();
+  }
+  function ntPaint() {
+    const host = $('notif-body'), unread = NT.rows.filter((n) => !n.read).length;
+    $('notif-readall').disabled = unread === 0;
+    host.replaceChildren(...[
+      NT.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', NT.err) : null,
+      NT.rows.length ? el('ul', { class: 'nt-list', 'aria-label': 'Notifications, newest first' }, NT.rows.map((n) => {
+        const line = notificationLine(n);
+        return el('li', {}, el('button', { type: 'button', class: 'nt-row' + (n.read ? ' read' : ''), 'data-fk': 'nt:' + n.id, onclick: () => ntOpen(n) },
+          stateChip(line.kind), n.read ? null : stateChip('unread'), el('span', { class: 'nt-text', text: line.text }), el('time', { datetime: n.createdAt, text: cmWhen(n.createdAt) })));
+      })) : NT.err ? null : el('p', { class: 'empty', text: NT.loaded ? 'No notifications.' : 'Reading the notifications…' })].filter(Boolean));
+  }
+  // Open what a notification is about: its show, with the item selected and its thread showing. Marking it read is best effort.
+  function ntOpen(n) {
+    $('notif-dlg').close();
+    call('notifRead', null, { ids: [n.id] }).then(refresh, () => {});
+    if (!n.show) return;
+    if (n.show !== S.show) { S.show = n.show; S.cueDetail = {}; S.cueLast = {}; try { sessionStorage.setItem('volt.show', S.show); } catch (e) { /* works without it */ } }
+    CM.scope = n.targetKind === 'show' ? 'show' : 'item';
+    if (n.targetKind === 'item') S.selected = n.target;
+    CM.replyTo = null; S.sigs = {};
+    if (location.hash !== '#show') location.hash = '#show'; else render();
+    refresh();
+  }
+  async function ntReadAll() {
+    try { await call('notifRead', null, { all: true }); } catch (e) { /* the list below says what is still unread */ }
+    await ntLoad();
+    refresh();
   }
 
   // ---- Edit leases and presence (docs/superpowers/specs/2026-11-01-collaboration-identity-design.md) ------------------------------
@@ -4913,7 +5225,7 @@
       renderProviders(data && data.providers, location.pathname + location.search);
     } catch (e) { providersLoaded = false; }   // offline or an older server: try again next time the dialog opens
   }
-  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open || $('sc-conflict').open; }
+  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open || $('sc-conflict').open || $('notif-dlg').open; }
 
   function setScreen(name) {
     const was = S.screen;
@@ -4988,6 +5300,9 @@
       if (token) useSession(token);
     });
     $('keys-btn').addEventListener('click', () => $('keys-dlg').showModal());
+    $('bell-btn').addEventListener('click', openNotifs);
+    $('notif-close').addEventListener('click', () => $('notif-dlg').close());
+    $('notif-readall').addEventListener('click', ntReadAll);
     setTheme(currentTheme());
     $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
     libInit();

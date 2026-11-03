@@ -339,6 +339,8 @@ def purge_asset(store: Store, asset_id: str, roots: OwnedRoots, allow_versions: 
             ("essence", "DELETE FROM essence WHERE asset_id = ?"),
         ):
             counts[table] = c.execute(sql, (asset_id,)).rowcount
+        from volt import discuss
+        discuss.forget_asset(store, asset_id)    # comments on the clip, with the pings they caused
         c.execute("DELETE FROM asset WHERE id = ?", (asset_id,))
         summary = {"owner": asset.owner, "show": asset.show_name, "source_key": asset.source_key,
                    "retention_class": asset.retention_class, "tombstoned_at": asset.deleted_at,

@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Comments, mentions and notifications (migration 34): threads on an item or a show (one reply level, 4000 characters, 30 a minute), `@name` mentions of enabled users who can view the show, in-app notifications for mentions, replies and a taken-over edit lease, a header bell with an unread count, an open-thread chip on rundown rows, resolve and delete. `GET/POST /api/comments`, `/api/comments/{id}/resolve|delete`, `GET /api/notifications`, `POST /api/notifications/read`. Access is the show's: nobody who cannot view a show reads, posts or is notified about its comments. Bodies are never in the audit table, the log or a URL, and render as text. Notifications older than 90 days are purged by the runner. Unvalidated with real users.
+
 - Library: a **Find** tab (the landing view) and a **Details** tab. Find is the faceted search with saved searches and bins; Details is the asset's typed metadata as a form, with Define a field for admins. Two icons (`bin`, `tag`) and three state chips (Incomplete, Shared, Required). No server change. See [operator-ui.md](docs/specs/operator-ui.md).
 
 - Identity, per-show access (migration 31): a show with no rows stays open; add a user or group at `view`, `edit` or `run` and it is hidden from everyone else (state, rundown, story, cues, MOS) except admins and the desk token. Every show-scoped POST is classified in `ROUTE_SHOW_LEVEL` or `NOT_SHOW_SCOPED` (a test walks `serve.ROUTES`); the check runs before the body is read; `403 forbidden_show`. A repeat of a restricted show inherits its rows, deleting a show deletes them, the clock and runner are not subject to it. New Access screen for admins.
