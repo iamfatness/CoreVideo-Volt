@@ -578,3 +578,11 @@ CREATE INDEX IF NOT EXISTS comment_by_author ON comment (author, created_at);
 CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id);
 CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at);
 CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id);
+
+CREATE TABLE IF NOT EXISTS exclusive_lease (
+  name TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  expires_at DOUBLE PRECISION NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role);

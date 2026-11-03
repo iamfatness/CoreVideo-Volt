@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from volt import migrations, pg
+from volt import store as store_module
 from volt.store import Store
 
 from tests.historical_shapes import SHAPES
@@ -155,6 +156,52 @@ class SqliteForward(unittest.TestCase):
             self.assertEqual(migrations.current_version(migrations.SqliteBackend(store.conn)), migrations.LATEST)
         finally:
             store.close()
+
+    def test_a_schema_change_by_another_process_during_bootstrap_is_retried(self):
+        """SQLite reports 'database schema has changed' to a connection whose statements were prepared before another process ran DDL on the
+        same file. It is a retry, not a failure: processes starting together on an old file all run the base-table script."""
+        import sqlite3
+        path = self.old_db(SHAPES[0][2])
+        real = sqlite3.Connection.executescript
+        calls = {"n": 0}
+
+        class Flaky(store_module._LiteConnection):
+            def executescript(self, script):
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    raise sqlite3.OperationalError("database schema has changed")
+                return super().executescript(script)
+
+        with mock.patch.object(store_module, "_LiteConnection", Flaky):
+            Store(path).close()
+        self.assertEqual(calls["n"], 3)
+
+    def test_a_schema_error_that_never_clears_is_still_raised(self):
+        import sqlite3
+        path = self.old_db(SHAPES[0][2])
+
+        class Broken(store_module._LiteConnection):
+            def executescript(self, script):
+                raise sqlite3.OperationalError("database schema has changed")
+
+        with mock.patch.object(store_module, "_LiteConnection", Broken):
+            with self.assertRaises(sqlite3.OperationalError):
+                Store(path)
+
+    def test_a_different_operational_error_is_not_retried(self):
+        import sqlite3
+        path = self.old_db(SHAPES[0][2])
+        calls = {"n": 0}
+
+        class Locked(store_module._LiteConnection):
+            def executescript(self, script):
+                calls["n"] += 1
+                raise sqlite3.OperationalError("disk I/O error")
+
+        with mock.patch.object(store_module, "_LiteConnection", Locked):
+            with self.assertRaises(sqlite3.OperationalError):
+                Store(path)
+        self.assertEqual(calls["n"], 1)
 
     def test_two_processes_starting_on_an_old_file_do_not_collide(self):
         import threading

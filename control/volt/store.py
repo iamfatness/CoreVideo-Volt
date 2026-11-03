@@ -606,6 +606,14 @@ CREATE INDEX IF NOT EXISTS comment_by_author ON comment (author, created_at);
 CREATE INDEX IF NOT EXISTS comment_by_show ON comment (show_id);
 CREATE INDEX IF NOT EXISTS notification_by_user ON notification (user_name, read_at, created_at);
 CREATE INDEX IF NOT EXISTS notification_by_comment ON notification (comment_id);
+
+CREATE TABLE IF NOT EXISTS exclusive_lease (
+  name TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  expires_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role);
 """
 
 
@@ -685,7 +693,8 @@ class Store:
     def __init__(self, path: str = ":memory:", init: bool = True):
         """`path` is a SQLite path, or a postgres:// DSN (needs psycopg).
 
-        init=False skips schema bootstrap on postgres, for callers that did it.
+        init=False skips the schema bootstrap, for callers that already did it (a server does it once at start, then opens a
+        Store per request). On SQLite the bootstrap runs the schema script and takes the write lock, so it must not run per request.
         """
         self.postgres = pg.is_dsn(path)
         self.path = path
@@ -703,13 +712,32 @@ class Store:
         self.conn = sqlite3.connect(path, timeout=10, factory=_LiteConnection)
         try:
             self.conn.row_factory = sqlite3.Row
+            if not init:
+                return   # the file is already bootstrapped (and in WAL mode, which persists in the file)
             if path != ":memory:":
                 self._enable_wal()
-            self.conn.executescript(SCHEMA)
-            self._migrate()
+            self._bootstrap()
         except BaseException:
             self.conn.close()
             raise
+
+    def _bootstrap(self) -> None:
+        """Run the base-table script and the migrations. Several processes starting together on one old file all run this; SQLite tells the
+        ones whose statements were prepared before another process ran DDL 'database schema has changed'. That is a reason to start the
+        step again (it is idempotent), not to fail the start."""
+        for attempt in range(6):
+            try:
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                return
+            except sqlite3.OperationalError as exc:
+                if "schema has changed" not in str(exc) or attempt == 5:
+                    raise
+                try:
+                    self.conn.rollback()
+                except sqlite3.Error:
+                    pass
+                time.sleep(0.02 * (attempt + 1))
 
     def _enable_wal(self) -> None:
         # Switching the journal mode needs the file to itself and ignores the busy timeout, so processes

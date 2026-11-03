@@ -55,4 +55,5 @@ Added by the identity work (migrations 22 to 34); the design is [collaboration-i
 - **Per show:** `show_acl` (show, subject user or group, level view, edit or run). No rows means the show is open.
 - **Editing together:** `lease` (one row per item being edited: holder, tab, expiry) and `presence` (one row per browser tab: show and view, last seen). Both are advisory and ephemeral; nothing on take, go, hold, release, skip or kill reads them.
 - **Talking:** `comment` (target item, show or asset, author, body, one reply level, soft delete), `comment_mention` and `notification` (mention, reply, lease taken; per user, read flag).
+- **Scale and operations (migration 35):** `exclusive_lease` (name, holder, expiry as epoch seconds): the cross-process lease record start and stop hold so only one recorder drives a room. Not the same as `lease` above, which is the per-item edit lease. Nothing on take, go, hold, release, skip or kill reads it.
 - **The record:** `audit` stays append only. It never holds a secret, a token, a code, a cookie or a comment body.

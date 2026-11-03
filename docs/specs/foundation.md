@@ -38,7 +38,7 @@ The session already mints, proxies, transcribes, marks, and publishes. A small t
 
 ## Playout writer
 
-`_SEQ` in `serve.py` only orders requests inside one process. Kill already decides with one conditional write. Take does not.
+Before this work an in-process lock in `serve.py` (`_SEQ`, since removed) ordered go, skip and kill inside one process only. Kill already decides with one conditional write. Take did not.
 
 **Status `taking`.** `take_item` sets the next item to `taking` in the same transaction that leaves the previous item. `go` still sets `on air` (no room). Dispatch runs with no process lock and no show advisory lock. On every cue fired, the item becomes `on air` and as-run in is stamped. On a failed or unsupported cue, `rewind` returns the target to `ready` (as today).
 
@@ -50,7 +50,7 @@ While any item of the show is `taking`:
 
 `on_air()` ignores `taking`. Health and `/api/state` show the taking row as status `taking` so the desk is not blank during a ten-second poll.
 
-Two `serve` processes and the clock then serialise on the row, not on a thread lock. `_SEQ` can remain as an in-process courtesy; it is not the contract.
+Two `serve` processes and the clock then serialise on the row, not on a thread lock. The in-process lock that once sat in front of go and skip has been removed: the row and the show's database lock are the whole contract.
 
 `record.start` / `record.stop` keep `_REC` until a later pass. Recording is not playout.
 
