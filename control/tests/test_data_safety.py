@@ -86,7 +86,7 @@ class VersionSkew(Tmp):
         path = str(self.dir / "volt.db")
         Store(path).close()
         conn = sqlite3.connect(path)
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 'x')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (99, 'future', 'x', 99)")
         conn.commit()
         conn.close()
         with self.assertRaises(migrations.SchemaTooNewError) as ctx:
@@ -100,7 +100,7 @@ class VersionSkew(Tmp):
         path = str(self.dir / "volt.db")
         Store(path).close()
         conn = sqlite3.connect(path)
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 'x')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (99, 'future', 'x', 99)")
         conn.commit()
         conn.close()
         before = dump(path)
@@ -123,7 +123,7 @@ class VersionSkew(Tmp):
         path = str(self.dir / "volt.db")
         Store(path).close()
         conn = sqlite3.connect(path)
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 'x')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (99, 'future', 'x', 99)")
         conn.commit()
         conn.close()
         with mock.patch.object(serve, "DB_PATH", path), mock.patch.object(serve, "TOKEN", None), \
@@ -137,7 +137,7 @@ class VersionSkew(Tmp):
         path = str(self.dir / "volt.db")
         Store(path).close()
         conn = sqlite3.connect(path)
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 'x')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (99, 'future', 'x', 99)")
         conn.commit()
         conn.close()
         with mock.patch("sys.stderr") as err:
@@ -286,7 +286,7 @@ class BackupRestore(Tmp):
         path = self.dir / "bk" / backup.MANIFEST
         data = self.dir / "bk" / backup.SQLITE_FILE
         conn = sqlite3.connect(str(data))
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (99, 'future', 'x')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (99, 'future', 'x', 99)")
         conn.commit()
         conn.close()
         m = json.loads(path.read_text())
