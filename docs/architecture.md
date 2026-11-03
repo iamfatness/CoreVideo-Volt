@@ -1,5 +1,7 @@
 # Architecture
 
+Search is a derived index (`search_doc`) rebuilt from spans and metadata, queried through one grammar on two full-text engines: SQLite FTS5 and Postgres `tsvector`. See [specs/search.md](specs/search.md).
+
 One session. One asset ID. Orchestration, distribution, transcoding, storage, and MAM share it.
 
 ```text

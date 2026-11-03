@@ -71,6 +71,20 @@ def database(store) -> dict:
     return out
 
 
+def indexing(store) -> dict:
+    """The derived search index: whether text search has its full-text index, how much is indexed, and the index jobs waiting or failed.
+    Label indexing (the ai-index job) adds its own counts when it exists; the job counts here already include its type."""
+    from volt import searchindex
+    one = lambda sql: store.conn.execute(sql).fetchone()[0]  # noqa: E731
+    jobs = {}
+    for row in store.conn.execute("SELECT status, COUNT(*) AS n FROM job WHERE type IN ('search', 'ai-index') GROUP BY status").fetchall():
+        jobs[row["status"]] = row["n"]
+    return {"ftsAvailable": searchindex.fts_available(store),
+            "assetsIndexed": one("SELECT COUNT(DISTINCT asset_id) FROM search_doc"),
+            "documents": one("SELECT COUNT(*) FROM search_doc"),
+            "queued": jobs.get("queued", 0), "failed": jobs.get("failed", 0)}
+
+
 def runners(store, now: datetime, env) -> dict:
     stale_after = _float_env(env, "VOLT_RUNNER_STALE_SECONDS", DEFAULT_RUNNER_STALE)
     rows = store.conn.execute(
@@ -197,6 +211,7 @@ def collect(store, out_dir, env=None, db_target: Optional[str] = None, now: Opti
         report["runners"] = runners(store, now, env)
         report["queue"] = queue(store, now, env)
         report["asRun"] = as_run(store, now)
+        report["indexing"] = indexing(store)
     except Exception as exc:  # noqa: BLE001 - any failure to read means the database is not usable
         from volt.logs import redact
         report["database"] = {"reachable": False, "error": redact(str(exc) or exc.__class__.__name__)[:300]}

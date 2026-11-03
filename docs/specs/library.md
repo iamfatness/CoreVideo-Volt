@@ -4,6 +4,8 @@ Find a moment. Search returns a span on source timecode.
 
 Words from the transcript are spans. A hit seeks the proxy at the span in-point. Rights are a field on the asset.
 
+Search across assets (typed metadata, facets, saved searches, bins) is a separate, newer path, `GET /api/search`, described in [search.md](search.md); `library.search` below stays the one-asset word search.
+
 Acceptance: "steal" returns the span and the asset ID. Reindexing does not duplicate words.
 
 ## Built: speech worker
