@@ -252,7 +252,9 @@ with `volt run --env-file ...` as the application and is optional; nothing in Vo
 `schemaVersion` against `expectedSchemaVersion`), `runners` (newest heartbeat age, alive count, each runner),
 `queue` (counts by job type and state, `queued`, `queuedDue`, `oldestQueuedAgeSeconds`, `running`, `failed`,
 `stuck`), `asRun` (last as-run time and its age), `disk` (free bytes and floor for out, proxy, publish,
-quarantine, scratch and database directories), `thumbCache`, `storage`.
+quarantine, scratch and database directories), `thumbCache`, `storage`, `indexing` (whether text search has its
+full-text index, assets and documents indexed, and the queued and failed `search` and `ai-index` jobs; see
+[search.md](specs/search.md)).
 
 `degraded` means a person should look: jobs are waiting and no runner has checked in, a job has an expired lease
 or has run longer than `VOLT_STUCK_JOB_SECONDS`, a directory is under the disk floor, the schema is behind or
