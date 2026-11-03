@@ -1014,6 +1014,12 @@ def _discuss(fn):
         raise ApiError(503, "collab_unavailable", "comments are unavailable right now; the show itself is unaffected") from None
 
 
+def _no_asset_comments(principal, kind) -> None:
+    """Conservative default until the owner decides who may see comments on an asset (assets are not show-scoped): admins only."""
+    if kind == "asset" and not acl.bypasses(principal):
+        raise ApiError(403, "forbidden_role", "comments on an asset need the admin role until it is decided who may see them")
+
+
 def act_comment_add(store, _unused, body):
     """Post a comment or a one-level reply: {kind: item|show|asset, target, body, parent?}. The author must be able to view the show."""
     _unknown_keys(body, {"kind", "target", "body", "parent"})
@@ -1025,6 +1031,7 @@ def act_comment_add(store, _unused, body):
     if parent is not None and not isinstance(parent, str):
         raise ApiError(422, "bad_input", "parent must be a comment id")
     actor, principal = _who()
+    _no_asset_comments(principal, kind)
     show_id = _discuss(lambda: discuss.show_of(store, kind, target))
     if show_id is not None:
         _show_gate(store, principal, "show", show_id, "view")      # whoever cannot view the show cannot talk on it
@@ -1044,7 +1051,8 @@ def act_comment_resolve(store, comment_id, body):
     resolved = body.get("resolved")
     if not isinstance(resolved, bool):
         raise ApiError(422, "bad_input", "resolved must be true or false")
-    actor = _who()[0]
+    actor, principal = _who()
+    _no_asset_comments(principal, _comment_ref(store, comment_id).get("kind"))
     made = _discuss(lambda: discuss.resolve(store, comment_id, actor, resolved, now=CLOCK()))
     return {"ok": True, "comment": made, "auditDetail": json.dumps(dict(_comment_ref(store, comment_id), resolved=resolved), sort_keys=True)}
 
@@ -1053,6 +1061,7 @@ def act_comment_delete(store, comment_id, body):
     """Delete a comment (soft; the body is blanked): its author, or an admin."""
     _unknown_keys(body, set())
     actor, principal = _who()
+    _no_asset_comments(principal, _comment_ref(store, comment_id).get("kind"))
     made = _discuss(lambda: discuss.delete(store, comment_id, actor, acl.bypasses(principal), now=CLOCK()))
     return {"ok": True, "comment": made, "auditDetail": json.dumps(_comment_ref(store, comment_id), sort_keys=True)}
 
@@ -1079,11 +1088,14 @@ def discuss_get(handler, store, path: str, query: dict) -> bool:
         if sorted(query) != ["kind", "target"] or any(len(v) != 1 or not v[0] for v in query.values()):
             raise ApiError(422, "bad_input", "this route takes kind and target, each once")
         kind, target = query["kind"][0], query["target"][0]
+        _no_asset_comments(handler.principal, kind)
         show_id = _discuss(lambda: discuss.show_of(store, kind, target))
         if show_id is not None:
             _show_gate(store, handler.principal, "show", show_id, "view")
         me = handler.principal.name if handler.principal else LEGACY_ACTOR
-        got = _discuss(lambda: {"comments": discuss.list_comments(store, kind, target, me), "people": discuss.roster(store, show_id)})
+        # A viewer is not handed the list of other users (conservative default): operators and admins get the roster for the picker.
+        viewer = handler.principal is not None and not handler.principal.legacy and handler.principal.role == "viewer"
+        got = _discuss(lambda: {"comments": discuss.list_comments(store, kind, target, me), "people": [] if viewer else discuss.roster(store, show_id)})
         handler._json(200, {"ok": True, "kind": kind, "target": target, "show": show_id, **got})
         return True
     if path == "/api/notifications":

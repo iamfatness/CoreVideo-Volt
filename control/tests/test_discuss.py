@@ -515,6 +515,27 @@ class Http(Base, Api):
         s, out = self.comment("d" * 32, "item", self.sec_item, "from the desk")
         self.assertEqual((s, out["comment"]["author"]), (200, "desk"))
 
+    def test_asset_comments_are_admin_only_until_the_owner_decides(self):
+        asset = self.store.mint_asset(owner="desk")
+        for who in ("alice", "vic"):
+            self.refused(403, "forbidden_role", "/api/comments", {"kind": "asset", "target": asset.id, "body": "x"}, token=self.t[who])
+            s, out, _ = self.listing(self.t[who], "asset", asset.id)
+            self.assertEqual((s, out["error"]["code"]), (403, "forbidden_role"), who)
+        s, made = self.comment(self.t["root"], "asset", asset.id, "admin note")
+        self.assertEqual(s, 200, made)
+        cid = made["comment"]["id"]
+        s, out, _ = self.listing(self.t["root"], "asset", asset.id)
+        self.assertEqual([c["body"] for c in out["comments"]], ["admin note"])
+        self.refused(403, "forbidden_role", f"/api/comments/{cid}/resolve", {"resolved": True}, token=self.t["alice"])
+        self.refused(403, "forbidden_role", f"/api/comments/{cid}/delete", {}, token=self.t["vic"])
+        self.assertEqual(self.post(f"/api/comments/{cid}/delete", {}, token=self.t["root"])[0], 200)
+
+    def test_a_viewer_gets_no_roster_but_an_operator_does(self):
+        s, out, _ = self.listing(self.t["vic"], "item", self.a)
+        self.assertEqual((s, out["people"]), (200, []))
+        s, out, _ = self.listing(self.t["alice"], "item", self.a)
+        self.assertIn("bob", [p["name"] for p in out["people"]])
+
     # ---- validation ----------------------------------------------------------------------
 
     def test_the_body_is_validated(self):
@@ -655,7 +676,7 @@ class Http(Base, Api):
         made = self.comment(self.t["alice"], "item", self.sec_item, "x")[1]["comment"]["id"]
         self.assertEqual(access.show_of(self.store, "comment", made), self.sec)
         asset = self.store.mint_asset(owner="desk")
-        aid = self.comment(self.t["alice"], "asset", asset.id, "clip")[1]["comment"]["id"]
+        aid = self.comment(self.t["root"], "asset", asset.id, "clip")[1]["comment"]["id"]
         self.assertIsNone(access.show_of(self.store, "comment", aid))
         self.assertIsNone(access.show_of(self.store, "comment", "missing"))
 
