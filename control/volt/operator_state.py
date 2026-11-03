@@ -29,11 +29,13 @@ def _blocked_by(cleared: bool, legal_hold: bool, archived: bool = False) -> Opti
     return None
 
 
-def shows(store: Store) -> list[dict]:
+def shows(store: Store, visible=None) -> list[dict]:
+    """Every show, oldest first. `visible` (show id -> bool, from access.view_filter) leaves out shows the caller may not see."""
     rows = store.conn.execute(
         "SELECT id, title, held_at FROM show ORDER BY created_at, id"
     ).fetchall()
-    return [{"id": r["id"], "title": r["title"], "held": r["held_at"] is not None} for r in rows]
+    return [{"id": r["id"], "title": r["title"], "held": r["held_at"] is not None} for r in rows
+            if visible is None or visible(r["id"])]
 
 
 def assets(store: Store) -> list[dict]:
@@ -192,9 +194,13 @@ def room_state(room_factory) -> dict:
             "stale": o.stale, "error": o.error}
 
 
-def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: dict) -> dict:
-    """`rundown` is the already-built /rundown payload, so the shape lives in one place (serve.py)."""
-    listing = shows(store)
+def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: dict, visible=None) -> dict:
+    """`rundown` is the already-built /rundown payload, so the shape lives in one place (serve.py).
+    `visible` hides the shows a caller has no access to, from the list and from the desk's unconfirmed MOS shows."""
+    listing = shows(store, visible)
+    mos_status = mos_send.status(store)
+    if visible is not None:
+        mos_status = [dict(d, unconfirmed=[s for s in d["unconfirmed"] if visible(s)]) for d in mos_status]
     title = next((s["title"] for s in listing if s["id"] == show_id), None)
     taking = None
     if rundown:
@@ -209,7 +215,7 @@ def build(store: Store, rundown: Optional[dict], show_id: Optional[str], room: d
         "assets": assets(store),
         "spans": spans(store, include_ids=[] if show_id is None else _item_span_ids(store, show_id)),
         "room": room,
-        "mos": mos_send.status(store),
+        "mos": mos_status,
         "devices": devices.status(store),
         "safeMode": safety.state(store),
     }
