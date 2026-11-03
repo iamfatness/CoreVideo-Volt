@@ -38,6 +38,8 @@
 <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol>
 <symbol id="i-room" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
 <symbol id="i-cue" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></symbol>
+<symbol id="i-bin" viewBox="0 0 24 24"><path d="M3 6h18v4H3zM5 10v9a1 1 0 001 1h12a1 1 0 001-1v-9M10 14h4"/></symbol>
+<symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.25"/></symbol>
 <symbol id="i-export" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></symbol>
 <symbol id="i-shot" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
 <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -167,9 +169,22 @@
     </div>
     <div id="lib-empty"></div>
     <div id="lib-tabs" class="lib-tabs" role="tablist" aria-label="Library views" hidden>
+      <button type="button" role="tab" id="lib-tab-find" aria-controls="lib-find" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg>Find</button>
       <button type="button" role="tab" id="lib-tab-shots" aria-controls="lib-body" aria-selected="true"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-shot"/></svg>Shots and clips</button>
       <button type="button" role="tab" id="lib-tab-words" aria-controls="lib-words" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-transcript"/></svg>Mark from transcript</button>
       <button type="button" role="tab" id="lib-tab-export" aria-controls="lib-export" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-export"/></svg>Selection to export</button>
+      <button type="button" role="tab" id="lib-tab-details" aria-controls="lib-details" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-tag"/></svg>Details</button>
+    </div>
+    <div id="lib-find" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-find" hidden>
+      <div class="stack">
+        <section class="panel" aria-labelledby="h-find"><h2 id="h-find"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg> Find</h2><div id="lib-find-form"></div></section>
+        <section class="panel" aria-labelledby="h-finds"><h2 id="h-finds"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-library"/></svg> Results</h2><div id="lib-find-state"></div><div id="lib-find-results"></div></section>
+      </div>
+      <div class="stack" role="group" aria-label="Filters, saved searches and bins">
+        <section class="panel" aria-labelledby="h-facets"><h2 id="h-facets"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-filter"/></svg> Narrow by</h2><div id="lib-find-facets"></div></section>
+        <section class="panel" aria-labelledby="h-saved"><h2 id="h-saved"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg> Saved searches</h2><div id="lib-find-saved"></div></section>
+        <section class="panel" aria-labelledby="h-bins"><h2 id="h-bins"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-bin"/></svg> Bins</h2><div id="lib-find-bins"></div></section>
+      </div>
     </div>
     <div id="lib-body" class="cols lib" hidden>
       <div class="stack">
@@ -254,6 +269,14 @@
         <div id="lib-x-done"></div>
       </div>
     </div>
+    <div id="lib-details" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-details" hidden>
+      <div class="stack">
+        <section class="panel" aria-labelledby="h-det"><h2 id="h-det"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-tag"/></svg> Details</h2><div id="lib-d-head"></div><div id="lib-d-form"></div></section>
+      </div>
+      <div class="stack" role="group" aria-label="Fields">
+        <section class="panel" id="lib-d-define-wrap" aria-labelledby="h-define" hidden><h2 id="h-define"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg> Define a field</h2><div id="lib-d-define"></div></section>
+      </div>
+    </div>
   </section>
 </main>
   </div>
@@ -317,6 +340,10 @@
       <tr><td><kbd>Enter</kbd></td><td>Add a clip from the marks, when no button or field has focus.</td></tr>
       <tr><td><kbd>Space</kbd></td><td>On a row's name: add or remove the row from the selection. Enter on the name seeks the player. Space does not take on this screen.</td></tr>
       <tr><td><kbd>Tab</kbd></td><td>Ingest a file: type the path in the Ingest field (Space types) and press Enter. No single-key shortcut, and Space does not take on this screen.</td></tr>
+      <tr><th scope="rowgroup" colspan="2" class="group">Library, Find tab</th></tr>
+      <tr><td><kbd>/</kbd></td><td>Go to Find and focus the search field (from the Library screen, when no field has focus).</td></tr>
+      <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Move between results. Enter opens the asset, and a speech hit also seeks the player to it.</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>In the search field: clear it and search again.</td></tr>
       <tr><th scope="rowgroup" colspan="2" class="group">Library, Mark from transcript tab</th></tr>
       <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>Move the word cursor. Shift extends the range. Focus the transcript first (Tab).</td></tr>
       <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Jump to the previous or next sentence. Shift extends.</td></tr>

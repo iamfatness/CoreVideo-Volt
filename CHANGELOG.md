@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Library: a **Find** tab (the landing view) and a **Details** tab. Find is the faceted search with saved searches and bins; Details is the asset's typed metadata as a form, with Define a field for admins. Two icons (`bin`, `tag`) and three state chips (Incomplete, Shared, Required). No server change. See [operator-ui.md](docs/specs/operator-ui.md).
+
 - Identity, per-show access (migration 31): a show with no rows stays open; add a user or group at `view`, `edit` or `run` and it is hidden from everyone else (state, rundown, story, cues, MOS) except admins and the desk token. Every show-scoped POST is classified in `ROUTE_SHOW_LEVEL` or `NOT_SHOW_SCOPED` (a test walks `serve.ROUTES`); the check runs before the body is read; `403 forbidden_show`. A repeat of a restricted show inherits its rows, deleting a show deletes them, the clock and runner are not subject to it. New Access screen for admins.
 - Newsroom scripts (migrations 25 and 32): a Scripts screen with a script editor (markup, live read time, revisions, a conflict dialog), story status and a recorded approval, an optional approval gate on air (`VOLT_REQUIRE_APPROVAL`), floated backup stories and a reading pace; a prompter feed and `/prompter` page behind a show-scoped ticket; wire intake from RSS, Atom, NewsML-style and JSON feeds into an inbox (`VOLT_WIRE_FEEDS`, `VOLT_WIRE_MAPPINGS`) where a person takes a story as a draft; story and show templates; and a story archive with search and copy. Unvalidated against a real newsroom system, agency feed or prompter. See [newsroom-scripts.md](docs/specs/newsroom-scripts.md).
 

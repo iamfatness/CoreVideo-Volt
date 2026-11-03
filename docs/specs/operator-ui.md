@@ -56,6 +56,14 @@ The tray is client state: a list kept in this tab, never a stored object. Its **
 
 Marks are typed or taken from the playhead into In and Out fields (so an asset with no proxy can still be marked), then added as a clip or as a shot. The playhead is a frame count read from the video (`floor(currentTime x rate)`, seeks aim a quarter frame in) turned into a label by the page's twin of `volt/timecode.py` (`framesToTc`, drop-frame included). A test runs that code under node against the Python library on 25, 24000/1001, 30000/1001 (drop and non-drop) and 60000/1001, around the minute and ten-minute boundaries, and on labels that do not exist. The page assumes the proxy shares the hi-res's start and rate (as the spec does) and warns when the proxy's length differs from the source by more than two frames.
 
+### Find and Details (search slice, Task 9 without the model parts)
+
+The Library has five tabs: **Find**, Shots and clips, Mark from transcript, Selection to export, **Details**. Find is the landing view while no asset is open; the other four appear once one is. Find asks `GET /api/search` (page 25, a "Show more" button follows the cursor) with a field, a scope (All, Speech, Details), an order and an "only assets missing a required detail" box. The **Narrow by** rail is the facet counts of that same answer (Show, Camera, Owner, Retention, Rights, Month, and up to four choice or yes/no fields): ticking a value reruns the search with a filter clause; Month and Rights hold one value. Each result is an asset with its rights chips, an Archived and an Incomplete chip when they apply, its metadata in one line and up to three hits; a speech hit opens the asset on Shots and clips and seeks the player to the hit once the proxy can seek. Snippets are cut into pieces and set as text, the match in a `mark`. **Saved searches** run (put the question back in the controls), delete in two presses, and save under a name with an optional share to every operator. **Bins** are made, chosen, filled from the results ("Add to <bin>") and emptied from the Find tab; a gone clip and a deleted asset say so in words. Saved searches and bins are owner-only unless shared: an admin does not see another person's private ones.
+
+**Details** is the asset's metadata as a form made from `GET /api/schema`: text, long text (a textarea), number, date (YYYY-MM-DD), yes/no and choice (a select, or a checkbox group when it holds several). Each field has its own Save, says Required or Optional in words, shows a refusal beside itself with its code, and the header carries an Incomplete chip naming what is missing. An admin (or a server with no users) also sees **Define a field** and a Retire button per field; anyone who can write adds a term to a choice field.
+
+Not built here because they need a model: the Index review and People tabs, the Labels scope, the "Include unreviewed faces" switch (the request builder supports `include=proposed`; nothing on the page sets it), and result thumbnails from a label's frame.
+
 ### Mark from transcript (slice 5)
 
 A tab beside "Shots and clips" (`#lib-tabs`; arrow keys move between the two tabs, the shot list's keys stand down while this one shows). Built from the mockup's third tab: the asset facts, the transcript with the shot starts inline (a line of its own when a shot starts a sentence, an inline `Shot N` marker when it cuts through one), a word cursor and range, and the "New clip from words" panel with first and last word, count, handles before and after (`-1`, `+1`, `+5`), a snap checkbox (on by default, as in the mockup) whose caption says which cut each end moves to, an optional name, the resulting in, out and length, and Add clip.
@@ -119,6 +127,8 @@ Handled only when the Library is the open screen, and never when a field has foc
 | `Enter` | Add a clip from the fields, only when no button, link or field has focus (in a field it submits the form; on a button it presses it). |
 | `Space` | On a row's name: add or remove the row from the selection. A checkbox keeps its own Space. |
 | `Enter` on a name | Seek the player to the row and open it in the editor. |
+
+The Find tab adds `/` (focus the search field from any Library tab, never inside a field), Up and Down between results, Enter to open, and Esc in a non-empty field to clear it and search again. Details has no keys of its own.
 
 The Export tab has no keys: Tab, arrows inside the radio groups, Space on the checkbox and Enter on the button are the browser's own.
 
