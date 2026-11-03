@@ -55,6 +55,10 @@ STATIC = {
     "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
     "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
     "/operator/theme.js": ("operator/theme.js", "text/javascript; charset=utf-8"),
+    # The prompter page: open like the operator page, because it carries its own show-scoped ticket; the feed it reads is gated.
+    "/prompter": ("operator/prompter.html", "text/html; charset=utf-8"),
+    "/operator/prompter.js": ("operator/prompter.js", "text/javascript; charset=utf-8"),
+    "/operator/prompter.css": ("operator/prompter.css", "text/css; charset=utf-8"),
 }
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
 DB_PATH = os.environ.get("VOLT_DB") or str(package_root().parent / "volt.db")
@@ -925,6 +929,24 @@ def act_show_pace(store, show_id, body):
     return {"ok": True, "rundown": rundown_payload(store, show_id)}
 
 
+PROMPTER_TTL_DEFAULT, PROMPTER_TTL_MAX = 4 * 3600, 12 * 3600
+
+
+def act_prompter_ticket(store, show_id, body):
+    """Issue a link a prompter computer can open without an operator token: one show, read-only, 4 hours (at most 12).
+    The ticket rides in the URL like a media ticket, so it can reach logs; it is short-lived and reads one feed only."""
+    _unknown_keys(body, {"ttlSeconds"})
+    ttl = body.get("ttlSeconds", PROMPTER_TTL_DEFAULT)
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or not 60 <= ttl <= PROMPTER_TTL_MAX:
+        raise ApiError(422, "bad_input", f"ttlSeconds must be a whole number from 60 to {PROMPTER_TTL_MAX}")
+    _show_exists(store, show_id)
+    secret = MEDIA_KEY or TOKEN
+    if not secret:
+        raise ApiError(503, "no_media_key", "no signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
+    token, exp = tickets.issue(secret, show_id, "prompter", ttl, int(time.time()))
+    return {"ok": True, "show": {"id": show_id}, "url": f"/prompter?show={show_id}&ticket={token}", "expiresAt": exp}
+
+
 def act_story_status(store, item_id, body):
     """Move a story between draft, ready, approved and killed, quoting `baseRev`. Never touches the item's playout status."""
     _unknown_keys(body, {"status", "baseRev", "note"})
@@ -1022,6 +1044,18 @@ def devices_get(handler, store, path: str, query: dict) -> bool:
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
     """GET /api/cue-commands, GET /api/items/{item}/cues and GET /api/items/{item}/story. Returns True when it answered."""
+    p = PROMPTER_ROUTE.match(path)
+    if p:     # the feed a prompter page polls: a bearer, or a ticket for exactly this show
+        handler._accept_prompter_ticket(p.group(1), query)
+        handler._json(200, _build_errors(lambda: story.prompter_feed(store, p.group(1))))
+        return True
+    t = re.fullmatch(rf"/api/shows/{_ID}/script", path)
+    if t:
+        if query != {"format": ["text"]}:
+            raise ApiError(422, "bad_input", "this route needs format=text and nothing else")
+        text = _build_errors(lambda: story.script_text(store, t.group(1)))
+        handler._send(200, "text/plain; charset=utf-8", text.encode("utf-8"), {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        return True
     s = re.fullmatch(rf"/api/items/{_ID}/story", path)
     if s:
         if query:
@@ -1048,6 +1082,7 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
 MOS_ROUTE = re.compile(rf"^/api/shows/{_ID}/mos$")
+PROMPTER_ROUTE = re.compile(rf"^/api/shows/{_ID}/prompter$")
 
 def _user_error(fn):
     try:
@@ -1432,6 +1467,7 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
+    (re.compile(rf"^/api/shows/{_ID}/prompter-ticket$"), act_prompter_ticket),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1487,7 +1523,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_story_script": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -1622,8 +1658,28 @@ class Handler(BaseHTTPRequestHandler):
         if m and m.group(2) == "proxy":
             media_get = True
         else:
-            media_get = bool(THUMB_ROUTE.match(parsed.path))
+            media_get = bool(THUMB_ROUTE.match(parsed.path)) or bool(PROMPTER_ROUTE.match(parsed.path))
         return media_get and "ticket" in parse_qs(parsed.query, keep_blank_values=True)
+
+    def _accept_prompter_ticket(self, show_id: str, query: dict) -> None:
+        """The prompter feed takes `ticket` instead of a bearer: one show, one purpose, short-lived. Nothing else is accepted."""
+        extra = sorted(set(query) - {"ticket"})
+        if extra:
+            raise ApiError(422, "bad_input", "the prompter feed takes no parameters")
+        given = query.get("ticket")
+        if not given:
+            return
+        if len(given) != 1:
+            raise ApiError(422, "bad_input", "ticket may be given once")
+        if self._bearer_principal() is not None:
+            return
+        secret = MEDIA_KEY or TOKEN
+        try:
+            if not secret:
+                raise tickets.TicketError("ticket_invalid")
+            tickets.verify(secret, show_id, "prompter", given[0], int(time.time()))
+        except tickets.TicketError:
+            raise TicketDenied() from None
 
     def _gate_or_ticket(self) -> bool:
         """Bearer (or loopback host) as usual, except a media GET may present `ticket` instead of Authorization."""

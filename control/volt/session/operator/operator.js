@@ -421,6 +421,7 @@
     storyStatus: ['POST', '/api/items/{id}/story-status'],
     itemFloat:   ['POST', '/api/items/{id}/float'],
     showPace:    ['POST', '/api/shows/{id}/reading-pace'],
+    prompterTicket: ['POST', '/api/shows/{id}/prompter-ticket'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -3343,7 +3344,7 @@
   // never the draft, and a save quotes that revision so a lost race is a conflict dialog and not a silent overwrite.
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
-    pace: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
+    pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
   const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
@@ -3504,6 +3505,25 @@
     act('showPace', S.show, { wpm }, { key: 'sc-pace', okTitle: wpm === null ? 'Default pace.' : 'Pace set.', ok: () => 'Read times use ' + (wpm === null ? 160 : wpm) + ' words a minute.' });
   }
 
+  // A link a prompter computer opens without an operator token: one show, read only, 4 hours. Shown to copy; never stored by the page.
+  async function scMakeLink() {
+    if (!S.show || S.pending.has('sc-link')) return;
+    S.pending.add('sc-link'); render();
+    try {
+      const { status, data } = await call('prompterTicket', S.show, {});
+      if (data && data.ok) { SC.link = { url: location.origin + data.url, expires: data.expiresAt }; announce('Prompter link made. It works for four hours.'); }
+      else { const e = codeOf(data, status); setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason }); }
+    } catch (e) { setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'No link was made.' }); }
+    S.pending.delete('sc-link'); render();
+  }
+  function scPrompter() {
+    const L = SC.link;
+    return el('div', { class: 'form-row' },
+      btn('Make a prompter link', { key: 'sc-link', cls: 'ghost small', disabled: !S.show, title: 'A read-only link for the prompter computer, good for four hours', onclick: scMakeLink }),
+      L ? el('div', { class: 'grow' }, el('label', { for: 'sc-link-url', text: 'Open this on the prompter. It expires at ' + new Date(L.expires * 1000).toLocaleTimeString([], { hour12: false }) + '.' }),
+        el('input', { id: 'sc-link-url', type: 'text', readonly: true, 'data-fk': 'sc-link-url', value: L.url, onfocus: (e) => e.target.select() })) : null);
+  }
+
   function scChips(it) {
     const draft = !!SC.drafts[it.id];
     return [stateChip(storyKind(it.storyStatus)), it.floated ? stateChip('floated') : null,
@@ -3632,6 +3652,7 @@
           oninput: (e) => { SC.pace = e.target.value; } })),
       btn('Set pace', { key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
       btn('Default', { key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
+    paint('sc-prompter', [SC.link, S.show, [...S.pending].filter((k) => k === 'sc-link')], scPrompter);
     paint('sc-filter', [SC.filter], () => el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'sc-filter-sel', text: 'Show' }),
       el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
         SC_FILTERS.map(([v, label]) => el('option', { value: v, selected: v === SC.filter }, label))))));
