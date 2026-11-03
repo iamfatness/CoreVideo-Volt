@@ -720,11 +720,28 @@ class Store:
                 return   # the file is already bootstrapped (and in WAL mode, which persists in the file)
             if path != ":memory:":
                 self._enable_wal()
-            self.conn.executescript(SCHEMA)
-            self._migrate()
+            self._bootstrap()
         except BaseException:
             self.conn.close()
             raise
+
+    def _bootstrap(self) -> None:
+        """Run the base-table script and the migrations. Several processes starting together on one old file all run this; SQLite tells the
+        ones whose statements were prepared before another process ran DDL 'database schema has changed'. That is a reason to start the
+        step again (it is idempotent), not to fail the start."""
+        for attempt in range(6):
+            try:
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                return
+            except sqlite3.OperationalError as exc:
+                if "schema has changed" not in str(exc) or attempt == 5:
+                    raise
+                try:
+                    self.conn.rollback()
+                except sqlite3.Error:
+                    pass
+                time.sleep(0.02 * (attempt + 1))
 
     def _enable_wal(self) -> None:
         # Switching the journal mode needs the file to itself and ignores the busy timeout, so processes
