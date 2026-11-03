@@ -145,3 +145,17 @@ Every status carries a glyph and a word. Focus rings are 2 px. `prefers-reduced-
 ## Scripts screen
 
 The Scripts screen (`#scripts`; no number key, keys 1 to 6 are unchanged), in the Producer and Operator rails. Stories in rundown order with state chips (Draft, Ready, Approved, Story killed, Floated, Unsaved, and the playout state beside them), a status filter and the reading pace; a slug field and a script box with a preview of what is read and a count in a polite status region (at most one change a second); Save, the legal status moves only (Approve needs two presses; status moves are off while there is unsaved text), Float; a story panel with History, Wire, Templates and Archive tabs. A lost save race opens a modal dialog with both versions. Editing is read-only, with the reason in words, for aired, skipped and killed items and for a killed story. The Show rows gain the story chip, a floated marker and `~0:42 read` where the length comes from the script. Keys: `Ctrl+S` saves, from inside the script box only. The prompter is a separate page, `/prompter`. Behaviour and limits: [newsroom-scripts.md](newsroom-scripts.md).
+
+## Collaboration screens
+
+Built for the identity plan, in the existing design language and only existing colour tokens (both theme sets; `test_operator_ui.ThemeContrast` measures the pairs they use). State is always icon plus word plus colour, never red for anything but a live path.
+
+- **Sign in.** The Token dialog offers "Sign in with Google" and "Sign in with Microsoft" when the server has `VOLT_OIDC_CONFIG` (unvalidated against a real provider), above the token field, which always works. A cookie session replaces the token in the page; the header pill names the person and role, with Activity and Access links for an admin.
+- **Activity** (admin): filters, a table, Load more, and a CSV download fetched with the credential.
+- **Access** (admin): per-show view, edit or run for users and groups.
+- **Presence.** Avatars and a line under the toolbar say who is on the show and where; a person in two tabs is one name.
+- **Edit lease.** Opening a script for editing takes a 45 s lease the page renews every 15 s. Held by someone else, the editor is read-only with a banner naming them and, for an operator with edit access, a Take over button; a lost lease says so in words and keeps the unsaved text.
+- **Comments.** A thread panel on the Show screen and a Comments tab in Scripts, mention completion, a Resolve and a delete, and an open-thread chip on rundown rows. Text only; a comment is never rendered as markup.
+- **Notifications.** A bell with an unread count and a dialog for mentions, replies and a taken-over lease.
+
+A viewer sees every screen read-only; the page does not yet hide write controls (the server refuses them with `403 forbidden_role`). See [collaboration.md](collaboration.md).

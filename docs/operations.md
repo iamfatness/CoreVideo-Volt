@@ -177,7 +177,7 @@ Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_PO
 
 ## Users and tokens
 
-Two roles. **operator** runs the show: go, take, hold, release, skip, kill, reorder, attach, record, clear/legal-hold/restore
+Three roles (see [access](specs/access.md) for groups, per-show access and sessions). **viewer** reads everything the desk shows and writes nothing but presence, its own comments and notification reads. **operator** runs the show: go, take, hold, release, skip, kill, reorder, attach, record, clear/legal-hold/restore
 rights, publish, clip edits, rundown and cue writes, ingest, and every read. **admin** does all of that plus managing
 users and tokens, and the destructive actions: delete an asset, delete a show, delete a clip, unpublish, and re-detect shots.
 The full table is `ROUTE_ROLES` in `control/volt/serve.py`; a test fails when a route is not classified.
@@ -325,9 +325,11 @@ is not blocked from starting.
   outside the owner has a right to install or redistribute Volt without a written agreement. `NOTICE` lists ffmpeg,
   faster-whisper, the optional SDKs and their licences; it is not a grant for Volt. Still open: a customer licence
   agreement and, if a bundle ships psycopg, the LGPL-3.0 steps in `NOTICE`.
-- **Auth.** Per-user tokens with two roles (operator, admin; see "Users and tokens" above), plus the legacy shared
-  `VOLT_TOKEN` as an admin named `desk`. Writes append to `audit` with the token's user as the actor;
-  `GET /api/audit?target=` is the read. No passwords, SSO or finer roles.
+- **Auth.** Per-user tokens with three roles (viewer, operator, admin; see "Users and tokens" above), groups, per-show
+  access, cookie sessions and sign-in with Google or Microsoft, plus the legacy shared `VOLT_TOKEN` as an admin named
+  `desk`. Writes append to `audit` with the user as the actor (`GET /api/audit` is the admin view). Sign-in has only been
+  run against a fake provider, and edit leases, presence and comments have only been run by tests and one person with two
+  browser profiles: see [collaboration](specs/collaboration.md) for exactly what is unvalidated. No passwords, SAML or SCIM.
 - **TLS.** Volt speaks plain HTTP by design. The supported setup is a Caddy or nginx reverse proxy on the same machine with Volt on loopback and `VOLT_TOKEN` set: [tls](tls.md) has the configs and the run that checked them (Caddy 2.11.7, nginx 1.31.8, internal certificate; public-certificate issuance and HTTP/2 not run).
 - **Scheduling backups.** `volt backup` exists; nothing runs it on a timer. `--with-media` copies local owned
   folders; object storage is still yours to copy (docs/specs/backup.md). Run a restore drill once before relying on it.
@@ -354,3 +356,9 @@ It needs TLS (`docs/tls.md`): Google refuses plain-http redirect URIs except on 
 The secret is read from the named environment variable and is never in the file, the log or the audit (a `client_secret` key in the file is refused). `scopes` defaults to `openid email profile`; `offline_access` is refused. Microsoft needs one tenant issuer (`common`, `organizations`, `consumers` are refused) and a `tenants` list; Google's `auto_provision` needs `domains`. `auto_provision` (default off) creates a `viewer` for an unknown, trusted email; otherwise an admin adds the user and sets their address with `POST /api/users/{name}/identity {email}`.
 
 Who may sign in: a known `(issuer, sub)` always signs in as the same user, whatever email it now carries. An unknown identity is linked to an existing, enabled, not-yet-linked user whose address equals the token's, only when the address can be trusted (Google: `email_verified` and `hd` in `domains`; Microsoft: `tid` in `tenants`); otherwise it is refused as `not_provisioned`. Groups come from the token's group claim through the map an admin sets (`POST /api/groups/{name}/claims`); they replace only oidc-sourced memberships, and a Microsoft overage marker leaves the groups as they were (a log warning; Graph is not called). Membership changes at the provider apply at the next sign-in, bounded by the session limits. Every refusal writes `login_failed` (insert-only; at most one row a second per provider and reason, the skipped ones counted in the next row) and makes no session. Provider endpoints are called with 10 second timeouts, https only, no redirects.
+
+## Editing together, comments and notifications (unvalidated with real users)
+
+No configuration. Leases, presence, comments and notifications use their own tables (migrations 33 and 34) and nothing on the air path (take, go, hold, release, skip, kill) reads them; if they cannot be read the page says "collaboration unavailable" and carries on. An edit lease lasts 45 seconds and the page renews it every 15, so a closed laptop frees an item within a minute; an admin or an operator with edit access can take over a live lease. Presence is a 10 second heartbeat per browser tab, live for 30 seconds. Comments are 4000 characters at most, 30 a minute per author, and notifications older than 90 days are purged by the runner. Access follows the show: nobody who cannot view a show can read, post or be notified about its comments. Comment bodies are never in the audit table, the log or a URL.
+
+Back up the database before upgrading as for any migration. These features have been exercised by tests on SQLite and Postgres and by one person in two browser profiles against a loopback server; they have not been used by a real team, or over a flaky network, or on a LAN with a proxy in front. See [collaboration](specs/collaboration.md).

@@ -41,7 +41,8 @@ from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
              "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find",
-             "lease_held_by_other", "lease_lost", "presence_two_users", "comments_thread"]
+             "lease_held_by_other", "lease_lost", "presence_two_users", "comments_thread",
+             "signed_out_with_providers", "activity_filtered"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -296,6 +297,19 @@ def seed_collab(store: Store, scenario: str) -> None:
     store.conn.commit()
 
 
+def seed_activity(store: Store) -> None:
+    """Thirty-odd audit rows from four people over a few days, for the Activity screen's filters, paging and CSV."""
+    import itertools
+    people = ("root", "dana", "marcus", "sam")
+    acts = (("go", "show"), ("hold", "show"), ("release", "show"), ("item_rename", "item"), ("comment_add", "comment"),
+            ("lease_acquire", "item"), ("group_create", "group"), ("show_access", "show"), ("login", "session"))
+    for n, (who, (action, kind)) in enumerate(zip(itertools.cycle(people), itertools.cycle(acts))):
+        if n >= 36:
+            break
+        store.append_audit(who, action, kind, "t%02d" % (n % 7), None)
+    store.append_audit("dana", "item_rename", "item", "=HYPERLINK(\"x\")", None)   # a formula-looking target, to see the CSV neutralised
+
+
 COMMENT_TOKENS: dict = {}
 
 
@@ -358,6 +372,8 @@ def seed(store: Store, scenario: str, media_dir=None):
         seed_comments(store)
     if scenario in COLLAB_SCENARIOS:
         seed_collab(store, scenario)
+    if scenario == "activity_filtered":
+        seed_activity(store)
 
     # The room. Take succeeds only where its cues have evidence: a lower third on air and a sender
     # producing. take_fail never shows a sender, so stream.start fails after overlay.take fires.
@@ -425,6 +441,18 @@ def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None, ru
     if scenario == "publish_partial":
         # Publish the Open clip first with a failing social render so the page opens on the aftermath.
         publish(store, spans["open"], fail="social")
+    if scenario == "signed_out_with_providers":
+        # Sign-in is on (a throwaway config, the fake secret only ever lives in this process) and a token is required, so the page opens signed out.
+        import json
+        from volt import oidc, users
+        users.add(store, "root", "admin")
+        cfg = Path(tmp.name) / "oidc.json"
+        cfg.write_text(json.dumps({"providers": [
+            {"id": "google", "label": "Google", "issuer": "https://accounts.google.com", "client_id": "harness", "client_secret_env": "HARNESS_SECRET"},
+            {"id": "microsoft", "label": "Microsoft", "issuer": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+             "client_id": "harness", "client_secret_env": "HARNESS_SECRET", "tenants": ["00000000-0000-0000-0000-000000000000"]}]}), encoding="utf-8")
+        os.environ["VOLT_PUBLIC_URL"] = "http://127.0.0.1:%d" % port if port else "http://127.0.0.1:8791"
+        serve.OIDC_CONFIG = oidc.load_config(str(cfg), env={**os.environ, "HARNESS_SECRET": "harness-not-a-secret"})
     store.close()
     if scenario == "export":    # this process is the harness server, so setting its environment is its own business
         os.environ["VOLT_EXPORT_PATH_MAP"] = tmp.name + "=\\\\nas\\iso"

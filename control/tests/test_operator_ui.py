@@ -1122,7 +1122,11 @@ class ThemeContrast(unittest.TestCase):
              ("signal-ink", "signal-bg", 4.5), ("air-ink", "air-bg", 4.5), ("ok-ink", "ok-bg", 4.5),
              ("on-signal", "signal", 4.5), ("on-air", "air", 4.5), ("on-blue", "blue", 4.5),
              ("off-fg", "off-bg", 4.5), ("text", "chip-bg", 4.5), ("text", "row-air", 4.5), ("text", "row-sel", 4.5),
-             ("ctl", "panel", 3.0)]
+             ("ctl", "panel", 3.0),
+             # collaboration states: the lost-lease banner message and its word, a viewer's name chip, the notification count and a mention
+             ("text", "signal-bg", 4.5), ("muted", "raise", 4.5), ("blue-ink", "ground", 4.5), ("blue-ink", "raise", 4.5),
+             # the "you" ring on an avatar, the unread bell border and an open thread's edge are meaningful non-text marks
+             ("blue-hi", "panel", 3.0), ("blue-hi", "ground", 3.0), ("signal-ink", "panel", 3.0)]
 
     def check(self, tokens, label):
         for fg, bg, need in self.PAIRS:
@@ -1135,6 +1139,11 @@ class ThemeContrast(unittest.TestCase):
     def test_light_pairs(self):
         self.assertTrue(self.LIGHT, "no light token block")
         self.check({**self.DARK, **self.LIGHT}, "light")
+
+    def test_collaboration_styles_use_theme_tokens_only(self):
+        start = self.CSS.index("/* edit leases and presence")
+        block = re.sub(r"/\*.*?\*/", "", self.CSS[start:], flags=re.S)
+        self.assertNotRegex(block, r"#[0-9a-fA-F]{3,8}|rgba?\(|hsla?\(")
 
     def test_every_dark_colour_token_has_a_light_one(self):
         colours = {k for k, v in self.DARK.items() if v.strip().startswith("#")}
@@ -1327,6 +1336,13 @@ class ActivityScreen(unittest.TestCase):
         self.assertIn("scope: 'col'", body)
         self.assertIn("icon('wave'", body)
         self.assertIn("download: 'volt-activity.csv'", js)   # the CSV is fetched with the token, not a plain link
+
+    def test_the_who_pill_never_renders_a_null_child(self):
+        # replaceChildren(..., null) writes the text "null": a non-admin's pill read "sam · viewer nullnull"
+        js = FILES["operator.js"]
+        body = js[js.index("const pill = $('who');"):js.index("const pill = $('who');") + 700]
+        self.assertIn(".filter(Boolean)", body)
+        self.assertNotRegex(body, r"\? el\('a'[^\n]*: null")
 
     def test_the_rail_accepts_activity_only_as_an_extra(self):
         got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])

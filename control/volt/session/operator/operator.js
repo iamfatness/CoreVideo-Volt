@@ -930,9 +930,10 @@
       // The pill names the person and their access level; it stays hidden when the server does not say.
       const pill = $('who');
       pill.hidden = !(who && who.name);
-      if (!pill.hidden) pill.replaceChildren(icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }),
-        who.role === 'admin' ? el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }) : null,
-        who.role === 'admin' ? el('a', { href: '#access', class: 'pill-link', text: 'Access' }) : null);
+      if (!pill.hidden) {
+        const links = who.role === 'admin' ? [el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }), el('a', { href: '#access', class: 'pill-link', text: 'Access' })] : [];
+        pill.replaceChildren(...[icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }), ...links].filter(Boolean));   // a null child would be written as the text "null"
+      }
     } catch (e) { /* leave the button as it is */ }
   }
 
