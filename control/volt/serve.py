@@ -302,6 +302,44 @@ def open_request_store() -> Store:
     return Store(DB_PATH, init=False)
 
 
+DRAIN_DEFAULT_SECONDS = 20
+
+
+class Drain:
+    """Graceful stop for a rolling restart: SIGTERM marks the node draining (/ready goes 503 so the balancer stops sending), the node waits up
+    to VOLT_DRAIN_SECONDS for in-flight requests to finish, then exits. A second signal stops at once. Requests that still arrive while
+    draining are served and told to close the connection; show control is never shed."""
+
+    def __init__(self):
+        self._event = threading.Event()
+
+    @property
+    def active(self) -> bool:
+        return self._event.is_set()
+
+    def begin(self) -> bool:
+        """True the first time (start draining); False when already draining (the caller should stop at once)."""
+        if self._event.is_set():
+            return False
+        self._event.set()
+        return True
+
+    def reset(self) -> None:
+        self._event.clear()
+
+    def wait_idle(self, seconds: float, inflight=lambda: INFLIGHT.n, sleep=time.sleep, now=time.monotonic) -> bool:
+        """Wait until nothing is in flight or `seconds` pass. True when idle."""
+        deadline = now() + seconds
+        while now() < deadline:
+            if inflight() <= 0:
+                return True
+            sleep(0.05)
+        return inflight() <= 0
+
+
+DRAIN = Drain()
+
+
 class VoltServer(ThreadingHTTPServer):
     request_queue_size = 128   # the stdlib's 5 overflows when 50 desks reconnect together
     daemon_threads = True
@@ -2330,6 +2368,28 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return self._gate()
 
+    def _ready(self) -> None:
+        if DRAIN.active:
+            self._json(503, {"status": "draining"})
+            return
+        try:
+            if TENANTS is not None:
+                TENANTS.registry.epoch()
+            else:
+                store = self._store()
+                store.conn.execute("SELECT 1").fetchone()
+        except Exception:  # noqa: BLE001 - the answer is "not ready"; the cause goes to the log
+            log.warning("readiness check failed", exc_info=True)
+            self._json(503, {"status": "unavailable"})
+            return
+        self._json(200, {"status": "ready"})
+
+    def end_headers(self):
+        if DRAIN.active and not self.close_connection:
+            self.send_header("Connection", "close")    # a draining node asks clients to reconnect, and the balancer sends them elsewhere
+            self.close_connection = True
+        super().end_headers()
+
     def _empty_401(self) -> None:
         self.send_response(401)
         self.send_header("WWW-Authenticate", "Bearer")
@@ -2455,6 +2515,8 @@ class Handler(BaseHTTPRequestHandler):
         query or any other header. False when the request has been answered (unknown host, suspended, registry unreadable)."""
         if TENANTS is None:
             return True
+        if urlparse(self.path).path in ("/health", "/ready"):   # a balancer probes by address, not by a tenant's host name
+            return True
         try:
             ctx = TENANTS.resolve(self.headers.get("Host"))
         except Exception:  # noqa: BLE001 - the registry could not be read: say so, name nothing
@@ -2484,6 +2546,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
             self._json(200, health.liveness())
+            return
+        if path == "/ready":   # readiness for a balancer: 503 while draining or when the database cannot be read; no auth, no data
+            self._ready()
             return
         if path == "/auth" or path.startswith("/auth/"):   # sign-in: before the gate, because the browser has no credential yet
             self._auth(path)
@@ -2679,6 +2744,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if report["status"] != "down" else 503, "text/plain; version=0.0.4; charset=utf-8",
                            health.prometheus(report, REGISTRY if ctx is None else None).encode())
             else:
+                report["mediaKeyFingerprint"] = health.media_key_fingerprint(_media_secret())   # nodes of one deployment must agree
                 self._json(200 if report["status"] != "down" else 503, report)
             return
         if parsed.path == "/api/state":
@@ -3035,8 +3101,22 @@ def _config_exit(message: str):
     raise SystemExit(EX_CONFIG)
 
 
+_SERVER = None
+
+
 def _on_stop(signum, frame):
-    raise KeyboardInterrupt
+    """First signal: drain (readiness 503, finish what is in flight, up to VOLT_DRAIN_SECONDS), then stop. A second one stops at once."""
+    server = _SERVER
+    if server is None or not DRAIN.begin():
+        raise KeyboardInterrupt
+    seconds = float(_int_env("VOLT_DRAIN_SECONDS", DRAIN_DEFAULT_SECONDS))
+    log.info("drain started seconds=%.0f inflight=%d", seconds, INFLIGHT.n)
+
+    def finish():
+        idle = DRAIN.wait_idle(seconds)
+        log.info("drain finished idle=%s inflight=%d", idle, INFLIGHT.n)
+        server.shutdown()
+    threading.Thread(target=finish, name="drain", daemon=True).start()
 
 
 def main(argv=None):
@@ -3098,6 +3178,8 @@ def main(argv=None):
             _config_exit(str(exc))
         except OSError as exc:
             _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
+        global _SERVER
+        _SERVER = server
         port = server.server_address[1]
         print(f"Volt session on http://{host}:{port}" + (" (tenancy on: tokens required per tenant)" if tenant_mode else " (token required)" if TOKEN or users.db_has_enabled_admin(DB_PATH) else "")
               + (f" (postgres pool of up to {pool.max_size})" if pool else ""), flush=True)

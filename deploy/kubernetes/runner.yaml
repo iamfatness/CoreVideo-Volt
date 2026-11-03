@@ -1,0 +1,25 @@
+# UNVALIDATED: never applied. Runners claim jobs with SKIP LOCKED and recover expired leases, so any number is safe; scale this by the number of
+# queued-due jobs (volt_jobs{state="queued"}), not by CPU. A runner finishes the job in flight on SIGTERM; the lease covers the rest.
+# Tenant-aware claiming (one job per tenant per pass) is not built yet: against a multi-tenant database use one runner per tenant until it is.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volt-runner
+  labels: {app: volt, role: runner}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: volt, role: runner}
+  template:
+    metadata:
+      labels: {app: volt, role: runner}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: runner
+          image: registry.example.com/volt:REPLACE_ME
+          command: ["volt", "runner"]
+          envFrom:
+            - secretRef: {name: volt-secrets}
+          resources:
+            requests: {cpu: "1", memory: 1Gi}

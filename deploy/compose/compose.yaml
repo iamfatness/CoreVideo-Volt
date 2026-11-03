@@ -1,0 +1,106 @@
+# Volt on one host with process-level redundancy: two serve nodes behind Caddy, two runners, one clock, Postgres 16.
+#
+# UNVALIDATED: this file was never run. `docker compose config` was not run either. It is a starting point for rehearsal R1 in
+# docs/superpowers/specs/2026-11-01-scale-operations-design.md (kill -9 a serve and a runner mid-load; no accepted take lost, no
+# job duplicated, the balancer recovers within 10 s). It survives a crashed process and allows a rolling restart; it does not survive
+# the host. Proxies and thumbnails need a volume every node can read (`media`, below) or object storage; see docs/scale.md.
+#
+# Secrets come from the environment or an env file you create (never commit one): VOLT_PG_PASSWORD, VOLT_MEDIA_KEY (the same on every
+# node, 32+ characters), and a user token per person made with `volt user add`.
+#
+#   VOLT_PG_PASSWORD=... VOLT_MEDIA_KEY=... docker compose -f deploy/compose/compose.yaml up -d
+#   rolling restart of one node:  docker compose -f deploy/compose/compose.yaml up -d --no-deps serve-1   (then serve-2)
+
+x-volt: &volt
+  image: volt:local            # build it first: docker build -t volt:local -f deploy/compose/Dockerfile .  (a Dockerfile is not provided here)
+  restart: unless-stopped
+  environment: &volt-env
+    VOLT_DB: postgresql://volt:${VOLT_PG_PASSWORD:?set VOLT_PG_PASSWORD}@postgres:5432/volt
+    VOLT_PG_POOL_MAX: "6"
+    VOLT_MEDIA_KEY: ${VOLT_MEDIA_KEY:?set VOLT_MEDIA_KEY}
+    VOLT_OUT: /data/out
+    VOLT_PROXY_DIR: /data/proxy
+    VOLT_DRAIN_SECONDS: "20"
+    VOLT_TRUSTED_PROXIES: "172.16.0.0/12"      # Caddy's address on the compose network; the real client comes from X-Forwarded-For
+  volumes:
+    - media:/data
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: volt
+      POSTGRES_DB: volt
+      POSTGRES_PASSWORD: ${VOLT_PG_PASSWORD:?set VOLT_PG_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volt -d volt"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The migration step runs once, before any node starts or rolls: nodes do not migrate while serving.
+  migrate:
+    <<: *volt
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["volt", "migrate"]
+
+  serve-1:
+    <<: *volt
+    command: ["volt", "serve", "--host", "0.0.0.0", "--port", "8765"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/ready', timeout=3).status == 200 else 1)"]
+      interval: 5s
+      timeout: 4s
+      retries: 3
+    stop_grace_period: 40s       # longer than VOLT_DRAIN_SECONDS
+
+  serve-2:
+    <<: *volt
+    command: ["volt", "serve", "--host", "0.0.0.0", "--port", "8765"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/ready', timeout=3).status == 200 else 1)"]
+      interval: 5s
+      timeout: 4s
+      retries: 3
+    stop_grace_period: 40s
+
+  runner-1:
+    <<: *volt
+    command: ["volt", "runner"]
+    stop_grace_period: 40s
+
+  runner-2:
+    <<: *volt
+    command: ["volt", "runner"]
+    stop_grace_period: 40s
+
+  clock:
+    <<: *volt
+    command: ["volt", "clock"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - serve-1
+      - serve-2
+
+volumes:
+  pgdata:
+  media:
+  caddy_data:

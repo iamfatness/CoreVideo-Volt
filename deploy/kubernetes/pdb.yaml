@@ -1,0 +1,9 @@
+# UNVALIDATED: never applied. Keeps at least two serve pods up through a node drain or a voluntary disruption.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volt-serve
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: volt, role: serve}

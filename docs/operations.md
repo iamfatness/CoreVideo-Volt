@@ -295,7 +295,7 @@ volt run --env-file /etc/volt/volt.env
 ```
 
 or with flags: `volt run --db postgresql://... --port 8765 --log-dir /var/log/volt`. Ctrl-C or SIGTERM stops
-serve, runner and clock together (the runner finishes the job in flight, up to `--stop-grace`, default 20 s, then
+serve, runner and clock together (the runner finishes the job in flight, up to `--stop-grace`, default 30 s, which covers serve's drain, then
 it is killed and its lease recovers the job). A crashed child is restarted after 1 s, 2 s, 4 s, up to 60 s
 (`--backoff-max`); the wait resets after a child has stayed up for a minute. A child that exits with code 78
 (configuration error) is not restarted and `volt run` stops with 78.
@@ -417,6 +417,8 @@ See `docs/specs/backup.md`. `volt check` reports whether `pg_dump` and `pg_resto
 
 Run the new version on every machine that shares a database; a runner on older code against a newer database
 is not blocked from starting.
+
+To upgrade several nodes one at a time without stopping (expand/contract migrations, `volt migrate`, `volt upgrade plan`, `/ready` and drain, the one-time bridge release), see [scale](scale.md).
 
 ## Not done yet (decisions and work outside this page)
 
