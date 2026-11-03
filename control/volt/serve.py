@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import tenancy, collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
+from volt import ratelimit, tenancy, collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -260,6 +260,23 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _build_limiter():
+    """Token buckets are off for an installed single-tenant Volt unless a VOLT_RATE_* variable asks for them; tenant mode turns them on."""
+    on = os.environ.get("VOLT_TENANCY", "").lower() == "on" or ratelimit.any_rate_configured(os.environ)
+    return ratelimit.Limiter(ratelimit.rates_from_env(os.environ)) if on else None
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+LIMITER = _build_limiter()                                             # per node, in memory (volt/ratelimit.py); None = off
+GATE = ratelimit.ConcurrencyGate(_int_env("VOLT_MAX_CONCURRENT", ratelimit.DEFAULT_MAX_CONCURRENT))
+FAILURES = ratelimit.FailureTracker(exempt_loopback=True)               # failed bearer tokens per client address
+TRUSTED_PROXIES = ratelimit.parse_trusted(os.environ.get("VOLT_TRUSTED_PROXIES", ""))
 TENANTS = None   # a tenancy.TenantResolver when VOLT_TENANCY=on (set in main()); None is today's single-tenant behaviour
 REGISTRY = telemetry.REGISTRY      # request, pool and job series (volt/telemetry.py); tests swap it for a fresh one
 INFLIGHT = telemetry.Inflight()
@@ -695,6 +712,7 @@ def act_record_start(store, _unused, body):
     camera = _str(body, "camera", limit=100)
     show = _str(body, "show", limit=200)
     room = get_room()
+    _quota(store, "max_assets")
     try:
         with exclusive(store, record_lease_name(_room_key())):
             try:
@@ -1482,12 +1500,28 @@ def act_cue_remove(store, cue_id, body):
             "orderVersion": building.order_version(store, show_id)}
 
 
+def _quota(store, name: str, adding: int = 1) -> None:
+    """Refuse (429 quota_exceeded) work that would pass this tenant's limit. Tenancy off, or no limit set: nothing is refused. Never called
+    on a read or on show control."""
+    ctx = current_tenant()
+    try:
+        ratelimit.check_quota(store, ctx.limits if ctx is not None else None, name, adding)
+    except ratelimit.QuotaExceeded as exc:
+        try:
+            REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "quota"}).inc()
+        except Exception:  # noqa: BLE001
+            pass
+        raise ApiError(429, "quota_exceeded", f"this account has reached its {name} limit of {exc.limit}", quota=name, limit=exc.limit) from None
+
+
 def act_ingest(store, _unused, body):
     """Enqueue ingest of one file from an allowed folder (VOLT_INGEST_ROOTS). The runner copies, probes, and
     checksums. Replay is safe (same file, same asset)."""
     _unknown_keys(body, {"path", "owner", "show", "camera"})
     path = _str(body, "path", required=True, limit=4096)
     owner = _str(body, "owner", default="desk", limit=100)
+    _quota(store, "max_assets")
+    _quota(store, "max_jobs_per_day")
     out = _build_errors(lambda: building.ingest_allowed(
         store, path, (current_tenant().settings.quarantine_dir if current_tenant() is not None
          else Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine")), owner,
@@ -2218,9 +2252,19 @@ class Handler(BaseHTTPRequestHandler):
             return True
 
     def _authenticate(self) -> Principal:
+        address = self._client()
+        if FAILURES.blocked(address):
+            try:
+                REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "auth"}).inc()
+            except Exception:  # noqa: BLE001
+                pass
+            raise ApiError(429, "rate_limited", "too many failed sign-in attempts from this address; wait a minute",
+                           headers={"Retry-After": "60"}, retryAfterSeconds=60)
         found = self._bearer_principal()
         if found is not None:
             return found
+        if self._bearer():       # a token was presented and is wrong: that is a guess
+            FAILURES.failed(address)
         if not self._bearer():  # a bearer header, even a wrong one, never falls back to a cookie
             found = self._session_principal()
             if found is not None:
@@ -2351,15 +2395,60 @@ class Handler(BaseHTTPRequestHandler):
         self._req_store, self._body_read, self._status, self._fn_name = None, method != "POST", 0, None
         started = time.perf_counter()
         _REQUEST.tenant = None
+        exempt = self._gate_exempt(method)
         with INFLIGHT:
+            admitted = GATE.enter(exempt)
             try:
-                if self._resolve_tenant():
+                if not admitted:
+                    self._refuse_busy()
+                elif self._resolve_tenant():
                     run()
             finally:
+                if admitted:
+                    GATE.leave(exempt)
                 self._close_store()
                 _REQUEST.tenant = None
                 telemetry.record_request(method, self._fn_name, urlparse(self.path).path, self._status or 500,
                                          time.perf_counter() - started, REGISTRY)
+
+    def _gate_exempt(self, method: str) -> bool:
+        """Health, readiness and show control never wait behind the concurrency gate."""
+        path = urlparse(self.path).path
+        if path in ("/health", "/ready"):
+            return True
+        if method == "POST":
+            for pattern, fn in ROUTES:
+                if pattern.match(path):
+                    return fn.__name__ in ratelimit.SHOW_CONTROL
+        return False
+
+    def _refuse_busy(self) -> None:
+        try:
+            REGISTRY.counter(telemetry.BUSY).inc()
+        except Exception:  # noqa: BLE001
+            pass
+        self._error(ApiError(503, "busy", "this server is at its concurrency limit; retry in a moment",
+                             headers={"Retry-After": "1"}, retryAfterSeconds=1))
+
+    def _client(self) -> str:
+        return ratelimit.client_address(self.client_address[0], self.headers, TRUSTED_PROXIES)
+
+    def _rate_limit(self, cls: str, fn_name=None) -> None:
+        """Raise 429 when this principal (or its tenant as a whole) is over its bucket. Show control and tenancy-off-without-config pass."""
+        if LIMITER is None:
+            return
+        ctx = current_tenant()
+        who = self.principal
+        # The legacy shared token (and open loopback) is one name for every desk, so those are told apart by address.
+        name = f"{who.name}@{self._client()}" if who is None or who.legacy else who.name
+        decision = LIMITER.check((ctx.ref.slug if ctx else "", name), cls, fn_name)
+        if not decision.allowed:
+            wait = ratelimit.retry_seconds(decision.retry_after)
+            try:
+                REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "rate"}).inc()
+            except Exception:  # noqa: BLE001
+                pass
+            raise ApiError(429, "rate_limited", "too many requests; slow down", headers={"Retry-After": str(wait)}, retryAfterSeconds=wait)
 
     def _resolve_tenant(self) -> bool:
         """Tenant mode: find the tenant from the Host header, before anything else (before auth). The tenant is never taken from a body, a
@@ -2401,6 +2490,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path != "/" and not self._gate_or_ticket():
             return
+        if path != "/":
+            try:
+                self._rate_limit("read")
+            except ApiError as err:
+                self._error(err)
+                return
         # One connection per request (auth shares it). Postgres schema is applied once in main().
         store = self._store()
         try:
@@ -2503,6 +2598,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(404, "not_found", "no such route")
             self._fn_name = fn.__name__
+            self._rate_limit("heavy" if fn.__name__ in telemetry.HEAVY_ROUTES else "write", fn.__name__)
             need = ROUTE_ROLES.get(fn.__name__, "admin")
             if acl.RANK[need] > acl.RANK.get(self.principal.role, -1):
                 raise ApiError(403, "forbidden_role",

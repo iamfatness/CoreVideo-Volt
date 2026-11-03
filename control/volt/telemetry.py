@@ -44,6 +44,8 @@ RUNNER_CLAIMS = "volt_runner_claims_total"
 BACKUP_AGE = "volt_backup_last_age_seconds"
 DRILL_AGE = "volt_restore_drill_last_age_seconds"
 DROPPED = "volt_telemetry_series_dropped_total"
+RATE_LIMITED = "volt_rate_limited_total"
+BUSY = "volt_busy_total"
 
 
 def route_class(method: str, fn_name: Optional[str], path: str) -> str:
@@ -254,6 +256,8 @@ REGISTRY.declare(RUNNER_CLAIMS, "counter", "Runner claim attempts by outcome (cl
 REGISTRY.declare(BACKUP_AGE, "gauge", "Seconds since the newest complete backup in VOLT_BACKUP_DIR.")
 REGISTRY.declare(DRILL_AGE, "gauge", "Seconds since the last restore drill that passed (drill.json in VOLT_BACKUP_DIR).")
 REGISTRY.declare(DROPPED, "counter", "Label sets refused because the registry was full.")
+REGISTRY.declare(RATE_LIMITED, "counter", "Requests refused with 429, by kind: rate (a token bucket), auth (too many failed tokens), quota.")
+REGISTRY.declare(BUSY, "counter", "Requests refused with 503 because the node was at its concurrency limit.")
 
 
 # ---- recording helpers used by serve, take and the runner -------------------------------------------
