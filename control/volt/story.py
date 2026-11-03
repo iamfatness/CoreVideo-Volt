@@ -406,3 +406,55 @@ def get_story(store: Store, item_id: str, include_notes: bool = True) -> dict:
             "storyStatus": status_of(row), "approvedBy": row["approved_by"], "approvedAt": _utc_text(row["approved_at"]),
             "approvedRev": row["approved_rev"], "floated": bool(row["floated"]), "itemStatus": row["status"],
             "stats": script_stats(row["script"], wpm), "revisions": revisions, "events": events}
+
+
+# ---- the prompter feed and the plain-text export ----------------------------------------------------------
+
+def _airable_rows(store: Store, show_id: str) -> list:
+    """The items a prompter may show, in rundown order: not killed (from air, or as a story), not floated, not aired or
+    skipped, and with VOLT_REQUIRE_APPROVAL=1 only those approved at their current revision."""
+    gate = require_approval()
+    out = []
+    for row in store.conn.execute(
+            "SELECT id, show_id, slug, script, status, story_status, script_rev, approved_rev, floated FROM item "
+            "WHERE show_id = ? ORDER BY position", (show_id,)).fetchall():
+        if row["status"] in ("killed", "aired", "skipped") or row["floated"] or status_of(row) == "killed":
+            continue
+        if gate and not is_approved(row):
+            continue
+        out.append(row)
+    return out
+
+
+def prompter_feed(store: Store, show_id: str) -> dict:
+    """What a prompter shows: {show, version, wpm, current, items:[{id, slug, status, rev, blocks:[{kind, text, para}]}]}.
+    Private `//` notes are removed here, on the server, and never leave it. `version` is a hash of the content, so a page
+    repaints only when something it shows has changed. `current` is the on-air or taking item (it may be absent from `items`
+    if it is not airable, for example a killed story)."""
+    import hashlib
+    import json
+    if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+        raise StoryError(404, "not_found", f"no such show: {show_id}")
+    wpm = wpm_of(store, show_id)
+    items = [{"id": r["id"], "slug": r["slug"], "status": r["status"], "rev": rev_of(r),
+              "blocks": [{"kind": b.kind, "text": b.text, "para": b.para} for b in parse_script(r["script"]) if b.kind != "note"]}
+             for r in _airable_rows(store, show_id)]
+    cur = store.conn.execute("SELECT id FROM item WHERE show_id = ? AND status IN ('on air', 'taking') ORDER BY position", (show_id,)).fetchone()
+    current = cur["id"] if cur else None
+    body = {"show": show_id, "wpm": wpm, "current": current, "items": items}
+    # The hash covers what the page shows, not the revision number: a change to a private note bumps the revision but not the page.
+    shown = {**body, "items": [{k: v for k, v in i.items() if k != "rev"} for i in items]}
+    version = hashlib.sha256(json.dumps(shown, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return {"ok": True, "version": version, **body}
+
+
+def script_text(store: Store, show_id: str) -> str:
+    """The show's read text as plain text, for print or a prompter that pulls text: each airable story's slug in capitals,
+    then what the talent reads (no instructions, no notes), stories separated by a blank line."""
+    if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+        raise StoryError(404, "not_found", f"no such show: {show_id}")
+    parts = []
+    for r in _airable_rows(store, show_id):
+        body = read_text(r["script"])
+        parts.append(r["slug"].upper() + (chr(10) * 2 + body if body else ""))
+    return (chr(10) * 3).join(parts) + (chr(10) if parts else "")

@@ -211,6 +211,16 @@ def seed_scripts(store: Store) -> None:
             story.set_status(store, item, "ready", base_rev=2, actor="dana")
         if status == "approved":
             story.set_status(store, item, "approved", base_rev=2, actor="marcus")
+    # The Wire tab: two entries waiting in the inbox, one feed that reads and one that is failing.
+    from datetime import datetime, timezone
+    from volt import wire
+    now = datetime.now(timezone.utc)
+    feed = wire.Feed("regional", "rss", "https://wire.example/regional")
+    wire.upsert(store, feed, [wire.WireStory("w1", "Council approves bridge and budget", "Council voted six to three last night.\nThe vote follows two years of debate over cost.",
+                                              "Dana Reyes", "2026-11-01T14:30:00Z"),
+                              wire.WireStory("w2", "Road closures this weekend", "Main Street closes at noon. Expect delays.", "Traffic desk", None)], now)
+    wire._record(store, feed, now, True, None)
+    wire._record(store, wire.Feed("agency", "json", "https://agency.example/feed"), now, False, "TimeoutError: timed out")
     store.conn.commit()
 
 

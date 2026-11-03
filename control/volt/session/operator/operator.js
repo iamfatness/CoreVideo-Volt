@@ -458,6 +458,10 @@
     storyStatus: ['POST', '/api/items/{id}/story-status'],
     itemFloat:   ['POST', '/api/items/{id}/float'],
     showPace:    ['POST', '/api/shows/{id}/reading-pace'],
+    prompterTicket: ['POST', '/api/shows/{id}/prompter-ticket'],
+    wireList:    ['GET',  '/api/wire'],
+    wireTake:    ['POST', '/api/wire/{id}/take'],
+    wireDismiss: ['POST', '/api/wire/{id}/dismiss'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -485,7 +489,7 @@
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
     taking: 'Taking',
     stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
-    not_floatable: 'Cannot float', story_not_approved: 'Not approved',
+    not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -3450,8 +3454,8 @@
   // never the draft, and a save quotes that revision so a lost race is a conflict dialog and not a silent overwrite.
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
-    pace: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
-  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }];
+    pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
 
@@ -3611,6 +3615,25 @@
     act('showPace', S.show, { wpm }, { key: 'sc-pace', okTitle: wpm === null ? 'Default pace.' : 'Pace set.', ok: () => 'Read times use ' + (wpm === null ? 160 : wpm) + ' words a minute.' });
   }
 
+  // A link a prompter computer opens without an operator token: one show, read only, 4 hours. Shown to copy; never stored by the page.
+  async function scMakeLink() {
+    if (!S.show || S.pending.has('sc-link')) return;
+    S.pending.add('sc-link'); render();
+    try {
+      const { status, data } = await call('prompterTicket', S.show, {});
+      if (data && data.ok) { SC.link = { url: location.origin + data.url, expires: data.expiresAt }; announce('Prompter link made. It works for four hours.'); }
+      else { const e = codeOf(data, status); setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason }); }
+    } catch (e) { setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'No link was made.' }); }
+    S.pending.delete('sc-link'); render();
+  }
+  function scPrompter() {
+    const L = SC.link;
+    return el('div', { class: 'form-row' },
+      btn('Make a prompter link', { key: 'sc-link', cls: 'ghost small', disabled: !S.show, title: 'A read-only link for the prompter computer, good for four hours', onclick: scMakeLink }),
+      L ? el('div', { class: 'grow' }, el('label', { for: 'sc-link-url', text: 'Open this on the prompter. It expires at ' + new Date(L.expires * 1000).toLocaleTimeString([], { hour12: false }) + '.' }),
+        el('input', { id: 'sc-link-url', type: 'text', readonly: true, 'data-fk': 'sc-link-url', value: L.url, onfocus: (e) => e.target.select() })) : null);
+  }
+
   function scChips(it) {
     const draft = !!SC.drafts[it.id];
     return [stateChip(storyKind(it.storyStatus)), it.floated ? stateChip('floated') : null,
@@ -3721,6 +3744,50 @@
     }
   }
 
+  // ---- Wire: the inbox. A person takes an entry into the open show as a draft story, or dismisses it. Nothing arrives on air by itself.
+  const WIRE = { rows: [], feeds: [], next: null, busy: false, err: null, at: 0, loaded: false };
+  const WIRE_EVERY_MS = 15000;
+  async function wireLoad(more) {
+    if (WIRE.busy) return;
+    WIRE.busy = true; WIRE.err = null; render();
+    try {
+      const q = { state: 'new', limit: '50' };
+      if (more && WIRE.next) q.cursor = WIRE.next;
+      const { status, data } = await call('wireList', null, null, q);
+      if (status === 200 && data && data.ok) { WIRE.rows = more ? WIRE.rows.concat(data.stories) : data.stories; WIRE.feeds = data.feeds || []; WIRE.next = data.next || null; WIRE.loaded = true; }
+      else WIRE.err = status === 401 ? 'A token is needed to read the inbox.' : codeOf(data, status).reason || 'The server refused to list the inbox.';
+    } catch (e) { WIRE.err = 'The server did not answer. The list may be out of date.'; }
+    WIRE.busy = false; WIRE.at = Date.now(); render();
+  }
+  function wireMaybeLoad() {
+    if (!WIRE.busy && (!WIRE.loaded || Date.now() - WIRE.at > WIRE_EVERY_MS) && !(WIRE.err && Date.now() - WIRE.at < WIRE_EVERY_MS)) wireLoad(false);
+  }
+  function wireRow(w) {
+    const take = 'wire-take:' + w.id, dis = 'wire-dismiss:' + w.id;
+    return el('li', { class: 'wirerow' },
+      el('div', { class: 'wh', text: w.headline }),
+      el('div', { class: 'meta' }, w.feed + (w.byline ? ' · ' + w.byline : '') + (w.publishedAt ? ' · ' + fmtTime(w.publishedAt) : '')),
+      w.snippet ? el('p', { class: 'snip', text: w.snippet }) : null,
+      el('div', { class: 'bar flush' },
+        btn('Take into this show', { key: take, cls: 'small', disabled: !S.show, aria: 'Take "' + w.headline + '" into this show as a draft',
+          onclick: () => act('wireTake', w.id, { show: S.show }, { key: take, okTitle: 'Taken as a draft.', ok: () => 'It is at the end of the rundown, not approved and not on air. Open it in the editor to work on it.',
+            hint: 'Someone else may have taken or dismissed it. The inbox is reloaded.' }).then(() => wireLoad(false)) }),
+        btn('Dismiss', { key: dis, cls: 'ghost small', aria: 'Dismiss "' + w.headline + '"',
+          onclick: () => act('wireDismiss', w.id, {}, { key: dis, okTitle: 'Dismissed.', ok: () => 'It leaves the inbox.' }).then(() => wireLoad(false)) })));
+  }
+  function wirePanel() {
+    return [el('div', { class: 'bar' }, btn(WIRE.busy ? 'Loading…' : 'Refresh', { key: 'wire-refresh', cls: 'ghost small', disabled: WIRE.busy, onclick: () => wireLoad(false) }),
+        el('span', { class: 'hint', text: 'Copy from feeds the server is set to read. Nothing here airs until you take it and approve it.' })),
+      WIRE.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', WIRE.err) : null,
+      WIRE.feeds.length ? el('ul', { class: 'list wirefeeds', 'aria-label': 'Feeds' }, WIRE.feeds.map((f) => el('li', {},
+        f.lastError ? stateChip('failed', 'Feed error') : stateChip('fresh', 'Feed ok'), ' ', el('strong', { text: f.feed }),
+        f.lastError ? el('span', { class: 'hint', text: ' · ' + f.lastError }) : f.lastOkAt ? el('span', { class: 'hint', text: ' · last read ' + fmtTime(f.lastOkAt) }) : null))) : null,
+      WIRE.rows.length ? el('ul', { class: 'list wirelist', 'aria-label': 'Wire stories not yet taken' }, WIRE.rows.map(wireRow))
+        : el('p', { class: 'empty', text: WIRE.loaded ? (WIRE.feeds.length ? 'Nothing waiting in the inbox.' : 'No feed has been read yet. Whoever runs the server sets the feeds (VOLT_WIRE_FEEDS); with none set, nothing is fetched.') : 'Reading the inbox…' }),
+      WIRE.next ? el('div', { class: 'bar' }, btn('Load more', { key: 'wire-more', cls: 'ghost small', disabled: WIRE.busy, onclick: () => wireLoad(true) })) : null,
+      el('p', { class: 'note', text: 'Wire formats are checked against sample files only, not against a real agency feed.' })];
+  }
+
   function renderScripts() {
     const items = scItems();
     if (S.data && S.data.rundown && !items.find((i) => i.id === SC.sel)) { SC.sel = null; SC.story = null; }
@@ -3739,6 +3806,7 @@
           oninput: (e) => { SC.pace = e.target.value; } })),
       btn('Set pace', { key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
       btn('Default', { key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
+    paint('sc-prompter', [SC.link, S.show, [...S.pending].filter((k) => k === 'sc-link')], scPrompter);
     paint('sc-filter', [SC.filter], () => el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'sc-filter-sel', text: 'Show' }),
       el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
         SC_FILTERS.map(([v, label]) => el('option', { value: v, selected: v === SC.filter }, label))))));
@@ -3749,7 +3817,9 @@
     scCountNow();
     renderScPreview();
     scTabs();
-    paint('sc-side', [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'history' ? scHistory() : null));
+    if (SC.tab === 'wire') wireMaybeLoad();
+    paint('sc-side', SC.tab === 'wire' ? ['wire', WIRE.rows, WIRE.feeds, WIRE.err, WIRE.busy, S.show, [...S.pending].filter((k) => k.startsWith('wire-'))]
+      : [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'wire' ? wirePanel() : scHistory()));
   }
   // Closing the conflict dialog (Esc included) gives focus back to the editor and keeps the draft exactly as it was.
   function scConflictInit() {

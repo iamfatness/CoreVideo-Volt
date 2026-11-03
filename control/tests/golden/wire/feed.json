@@ -1,0 +1,10 @@
+{
+  "meta": {"count": 3},
+  "data": {
+    "stories": [
+      {"id": 4411, "head": "Road closures this weekend", "text": "Main Street closes at noon.\nExpect delays.", "author": {"name": "Traffic desk"}, "issued": "2026-11-01T08:00:00Z"},
+      {"id": "abc", "head": "Second item", "text": "Body two.", "issued": 1793523600},
+      {"id": "no-head", "text": "No headline, skipped."}
+    ]
+  }
+}
