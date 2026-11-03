@@ -292,6 +292,11 @@ MIGRATIONS = (
     Migration(35, "exclusive lease",
               sqlite=("CREATE TABLE IF NOT EXISTS exclusive_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at REAL NOT NULL)",),
               postgres=("CREATE TABLE IF NOT EXISTS exclusive_lease (name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at DOUBLE PRECISION NOT NULL)",)),
+    # The state poll lists every asset with a correlated "has a proxy" lookup. Without this index each lookup scanned the whole essence
+    # table (about 2.8 s per poll at 10,000 assets, found by bench/load_state.py). Additive: code without it still runs, only slowly.
+    Migration(36, "essence by asset index",
+              sqlite=("CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role)",),
+              postgres=("CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role)",)),
 )
 
 LATEST = MIGRATIONS[-1].version

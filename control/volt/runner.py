@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from volt import archive as archive_mod, chunking, disk, logs, pg, publish as publish_mod, record, retention, shots, speech, storage
+from volt import archive as archive_mod, chunking, disk, logs, pg, publish as publish_mod, record, retention, sessions, shots, speech, storage, telemetry
 from volt.migrations import SchemaTooNewError
 from volt.store import Store
 
@@ -69,6 +69,7 @@ class Claimed:
     attempt: int
     claimed_by: Optional[str] = None  # the runner holding the lease; a handler's data writes can check it
     payload: dict = field(default_factory=dict)  # JSON of job.payload, or {}
+    created_at: object = None  # when the job was queued (text on SQLite, a datetime on Postgres); only the queue-wait metric reads it
 
 
 Handler = Callable[[Store, Claimed], None]
@@ -423,8 +424,11 @@ class Runner:
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     periodic: list = field(default_factory=list)  # Periodic tasks, run between jobs; none by default
     mono: Callable[[], float] = time.monotonic
+    registry: object = None  # volt.telemetry.Registry for job and claim metrics; None = the process-wide one
 
     def __post_init__(self):
+        if self.registry is None:
+            self.registry = telemetry.REGISTRY
         self._stop = threading.Event()
         self.failed_terminally = 0
         self.periodic_failures = 0
@@ -522,13 +526,30 @@ class Runner:
                             WHERE status = 'queued' AND ({' OR '.join(clauses)})
                               AND (run_after IS NULL OR run_after <= ?)
                             ORDER BY created_at, id LIMIT 1{lock})
-                RETURNING id, asset_id, type, idempotency_key, attempt, payload""",
+                RETURNING id, asset_id, type, idempotency_key, attempt, payload, created_at""",
             [self.name, self._t(self.lease), now, *params, now]).fetchone()
         self.store.conn.commit()
         if row is None:
+            self._count_claim("empty")
             return None
+        self._count_claim("claimed")
+        self._observe_wait(row["type"], row["created_at"])
         return Claimed(row["id"], row["asset_id"], row["type"], row["idempotency_key"], row["attempt"],
-                       self.name, _claimed_payload(row["payload"]))
+                       self.name, _claimed_payload(row["payload"]), row["created_at"])
+
+    # -- metrics (in memory; a failure here never touches a job)
+    def _count_claim(self, outcome: str) -> None:
+        try:
+            self.registry.counter(telemetry.RUNNER_CLAIMS, {"outcome": outcome}).inc()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _observe_wait(self, job_type: str, created_at) -> None:
+        try:
+            waited = max(0.0, self.clock().timestamp() - sessions._epoch(created_at))
+            self.registry.histogram(telemetry.JOB_QUEUE_WAIT_SECONDS, {"type": job_type}).observe(waited)
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- outcome (every write is guarded by the lease, so a runner that lost its lease changes nothing)
     def _settle(self, job: Claimed, sql: str, params: tuple) -> bool:
@@ -586,6 +607,10 @@ class Runner:
             return "lost"
         log.info("job end id=%s type=%s asset=%s outcome=%s ms=%d", job.id, job.type, job.asset_id, outcome,
                  (time.monotonic() - started) * 1000)
+        try:
+            self.registry.histogram(telemetry.JOB_SECONDS, {"type": job.type}).observe(time.monotonic() - started)
+        except Exception:  # noqa: BLE001
+            pass
         return outcome
 
     def drain(self) -> dict[str, int]:

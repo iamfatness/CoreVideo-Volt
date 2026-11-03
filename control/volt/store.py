@@ -612,6 +612,8 @@ CREATE TABLE IF NOT EXISTS exclusive_lease (
   holder TEXT NOT NULL,
   expires_at REAL NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role);
 """
 
 
@@ -691,7 +693,8 @@ class Store:
     def __init__(self, path: str = ":memory:", init: bool = True):
         """`path` is a SQLite path, or a postgres:// DSN (needs psycopg).
 
-        init=False skips schema bootstrap on postgres, for callers that did it.
+        init=False skips the schema bootstrap, for callers that already did it (a server does it once at start, then opens a
+        Store per request). On SQLite the bootstrap runs the schema script and takes the write lock, so it must not run per request.
         """
         self.postgres = pg.is_dsn(path)
         self.path = path
@@ -709,6 +712,8 @@ class Store:
         self.conn = sqlite3.connect(path, timeout=10, factory=_LiteConnection)
         try:
             self.conn.row_factory = sqlite3.Row
+            if not init:
+                return   # the file is already bootstrapped (and in WAL mode, which persists in the file)
             if path != ":memory:":
                 self._enable_wal()
             self.conn.executescript(SCHEMA)

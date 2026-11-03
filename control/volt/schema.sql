@@ -584,3 +584,5 @@ CREATE TABLE IF NOT EXISTS exclusive_lease (
   holder TEXT NOT NULL,
   expires_at DOUBLE PRECISION NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role);

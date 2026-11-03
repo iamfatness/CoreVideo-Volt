@@ -229,7 +229,7 @@ The client sends word IDs and never a time; the server loads both words and buil
 
 Same rights as slice 4: marking is allowed on any asset and the response says `blockedBy`. Tests: `control/tests/test_shot_words.py` (SQLite and live Postgres).
 
-`GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress. `taking` is the id of the rundown item with status `taking`, or `null`.
+`GET /api/state`'s `room` block comes from a shared observation at most `VOLT_ROOM_OBSERVE_TTL` (1 s) old per `serve` process, and carries `observedAgeMs` (how old, in milliseconds); the rest of the payload is unchanged. Responses are HTTP/1.1 with `Content-Length` and the connection is kept alive; a POST refused before its handler reads the body has the body read and dropped (so the socket stays in step); only an oversize or chunked one answers `Connection: close`. `GET /api/state` assets now also carry `hasProxy` (the Library's asset picker sorts on it). They also carry `jobs`: the asset's unfinished jobs only, `[{type, status, error}]` with status `queued`, `running` or `failed` (a finished job is not listed), which the Library's Ingest panel reads for progress. `taking` is the id of the rundown item with status `taking`, or `null`.
 
 ### Detect, split, merge, indexing (slice 4b)
 

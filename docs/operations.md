@@ -97,6 +97,9 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_LOG_FORMAT` | `text` | `text` (logfmt-style) or `json`. |
 | `VOLT_LOG_MAX_MB` | `10` | Size at which a log file rotates. |
 | `VOLT_LOG_BACKUPS` | `5` | Rotated files kept per process. |
+| `VOLT_REQUEST_TIMEOUT` | `30` | Seconds a client socket may stall before `serve` drops it and frees the thread. Matters because connections are kept alive (HTTP/1.1). |
+| `VOLT_ROOM_OBSERVE_TTL` | `1` | Seconds the room's observation is shared between desks. 50 desks polling `/api/state` cost one `observe()` per second per `serve` process, not 25. `room.observedAgeMs` in the payload says how old it is. |
+| `VOLT_BACKUP_DIR` | none | A folder of `volt backup` directories (or one). Only read by the metrics: `volt_backup_last_age_seconds` is the age of the newest complete one (manifest readable, data file at its recorded size; not a re-hash). |
 | `VOLT_ACCESS_LOG` | off | `1` logs every HTTP request (also `volt serve --access-log`). Errors, refused logins and job outcomes are logged either way. |
 
 ### Health and disk
@@ -173,6 +176,20 @@ Run against it on 2026-10-30 (Windows 11, Docker Desktop 29.8.2, postgres:16, Py
 
 Off by default. `VOLT_PG_POOL_MAX` (> 0 turns it on; use 2 or more), `VOLT_PG_POOL_MIN`, `VOLT_PG_POOL_TIMEOUT`,
 `VOLT_PG_POOL_MAX_IDLE`, `VOLT_PG_POOL_MAX_LIFETIME`.
+
+### Measured on one box (the state poll)
+
+`python -m bench.load_state` (see its docstring) drives N desks, each polling `GET /api/state` every 2 s. **These figures are one machine's result and a guess for any other**: Windows 11, 28 logical CPUs, Python 3.12.10, SQLite on a local disk, `serve` as its own process and the load generator as another on the same machine, no room configured, 2026-11-03. Nothing here was run against Postgres, a network, a proxy or real desks' browsers.
+
+| Library | Desks | Result |
+|---|---|---|
+| 100 assets | 50, 30 s, keep-alive | 25.0 requests/s sustained (the 50 x 0.5 Hz offered), p50 2.5 ms, p95 4.1 ms, p99 13 ms, 0 errors; 32 SQL statements per request |
+| 10,000 assets (2.6 MB per response) | 1, back to back | about 21 requests/s, 44 ms each |
+| 10,000 assets | 50, 30 s, keep-alive | **4.1 requests/s, p50 14 s: saturated** (50 desks offer 25/s). 3 desks back to back already fall to 9.7/s with 300 ms each |
+| 10,000 assets | 50, 30 s, a new connection per poll | 8.3 requests/s, p95 17 s: also saturated |
+| 100,000 assets (26.6 MB per response) | 1, back to back | 514 ms each; at 50 desks the first poll of every desk timed out at 30 s |
+
+What this says, and does not: one `serve` process serves a 100-asset library to 50 desks with room to spare, and **cannot** serve a 10,000-asset library to 50 desks, because every poll rebuilds and sends the whole asset list (the spec's open item: paginate `assets`, or conditional requests). Concurrent polls cost far more than the sum of one (a Python process with an interpreter lock doing CPU work per request); more `serve` processes behind a balancer is the lever the design already supports, but a second process was not measured here. Two defects were found and fixed by this measurement: the asset list scanned the whole `essence` table once per asset (about 2.8 s at 10,000 assets; migration 36 adds the index; 0.03 s after), and on SQLite every request re-ran the schema bootstrap and took the write lock (now once per file per process). The keep-alive figure at 10,000 assets is not better than the new-connection figure: the limit is the work per response, not the connection. The room cache (`VOLT_ROOM_OBSERVE_TTL`) was exercised by tests with a fake room, not in this run.
 
 ### More than one serve process
 
@@ -286,6 +303,21 @@ Metrics: `volt_up`, `volt_info{version}`, `volt_degraded`, `volt_schema_version`
 `volt_runner_heartbeat_age_seconds`, `volt_runners_alive`, `volt_jobs{type,state}`,
 `volt_queue_oldest_queued_age_seconds`, `volt_jobs_stuck`, `volt_last_as_run_age_seconds`,
 `volt_disk_free_bytes{dir}`, `volt_disk_low{dir}`, `volt_thumb_cache_bytes`, `volt_storage_ok{backend}`.
+
+Request, pool and job series (added to the same page; in memory per `serve` or runner process, so Prometheus sums nodes; see `control/volt/telemetry.py`):
+`volt_http_requests_total{route_class,status_class}`, `volt_http_request_seconds{route_class}` (histogram), `volt_http_inflight`,
+`volt_db_checkout_seconds` (histogram), `volt_db_pool_in_use` and `volt_db_pool_waiting` (Postgres with `VOLT_PG_POOL_MAX` only),
+`volt_take_seconds{phase="room"|"overhead"}` (the room's time and ours, apart), `volt_job_seconds{type}`,
+`volt_job_queue_wait_seconds{type}` and `volt_runner_claims_total{outcome}` (runner process), `volt_backup_last_age_seconds` and
+`volt_restore_drill_last_age_seconds` (only when `VOLT_BACKUP_DIR` is set and holds a complete backup or a passing `drill.json`).
+`route_class` is one of `state read write heavy health auth static media`, never a path; no metric carries a user, tenant or id. The
+fourteen series above are unchanged.
+
+Files: `deploy/monitoring/volt-dashboard.json` (Grafana), `deploy/monitoring/volt-alerts.yml` (Prometheus rules; pages: down, write
+errors, no runner, schema mismatch, disk, backup age; tickets: queue age, stuck jobs, drill age, pool waiting, slow state poll) and
+`deploy/monitoring/scrape.example.yml`. **Unvalidated:** neither Prometheus nor Grafana was run against them. A test proves every metric
+they name is one the code emits; it does not prove the rules are sensible for your traffic or that an alert fires. Rehearse them
+before relying on a page.
 Prometheus needs the bearer token: `authorization: { credentials_file: ... }` in the scrape config.
 
 Day-of check: `curl -s localhost:8765/health`, then `curl -s -H "Authorization: Bearer $VOLT_TOKEN"

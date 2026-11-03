@@ -246,7 +246,7 @@ def _label(value) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-def prometheus(report: dict) -> str:
+def prometheus(report: dict, registry=None) -> str:
     lines: list = []
 
     def metric(name: str, help_text: str, kind: str, samples: list) -> None:
@@ -285,4 +285,7 @@ def prometheus(report: dict) -> str:
         metric("volt_thumb_cache_bytes", "Size of the thumbnail cache.", "gauge", [({}, report["thumbCache"]["bytes"])])
         metric("volt_storage_ok", "1 when the storage backend configuration is valid.", "gauge",
                [({"backend": report["storage"]["backend"]}, 1 if report["storage"]["ok"] else 0)])
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+    if registry is not None:   # request, pool and job series from volt.telemetry; the series above are unchanged
+        text += registry.render()
+    return text

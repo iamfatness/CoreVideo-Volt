@@ -1,0 +1,95 @@
+# Prometheus alert rules for Volt.
+#
+# UNVALIDATED: promtool was never run on this file and no alert has been seen to fire. A test checks that every metric named in an
+# expr: line is a metric the code emits; it cannot check that the rule is sensible for your traffic. Treat the thresholds as
+# starting points (docs/superpowers/specs/2026-11-01-scale-operations-design.md section 5) and rehearse them.
+#
+# severity "page" wakes someone; "ticket" waits for the next working day.
+# Rules that need series the code does not emit yet (rate-limit rejections, replica lag, node versions) are not here.
+
+groups:
+  - name: volt-page
+    rules:
+      - alert: VoltDown
+        expr: volt_up == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Volt cannot read its database"
+      - alert: VoltWriteErrors
+        # Show control (take, go, hold, release, skip, kill) is in the write class; more than 1% of writes failing for 5 minutes.
+        expr: sum(rate(volt_http_requests_total{route_class="write",status_class="5xx"}[5m])) / sum(rate(volt_http_requests_total{route_class="write"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 1% of write requests (including take, go and hold) are failing with 5xx"
+      - alert: VoltNoRunner
+        expr: sum(volt_runners_alive) == 0 and sum(volt_jobs{state="queued"}) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Jobs are queued and no runner is alive"
+      - alert: VoltSchemaMismatch
+        expr: max(volt_schema_version) != min(volt_schema_version)
+        for: 30m
+        labels:
+          severity: page
+        annotations:
+          summary: "Nodes report different schema versions for over 30 minutes (an upgrade that did not finish)"
+      - alert: VoltDiskLow
+        expr: max(volt_disk_low) == 1
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "A Volt directory is under its free-space floor"
+      - alert: VoltBackupStale
+        # 26 hours: a nightly backup that missed one night.
+        expr: max(volt_backup_last_age_seconds) > 93600
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "The newest complete backup is more than 26 hours old"
+  - name: volt-ticket
+    rules:
+      - alert: VoltQueueOld
+        expr: max(volt_queue_oldest_queued_age_seconds) > 900
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The oldest queued job has waited over 15 minutes"
+      - alert: VoltJobsStuck
+        expr: sum(volt_jobs_stuck) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Jobs with an expired lease or running too long"
+      - alert: VoltDrillOverdue
+        # 35 days. Fires only when a passing drill has been recorded and is old; a deployment that never drilled has no series.
+        expr: max(volt_restore_drill_last_age_seconds) > 3024000
+        for: 1h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The last passing restore drill is more than 35 days old"
+      - alert: VoltPoolWaiting
+        expr: max(volt_db_pool_waiting) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Requests are waiting for a Postgres connection; raise VOLT_PG_POOL_MAX or add capacity"
+      - alert: VoltSlowState
+        # The operator poll's p95 over 250 ms for 15 minutes: the 50-desk target in the spec, a guess until measured.
+        expr: histogram_quantile(0.95, sum by (le) (rate(volt_http_request_seconds_bucket{route_class="state"}[5m]))) > 0.25
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The state poll is slow (p95 over 250 ms)"

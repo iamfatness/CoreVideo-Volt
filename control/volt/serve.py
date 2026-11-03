@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -200,6 +200,67 @@ def _room_key() -> str:
 
 def _record_busy(busy: LeaseBusy) -> "ApiError":
     return ApiError(409, "record_busy", "another record start or stop is in progress for this room; try again when it finishes")
+
+
+class RoomObservationCache:
+    """A short shared cache of what the room reports, so N desks polling cost one `observe()` per `ttl`, not N.
+
+    The cached dict is the `room` block of /api/state; each read adds `observedAgeMs` (how old the observation is). A room that
+    errors is cached the same way (`reachable: false`). Concurrent misses for one key make one call. Per process: with several
+    serve nodes the core is observed once per node per `ttl`. `owner` ties an entry to the room object that produced it, so a
+    test that swaps the room seam never reads another room's answer."""
+
+    def __init__(self, ttl: float = 1.0, now=time.monotonic):
+        self.ttl, self._now = ttl, now
+        self._lock = threading.Lock()
+        self._entries: dict = {}
+        self._key_locks: dict = {}
+
+    def get(self, key: str, factory, owner=None) -> dict:
+        with self._lock:
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            entry = self._entries.get(key)
+            if entry is None or entry[2] is not owner or self._now() - entry[0] >= self.ttl:
+                value = dict(factory())
+                entry = self._entries[key] = (self._now(), value, owner)
+            observed_at, value, _ = entry
+            out = dict(value)
+            out["observedAgeMs"] = int(round((self._now() - observed_at) * 1000))
+            return out
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+REGISTRY = telemetry.REGISTRY      # request, pool and job series (volt/telemetry.py); tests swap it for a fresh one
+INFLIGHT = telemetry.Inflight()
+ROOM_CACHE = RoomObservationCache(ttl=_env_float("VOLT_ROOM_OBSERVE_TTL", 1.0))
+REQUEST_TIMEOUT = _env_float("VOLT_REQUEST_TIMEOUT", 30.0)   # seconds a socket may stall before its thread is freed
+
+
+_BOOTSTRAPPED: set = set()
+_BOOTSTRAP_LOCK = threading.Lock()
+
+
+def open_request_store() -> Store:
+    """A Store for one request. Postgres is bootstrapped once in main(). A SQLite file is bootstrapped by the first request that names
+    it (main() has usually done it already) and never again: the bootstrap takes the write lock, and a poll must not."""
+    if not is_dsn(DB_PATH) and DB_PATH not in _BOOTSTRAPPED:
+        with _BOOTSTRAP_LOCK:
+            if DB_PATH not in _BOOTSTRAPPED:
+                Store(DB_PATH).close()
+                _BOOTSTRAPPED.add(DB_PATH)
+    return Store(DB_PATH, init=False)
+
+
+class VoltServer(ThreadingHTTPServer):
+    request_queue_size = 128   # the stdlib's 5 overflows when 50 desks reconnect together
+    daemon_threads = True
 
 
 def get_room():
@@ -512,10 +573,19 @@ def act_take(store, show_id, body):
     _unknown_keys(body, {"owner"})
     owner = _str(body, "owner", default="desk", limit=100)
     _show_exists(store, show_id)
-    room = get_room()
+    room = telemetry.TimedRoom(get_room())   # adds up the time spent inside the room's calls
+    started = time.perf_counter()
     # Dispatch waits on the room with no process lock; the taking row is the contract across processes.
-    result = _advance_errors(
-        lambda: take_item(store, room, show_id, owner=owner, show_input_actions=configured_actions(), **POLL))
+    try:
+        result = _advance_errors(
+            lambda: take_item(store, room, show_id, owner=owner, show_input_actions=configured_actions(), **POLL))
+    finally:
+        try:   # room time and our own time, apart (volt_take_seconds): a slow take is the room's or ours
+            total = time.perf_counter() - started
+            REGISTRY.histogram(telemetry.TAKE_SECONDS, {"phase": "room"}).observe(room.seconds)
+            REGISTRY.histogram(telemetry.TAKE_SECONDS, {"phase": "overhead"}).observe(max(0.0, total - room.seconds))
+        except Exception:  # noqa: BLE001 - metrics never change a take
+            pass
     results = [{"cue": r.cue_id, "command": r.command, "status": r.status, "detail": r.detail}
                for r in result.results]
     state = rundown_payload(store, show_id)
@@ -2026,14 +2096,33 @@ def _view_filter(store, principal):
 # ---- HTTP -----------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
+    # Keep-alive: every response carries Content-Length (a test walks the paths). `timeout` frees the thread of an idle or stalled
+    # connection; an idle keep-alive socket costs a thread until it lapses.
+    protocol_version = "HTTP/1.1"
+    timeout = REQUEST_TIMEOUT
     principal = None  # set by _gate: who this request is
+    _req_store = None  # the one Store this request uses (auth and the route share it); closed when the request ends
+    _body_read = True  # a POST that is refused before its body is read must not leave those bytes on a kept-alive socket
 
     def _bearer(self) -> str:
         scheme, _, given = self.headers.get("Authorization", "").partition(" ")
         return given.strip() if scheme.lower() == "bearer" else ""
 
-    def _open_store(self) -> Store:
-        return Store(DB_PATH, init=not is_dsn(DB_PATH))
+    def _store(self) -> Store:
+        """One Store per request, opened on first use. Every Store(...) in a request goes through here."""
+        if self._req_store is None:
+            started = time.perf_counter()
+            self._req_store = open_request_store()
+            try:
+                REGISTRY.histogram(telemetry.DB_CHECKOUT_SECONDS).observe(time.perf_counter() - started)
+            except Exception:  # noqa: BLE001 - metrics never change a response
+                pass
+        return self._req_store
+
+    def _close_store(self) -> None:
+        store, self._req_store = self._req_store, None
+        if store is not None:
+            store.close()
 
     def _bearer_principal(self):
         """The principal a valid Authorization header names (legacy VOLT_TOKEN, else a user token), or None."""
@@ -2043,11 +2132,7 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN and hmac.compare_digest(given.encode("utf-8"), TOKEN.encode("utf-8")):
             return Principal(LEGACY_ACTOR, "admin", True)
         try:
-            store = self._open_store()
-            try:
-                user = users.authenticate(store, given)
-            finally:
-                store.close()
+            user = users.authenticate(self._store(), given)
         except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
             log.exception("token lookup failed")
             raise ApiError(503, "auth_unavailable", "cannot check the token right now") from None
@@ -2059,19 +2144,16 @@ class Handler(BaseHTTPRequestHandler):
         if not raw:
             return None
         try:
-            store = self._open_store()
-            try:
-                info = sessions.resolve(store, raw, CLOCK())
-                if info is None:
-                    return None
-                row = store.conn.execute("SELECT name, role, disabled_at FROM volt_user WHERE name = ?", (info.user_name,)).fetchone()
-                if row is None or row["disabled_at"] is not None:
-                    sessions.end(store, info.id_hash)
-                    return None
-                return Principal(row["name"], acl.effective_role(store, row["name"], row["role"]), False,
-                                 acl.groups_of(store, row["name"]), via="session", session_id=info.id_hash, csrf=info.csrf)
-            finally:
-                store.close()
+            store = self._store()
+            info = sessions.resolve(store, raw, CLOCK())
+            if info is None:
+                return None
+            row = store.conn.execute("SELECT name, role, disabled_at FROM volt_user WHERE name = ?", (info.user_name,)).fetchone()
+            if row is None or row["disabled_at"] is not None:
+                sessions.end(store, info.id_hash)
+                return None
+            return Principal(row["name"], acl.effective_role(store, row["name"], row["role"]), False,
+                             acl.groups_of(store, row["name"]), via="session", session_id=info.id_hash, csrf=info.csrf)
         except Exception:  # noqa: BLE001 - fail closed; the cause goes to the log
             log.exception("session lookup failed")
             raise ApiError(503, "auth_unavailable", "cannot check the session right now") from None
@@ -2096,11 +2178,7 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN:
             return True
         try:
-            store = self._open_store()
-            try:
-                return users.any_users(store)
-            finally:
-                store.close()
+            return users.any_users(self._store())
         except Exception:  # noqa: BLE001 - cannot tell: require a token rather than open up
             log.exception("user table check failed")
             return True
@@ -2231,7 +2309,25 @@ class Handler(BaseHTTPRequestHandler):
             url = f"?ticket={token}"
         self._json(200, {"url": url, "expires": exp})
 
+    def send_response(self, code, message=None):
+        self._status = code   # for the request metric
+        super().send_response(code, message)
+
+    def _timed(self, method: str, run) -> None:
+        self._req_store, self._body_read, self._status, self._fn_name = None, method != "POST", 0, None
+        started = time.perf_counter()
+        with INFLIGHT:
+            try:
+                run()
+            finally:
+                self._close_store()
+                telemetry.record_request(method, self._fn_name, urlparse(self.path).path, self._status or 500,
+                                         time.perf_counter() - started, REGISTRY)
+
     def do_GET(self):
+        self._timed("GET", self._do_GET)
+
+    def _do_GET(self):
         path = urlparse(self.path).path
         if path in STATIC:
             self._static(path)
@@ -2244,8 +2340,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path != "/" and not self._gate_or_ticket():
             return
-        # One connection per request. Postgres schema is applied once in main().
-        store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+        # One connection per request (auth shares it). Postgres schema is applied once in main().
+        store = self._store()
         try:
             self._route(store)
         except TicketDenied:
@@ -2257,8 +2353,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # same rule as POST: no leaked internals, and the client always gets a response
             log.exception("unhandled error on GET %s", urlparse(self.path).path)
             self._error(ApiError(500, "internal", "internal error"))
-        finally:
-            store.close()
 
     # ---- OIDC sign-in (unvalidated against a real provider; volt/oidc.py) --------------------------
     def _redirect(self, location: str, cookies=()):
@@ -2302,7 +2396,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": True, "providers": [{"id": p.id, "label": p.label} for p in cfg.providers]}).encode(),
                 {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
             return
-        store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+        store = self._store()
         try:
             if path == "/auth/login":
                 given = query.get("provider", [])
@@ -2329,10 +2423,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - no leaked internals; the cause is in the log
             log.exception("unhandled error on GET %s", parsed.path)
             self._error(ApiError(500, "internal", "internal error"))
-        finally:
-            store.close()
 
     def do_POST(self):
+        self._timed("POST", self._do_POST)
+
+    def _do_POST(self):
         if not self._gate():
             return
         store = None
@@ -2346,6 +2441,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
             else:
                 raise ApiError(404, "not_found", "no such route")
+            self._fn_name = fn.__name__
             need = ROUTE_ROLES.get(fn.__name__, "admin")
             if acl.RANK[need] > acl.RANK.get(self.principal.role, -1):
                 raise ApiError(403, "forbidden_role",
@@ -2353,7 +2449,7 @@ class Handler(BaseHTTPRequestHandler):
             if not acl.bypasses(self.principal):   # which show, and may this caller touch it: decided before any of the handler's work
                 level = ROUTE_SHOW_LEVEL.get(fn.__name__)
                 if level is not None:
-                    store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+                    store = self._store()
                     _show_gate(store, self.principal, SHOW_RESOLVER[fn.__name__], m.group(1), level)
                 elif fn.__name__ not in NOT_SHOW_SCOPED:
                     raise ApiError(403, "forbidden_show", "this route is not classified for show access")
@@ -2362,7 +2458,7 @@ class Handler(BaseHTTPRequestHandler):
             _REQUEST.actor, _REQUEST.principal = actor, self.principal   # for the actions that record who (safe mode, stories)
             _CALLER.actor, _CALLER.role = actor, self.principal.role
             if store is None:
-                store = Store(DB_PATH, init=not is_dsn(DB_PATH))
+                store = self._store()
             out = fn(store, m.group(1), body, self) if fn in REQUEST_AWARE else fn(store, m.group(1), body)
             headers = out.pop("_headers", None) if isinstance(out, dict) else None
             detail = out.pop("auditDetail", None) if isinstance(out, dict) else None
@@ -2385,8 +2481,6 @@ class Handler(BaseHTTPRequestHandler):
             self._error(ApiError(500, "internal", "internal error; nothing further was changed by this handler"))
         finally:
             _REQUEST.actor = _REQUEST.principal = None
-            if store is not None:
-                store.close()
 
     def _read_json(self) -> dict:
         if self.headers.get("Transfer-Encoding"):
@@ -2405,6 +2499,7 @@ class Handler(BaseHTTPRequestHandler):
             # Also keeps cross-site forms out: only JSON, which a browser will not send without a preflight.
             raise ApiError(415, "unsupported_media_type", "Content-Type must be application/json")
         raw = self.rfile.read(length) if length else b""
+        self._body_read = True
         if not raw.strip():
             return {}
         try:
@@ -2421,7 +2516,7 @@ class Handler(BaseHTTPRequestHandler):
             report = health.collect(STORE, OUT_DIR, db_target=DB_PATH)
             if parsed.path == "/metrics":
                 self._send(200 if report["status"] != "down" else 503, "text/plain; version=0.0.4; charset=utf-8",
-                           health.prometheus(report).encode())
+                           health.prometheus(report, REGISTRY).encode())
             else:
                 self._json(200 if report["status"] != "down" else 503, report)
             return
@@ -2651,7 +2746,9 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError:  # a remembered show that no longer exists: fall back to the newest
                 show_id = listing[-1]["id"] if listing else None
                 rundown = rundown_payload(store, show_id) if show_id else None
-        state = operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room), visible)
+        # One observe() per ROOM_CACHE.ttl per process, however many desks poll; the block says how old it is (observedAgeMs).
+        room = ROOM_CACHE.get(_room_key(), lambda: operator_state.room_state(get_room), owner=ROOM)
+        state = operator_state.build(store, rundown, show_id or None, room, visible)
         # What a reorder must quote to be conditional on the list the page is showing (building.order_version).
         state["orderVersion"] = building.order_version(store, show_id) if show_id and rundown is not None else None
         # Who is here and who is editing what, for the show on screen (which the caller may view: the filter above already decided that).
@@ -2690,6 +2787,23 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status: int, payload: dict, headers=None):
         self._send(status, "application/json", json.dumps(payload).encode(), headers)
 
+    def _drain_body(self) -> None:
+        """Read and drop the unread body of a request that was refused before its handler read it, so the next request on a kept-alive
+        socket starts clean and the client is not reset mid-send. A body that is chunked, unreadable or over MAX_BODY closes the connection."""
+        self._body_read = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if self.headers.get("Transfer-Encoding") or length < 0 or length > MAX_BODY:
+            self.close_connection = True
+            return
+        try:
+            if length:
+                self.rfile.read(length)
+        except OSError:
+            self.close_connection = True
+
     def _error(self, err: ApiError):
         if err.status >= 500:
             log.error("request failed status=%d code=%s path=%s", err.status, err.code, urlparse(self.path).path)
@@ -2706,7 +2820,9 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        if err.status == 413:
+        if self.command == "POST" and not self._body_read:
+            self._drain_body()   # the body is still on the socket: it would be read as the next request (or reset the connection)
+        if err.status == 413 or self.close_connection:
             self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
@@ -2783,10 +2899,12 @@ def main(argv=None):
         pool = pg.configure_pool_from_env(DB_PATH)
     except Exception as exc:  # noqa: BLE001 - bad option, missing psycopg_pool, unreachable database
         _config_exit(f"postgres pool: {logs.redact(str(exc))}")
+    telemetry.install_gauges(REGISTRY, INFLIGHT, lambda: (pg.pool_for(DB_PATH).stats() if pg.pool_for(DB_PATH) else None),
+                             lambda: os.environ.get("VOLT_BACKUP_DIR") or None)
     try:
         try:
             Store(DB_PATH).close()  # bootstrap the schema once
-            server = ThreadingHTTPServer((host, port), Handler)
+            server = VoltServer((host, port), Handler)
         except SchemaTooNewError as exc:  # version-skew guard: never serve a database newer than this code
             _config_exit(str(exc))
         except OSError as exc:
