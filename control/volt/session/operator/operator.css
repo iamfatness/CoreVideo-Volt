@@ -516,7 +516,7 @@ dialog.wide{max-width:min(900px,94vw);width:min(900px,94vw)}
 .cm-composer textarea{width:100%;min-height:5em;resize:vertical}
 .cm-composer .hint{margin:0}
 .cm-replying{margin:0;display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap}
-.cm-list{position:absolute;left:0;right:0;z-index:5;margin:0;padding:var(--space-1);list-style:none;background:var(--raise);border:1px solid var(--hair);border-radius:var(--radius-sm);box-shadow:0 4px 12px rgba(0,0,0,.35)}
+.cm-list{position:absolute;left:0;right:0;z-index:5;margin:0;padding:var(--space-1);list-style:none;background:var(--raise);border:1px solid var(--hair);border-radius:var(--radius-sm);box-shadow:0 0 0 1px var(--hair)}
 .cm-list[hidden]{display:none}
 .cm-opt{padding:var(--space-1) var(--space-2);border-radius:var(--radius-sm);cursor:pointer}
 .cm-opt[aria-selected=true]{background:var(--panel);outline:2px solid var(--blue-hi)}
