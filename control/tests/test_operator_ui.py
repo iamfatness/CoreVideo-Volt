@@ -101,6 +101,9 @@ class Endpoints(Api):
             elif tpl == "/api/audit":   # needs a target or the admin role: refused, never a missing route
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (200, 401, 403, 422), tpl)
+            elif tpl in ("/api/users", "/api/groups"):   # admin lists for the Access screen's pickers: no id to get wrong
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"]), (200, True), tpl)
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
@@ -1309,6 +1312,68 @@ class ActivityScreen(unittest.TestCase):
         got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])
         self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "activity"})
         self.assertEqual(got[1]["extra"], "activity")
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class AccessScreen(unittest.TestCase):
+    """Per-show access: an admin screen to see and change who may view, edit or run a show, and the words for a refusal."""
+
+    def test_the_screen_exists_is_reachable_and_builds_rows_without_innerhtml(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        self.assertIn('id="screen-access"', html)
+        self.assertIn("'access'", js[js.index("const SCREENS"):js.index("const SCREENS") + 140])
+        body = js[js.index("function renderAccess"):js.index("function renderChrome")]
+        self.assertNotIn("innerHTML", body)
+        self.assertIn("scope: 'col'", body)
+        self.assertIn("textContent", FILES["operator.js"])
+        self.assertIn("href: '#access'", js)                      # the admin's pill links to it, like Activity
+
+    def test_the_rail_accepts_access_only_as_an_extra_and_no_number_key_is_taken(self):
+        got = _node(["railFor", "operator", "access"], ["screenForKey", "1"], ["screenForKey", "6"], ["screenForKey", "7"], ["screenForKey", "0"])
+        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "access"})
+        self.assertEqual(got[1:3], ["show", "activity"])
+        self.assertEqual(got[3:], [None, None])                   # 7 is not Access: the existing keys are unchanged and no new one is taken
+
+    def test_each_level_has_an_icon_a_word_and_a_class_and_an_unknown_one_is_shown_plainly(self):
+        got = _node(["accessLevelSpec", "view"], ["accessLevelSpec", "edit"], ["accessLevelSpec", "run"], ["accessLevelSpec", "own"])
+        self.assertEqual([g["word"] for g in got[:3]], ["View", "Edit", "Run"])
+        for spec in got:
+            self.assertIn(spec["icon"], Icons.SPRITE_IDS)
+            self.assertTrue(spec["cls"].startswith("st"))
+        self.assertEqual(got[3]["word"], "own")
+        self.assertEqual(len({g["icon"] for g in got[:3]}), 3)    # not colour alone: three different icons
+
+    def test_the_summary_says_open_or_restricted_in_words(self):
+        got = _node(["accessSummary", []], ["accessSummary", [{"subject_kind": "user", "subject": "ann", "level": "run"}]])
+        self.assertEqual((got[0]["kind"], got[0]["word"]), ("open", "Open"))
+        self.assertEqual((got[1]["kind"], got[1]["word"]), ("restricted", "Restricted"))
+        self.assertIn("admin", got[1]["text"])
+        self.assertIn("opens it again", got[1]["text"])
+        for g in got:
+            self.assertIn(g["icon"], Icons.SPRITE_IDS)
+
+    def test_the_picker_offers_enabled_people_and_groups_not_already_listed(self):
+        users = [{"name": "ann", "disabled_at": None}, {"name": "bob", "disabled_at": "2026-11-01T00:00:00Z"}, {"name": "cy"}]
+        groups = [{"name": "crew"}, {"name": "desk"}]
+        rows = [{"subject_kind": "user", "subject": "ann", "level": "run"}, {"subject_kind": "group", "subject": "crew", "level": "view"}]
+        got = _node(["accessCandidates", "user", users, groups, rows], ["accessCandidates", "group", users, groups, rows],
+                    ["accessCandidates", "user", None, None, None])
+        self.assertEqual(got, [["cy"], ["desk"], []])
+
+    def test_a_refusal_for_a_show_names_the_level_and_points_to_an_admin_without_naming_anyone(self):
+        got = _node(["forbiddenShow", {"code": "forbidden_show", "reason": "run access to this show is required"}])[0]
+        self.assertIn("show", got["title"].lower())
+        self.assertEqual(got["reason"], "run access to this show is required")
+        self.assertIn("admin", got["sub"])
+        js = FILES["operator.js"]
+        self.assertIn("forbidden_show: ", js[js.index("const ERR_LABEL"):js.index("const INGEST_WHY")])
+        self.assertIn("forbiddenShow(e)", js[js.index("function refusal"):js.index("// ---- derived show state")])
+
+    def test_the_page_calls_the_access_endpoints_and_the_lists_it_needs(self):
+        js = FILES["operator.js"]
+        for pair in ("showAccess:  ['GET',  '/api/shows/{id}/access']", "showAccessSet: ['POST', '/api/shows/{id}/access']",
+                     "users:       ['GET',  '/api/users']", "groups:      ['GET',  '/api/groups']"):
+            self.assertIn(pair, js)
 
 
 def _node_async(body):

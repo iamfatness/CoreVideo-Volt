@@ -14,6 +14,9 @@ from volt import users
 from volt.users import UserError
 
 RANK = {"viewer": 0, "operator": 1, "admin": 2}
+# Per-show access: view = read and comment, edit = build the rundown, run = edit plus go, take, hold, release, skip, kill.
+LEVELS = {"view": 0, "edit": 1, "run": 2}
+SUBJECT_KINDS = ("group", "user")
 _GROUP = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
 
 
@@ -95,6 +98,9 @@ def set_members(store, name: str, add=(), remove=(), source: str = "manual") -> 
 
 def delete_group(store, name: str) -> None:
     _group(store, name)
+    if store.conn.execute("SELECT 1 FROM show_acl WHERE subject_kind = 'group' AND subject = ? LIMIT 1", (name,)).fetchone():
+        # A row left behind would hand its access to any later group of the same name.
+        raise AccessError(409, "group_in_use", f"group {name} is named in a show's access list; remove it there first")
     with store.transaction():
         store.conn.execute("DELETE FROM group_member WHERE group_name = ?", (name,))
         store.conn.execute("DELETE FROM oidc_group_map WHERE group_name = ?", (name,))
@@ -171,3 +177,103 @@ def set_user_email(store, name: str, email) -> dict:
     store.conn.execute("UPDATE volt_user SET email = ? WHERE name = ?", (email, name))
     store.conn.commit()
     return users._public(users._row(store, name))
+
+
+# ---- per-show access ---------------------------------------------------------
+# A show with no show_acl rows is open: every role works it at that role's normal level (an operator runs it, a viewer views it), so
+# an install does not change on upgrade. Once a show has any row, only listed users and groups (and every admin, and the legacy desk
+# token) can touch it, at the highest listed level, and never above the global role. The clock and the runner are the system and do
+# not call this. Everything here is read per request, so nothing outlives the row, the membership, the role or the account it came from.
+
+def _best(levels):
+    return max(levels, key=LEVELS.__getitem__) if levels else None
+
+
+def bypasses(principal) -> bool:
+    return principal is None or getattr(principal, "legacy", False) or getattr(principal, "role", None) == "admin"
+
+
+def show_level(store, principal, show_id: str) -> Optional[str]:
+    """The level `principal` has on a show: "view", "edit" or "run", or None when the show is restricted and they are not on it.
+
+    Admins and the legacy desk token run every show without reading the table, so a damaged table never stops them on air."""
+    if bypasses(principal):
+        return "run"
+    rows = store.conn.execute("SELECT subject_kind, subject, level FROM show_acl WHERE show_id = ?", (show_id,)).fetchall()
+    cap = "view" if principal.role == "viewer" else "run"
+    if not rows:
+        return cap
+    groups = set(getattr(principal, "groups", ()) or ())
+    granted = [r["level"] for r in rows if r["level"] in LEVELS and (
+        (r["subject_kind"] == "user" and r["subject"] == principal.name) or (r["subject_kind"] == "group" and r["subject"] in groups))]
+    best = _best(granted)
+    if best is None:
+        return None
+    return best if LEVELS[best] <= LEVELS[cap] else cap
+
+
+def view_filter(store, principal):
+    """A function show_id -> bool: may this principal see the show in a list. One query for the whole list."""
+    if bypasses(principal):
+        return lambda show_id: True
+    restricted = {}
+    groups = set(getattr(principal, "groups", ()) or ())
+    for r in store.conn.execute("SELECT show_id, subject_kind, subject FROM show_acl").fetchall():
+        listed = (r["subject_kind"] == "user" and r["subject"] == principal.name) or (r["subject_kind"] == "group" and r["subject"] in groups)
+        restricted[r["show_id"]] = restricted.get(r["show_id"], False) or listed
+    return lambda show_id: restricted.get(show_id, True)
+
+
+def list_acl(store, show_id: str) -> list:
+    return [{"subject_kind": r["subject_kind"], "subject": r["subject"], "level": r["level"]} for r in store.conn.execute(
+        "SELECT subject_kind, subject, level FROM show_acl WHERE show_id = ? ORDER BY subject_kind, subject", (show_id,)).fetchall()]
+
+
+def set_acl(store, show_id: str, subject_kind, subject, level) -> list:
+    """Give a user or group a level on a show, or take it away (level None). Returns the show's list after the change."""
+    if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+        raise AccessError(404, "not_found", f"no such show: {show_id}")
+    if subject_kind not in SUBJECT_KINDS:
+        raise AccessError(422, "bad_input", "subject_kind must be group or user")
+    if level is not None and level not in LEVELS:
+        raise AccessError(422, "bad_input", "level must be view, edit or run, or null to remove")
+    if not isinstance(subject, str) or not subject:
+        raise AccessError(422, "bad_input", "subject must be a user or group name")
+    if level is None:
+        store.conn.execute("DELETE FROM show_acl WHERE show_id = ? AND subject_kind = ? AND subject = ?", (show_id, subject_kind, subject))
+        store.conn.commit()
+        return list_acl(store, show_id)
+    table, label = ("volt_user", "user") if subject_kind == "user" else ("volt_group", "group")
+    if store.conn.execute(f"SELECT 1 FROM {table} WHERE name = ?", (subject,)).fetchone() is None:
+        raise AccessError(422, f"no_such_{label}", f"no such {label}: {subject}")
+    with store.transaction():
+        store.conn.execute("DELETE FROM show_acl WHERE show_id = ? AND subject_kind = ? AND subject = ?", (show_id, subject_kind, subject))
+        store.conn.execute("INSERT INTO show_acl (show_id, subject_kind, subject, level) VALUES (?, ?, ?, ?)",
+                           (show_id, subject_kind, subject, level))
+    return list_acl(store, show_id)
+
+
+def _has_table(store, name: str) -> bool:
+    if store.postgres:
+        sql = "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?"
+    else:
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+    return store.conn.execute(sql, (name,)).fetchone() is not None
+
+
+def show_of(store, kind: str, ident: str) -> Optional[str]:
+    """The show a show, item, cue or comment belongs to; None when it does not exist (a comment table that is not built yet counts)."""
+    if kind == "show":
+        sql = "SELECT id AS show_id FROM show WHERE id = ?"
+    elif kind == "item":
+        sql = "SELECT show_id FROM item WHERE id = ?"
+    elif kind == "cue":
+        sql = "SELECT i.show_id AS show_id FROM cue c JOIN item i ON i.id = c.item_id WHERE c.id = ?"
+    elif kind == "comment":
+        if not _has_table(store, "comment"):
+            return None
+        sql = "SELECT show_id FROM comment WHERE id = ?"
+    else:
+        raise ValueError(f"cannot find the show of a {kind}")
+    row = store.conn.execute(sql, (ident,)).fetchone()
+    return row["show_id"] if row else None
