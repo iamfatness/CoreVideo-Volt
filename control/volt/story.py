@@ -458,3 +458,146 @@ def script_text(store: Store, show_id: str) -> str:
         body = read_text(r["script"])
         parts.append(r["slug"].upper() + (chr(10) * 2 + body if body else ""))
     return (chr(10) * 3).join(parts) + (chr(10) if parts else "")
+
+
+# ---- the story archive: search across live and archived stories, and copying one out ------------------------
+
+SEARCH_MAX = 200
+_BATCH = 200
+
+
+def _like(q: str) -> str:
+    """A LIKE pattern for `q` that matches it literally and case-insensitively: % and _ and the escape character (!) are escaped."""
+    return "%" + q.lower().replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+
+
+def _date_bound(value: str, end: bool) -> str:
+    import re
+    from datetime import timedelta
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            day = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            raise StoryError(422, "bad_input", "dates are YYYY-MM-DD") from None
+        return (day + timedelta(days=1 if end else 0)).strftime("%Y-%m-%dT00:00:00Z")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return value
+    raise StoryError(422, "bad_input", "dates are YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ")
+
+
+def _snippet(text: str, q: str, width: int = 160) -> str:
+    """A window of the PUBLIC text (no private notes) around the first match of `q`, or its start."""
+    flat = " ".join(public_text(text).split())
+    at = flat.lower().find(q.lower()) if q else -1
+    start = max(0, at - width // 4) if at >= 0 else 0
+    return ("..." if start else "") + flat[start:start + width] + ("..." if start + width < len(flat) else "")
+
+
+def search(store: Store, *, q: str = "", status: str = "", show: str = "", from_: str = "", to: str = "",
+           limit: int = 50, cursor: Optional[str] = None, show_ok=None) -> dict:
+    """Live items and archived stories together, newest first, each row marked `archived`. `q` matches the slug and the script's public
+    text (never a private note) case-insensitively, with % and _ taken literally. Returns {ok, rows, next}; `next` is the cursor for the
+    following page. LIKE, not full text: adequate for thousands of stories, and the limit is stated in the docs."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= SEARCH_MAX:
+        raise StoryError(422, "bad_input", f"limit must be a whole number from 1 to {SEARCH_MAX}")
+    if status and status not in STATUSES:
+        raise StoryError(422, "bad_input", f"status must be one of {', '.join(STATUSES)}")
+    if len(q) > 200:
+        raise StoryError(422, "bad_input", "q can be at most 200 characters")
+    lw, aw, lp, ap = [], [], [], []
+    if q:
+        pat = _like(q)
+        lw.append("(lower(i.slug) LIKE ? ESCAPE '!' OR lower(i.script) LIKE ? ESCAPE '!')")
+        aw.append("(lower(a.slug) LIKE ? ESCAPE '!' OR lower(a.script) LIKE ? ESCAPE '!')")
+        lp += [pat, pat]
+        ap += [pat, pat]
+    if status:
+        lw.append("COALESCE(i.story_status, 'draft') = ?")
+        aw.append("COALESCE(a.story_status, 'draft') = ?")
+        lp.append(status)
+        ap.append(status)
+    if show:
+        lw.append("(i.show_id = ? OR s.title = ?)")
+        aw.append("a.show_title = ?")
+        lp += [show, show]
+        ap.append(show)
+    if from_:
+        lw.append("i.created_at >= ?")
+        aw.append("a.archived_at >= ?")
+        lp.append(_date_bound(from_, False))
+        ap.append(_date_bound(from_, False))
+    if to:
+        lw.append("i.created_at < ?")
+        aw.append("a.archived_at < ?")
+        lp.append(_date_bound(to, True))
+        ap.append(_date_bound(to, True))
+    base = ("SELECT * FROM (SELECT 0 AS archived, i.id AS id, i.slug AS slug, i.script AS script, COALESCE(i.story_status, 'draft') AS story_status, "
+            "s.title AS show_title, i.show_id AS show_id, i.created_at AS at, i.approved_by AS approved_by, i.approved_at AS approved_at "
+            "FROM item i JOIN show s ON s.id = i.show_id" + (" WHERE " + " AND ".join(lw) if lw else "") +
+            " UNION ALL SELECT 1, a.id, a.slug, a.script, COALESCE(a.story_status, 'draft'), a.show_title, NULL, a.archived_at, a.approved_by, a.approved_at "
+            "FROM story_archive a" + (" WHERE " + " AND ".join(aw) if aw else "") + ") u")
+
+    def batch(cur: Optional[str]):
+        sql, params = base, lp + ap
+        if cur:
+            at, _, ident = cur.partition("|")
+            if not at or not ident:
+                raise StoryError(422, "bad_input", "cursor is not one this server gave")
+            sql += " WHERE (at < ? OR (at = ? AND id < ?))"
+            params = params + [at, at, ident]
+        return store.conn.execute(sql + " ORDER BY at DESC, id DESC LIMIT ?", (*params, _BATCH)).fetchall()
+
+    # A match that sits only inside a private note is dropped here, after the database has narrowed the rows, so the words of a
+    # note can never make a story appear in a search. Batches are read until a page is full.
+    out, more, cur = [], False, cursor
+    while True:
+        rows = batch(cur)
+        for r in rows:
+            if q and q.lower() not in (r["slug"] + " " + public_text(r["script"])).lower():
+                continue
+            if show_ok is not None and r["show_id"] is not None and not show_ok(r["show_id"]):
+                continue      # a restricted show the caller is not on
+            if len(out) == limit:
+                more = True
+                break
+            out.append({"id": ("archive:" if r["archived"] else "") + r["id"], "archived": bool(r["archived"]), "slug": r["slug"], "show": r["show_title"],
+                        "showId": r["show_id"], "storyStatus": r["story_status"], "approvedBy": r["approved_by"], "approvedAt": _utc_text(r["approved_at"]),
+                        "at": _utc_text(r["at"]), "snippet": _snippet(r["script"], q), "_key": f"{_utc_text(r['at'])}|{r['id']}"})
+        if more or len(rows) < _BATCH:
+            break
+        cur = f"{_utc_text(rows[-1]['at'])}|{rows[-1]['id']}"
+    nxt = out[-1]["_key"] if more and out else None
+    for row in out:
+        del row["_key"]
+    return {"ok": True, "rows": out, "next": nxt}
+
+
+def copy_story(store: Store, source_id: str, show_id: str, position: Optional[int], actor: str) -> dict:
+    """Copy a live story, or an archived one (`archive:<id>`), into a show as a new draft at revision 1 with no approval. Copying is
+    not a take: it works on a held show. The copy keeps the text exactly, private notes included (the person copying edits it)."""
+    from volt import building
+    if position is not None and (isinstance(position, bool) or not isinstance(position, int) or position < 1):
+        raise StoryError(422, "bad_input", "position must be a whole number from 1")
+    if source_id.startswith("archive:"):
+        src = store.conn.execute("SELECT slug, script FROM story_archive WHERE id = ?", (source_id[8:],)).fetchone()
+    else:
+        src = store.conn.execute("SELECT slug, script FROM item WHERE id = ?", (source_id,)).fetchone()
+    if src is None:
+        raise StoryError(404, "not_found", f"no such story: {source_id}")
+    with store.transaction(show_lock(show_id)):
+        if store.conn.execute("SELECT 1 FROM show WHERE id = ?", (show_id,)).fetchone() is None:
+            raise StoryError(404, "not_found", f"no such show: {show_id}")
+        item_id, _ = building.add_item(store, show_id, src["slug"], src["script"] or "")
+        store.conn.execute("UPDATE item SET story_status = 'draft', script_rev = 1, approved_by = NULL, approved_at = NULL, approved_rev = NULL, "
+                           "floated = ? WHERE id = ?", (False, item_id))
+        _event(store, item_id, actor, "import", None, source_id, 1, "copied")
+        placed = True
+        if position is not None:
+            ids = [r["id"] for r in store.conn.execute("SELECT id FROM item WHERE show_id = ? ORDER BY position, id", (show_id,)).fetchall()]
+            ids.remove(item_id)
+            ids.insert(min(position - 1, len(ids)), item_id)
+            try:
+                building.reorder(store, show_id, ids)
+            except building.BuildError:
+                placed = False
+    return {"item": item_id, "placed": placed}

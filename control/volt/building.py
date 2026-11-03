@@ -165,6 +165,20 @@ def remove_item(store: Store, item_id: str) -> str:
         return row["show_id"]
 
 
+def _archive_items(store: Store, show_id: str) -> int:
+    """Snapshot every story of a show into story_archive. Called inside delete_show's transaction: if this fails the delete fails."""
+    title = store.conn.execute("SELECT title FROM show WHERE id = ?", (show_id,)).fetchone()["title"]
+    at = _now()
+    rows = store.conn.execute(
+        "SELECT id, slug, script, story_status, approved_by, approved_at FROM item WHERE show_id = ? ORDER BY position, id", (show_id,)).fetchall()
+    for r in rows:      # delete_show only reaches here when nothing aired, so there is no aired_at to keep
+        store.conn.execute(
+            "INSERT INTO story_archive (id, original_item_id, show_title, slug, script, story_status, approved_by, approved_at, aired_at, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+            (_id(), r["id"], title, r["slug"], r["script"] or "", r["story_status"] or "draft", r["approved_by"], r["approved_at"], at))
+    return len(rows)
+
+
 def delete_show(store: Store, show_id: str) -> dict:
     """Delete a show that has not played, with its items and cues. Returns {"items": n, "cues": n}.
 
@@ -184,6 +198,7 @@ def delete_show(store: Store, show_id: str) -> dict:
             raise BuildError(409, "show_not_deletable",
                              f"{len(played)} item(s) are on air or have aired; the as-run log keeps the show",
                              items=[{"id": r["id"], "status": r["status"]} for r in played])
+        _archive_items(store, show_id)      # the stories outlive the show; a failure here fails the whole delete
         store.conn.execute("DELETE FROM story_rev WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,))
         store.conn.execute("DELETE FROM story_event WHERE item_id IN (SELECT id FROM item WHERE show_id = ?)", (show_id,))
         cues = store.conn.execute(
