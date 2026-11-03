@@ -287,6 +287,13 @@ def can_approve(principal, item_row) -> bool:
     return getattr(principal, "name", None) in allowed
 
 
+def last_editor(store: Store, row) -> Optional[str]:
+    """Who saved the story's current revision: the actor on that revision's history row (a revert is a save, so the
+    reverter). None for text no save ever touched, which nobody wrote through here."""
+    saved = _revision(store, row["id"], rev_of(row))
+    return saved["actor"] if saved is not None else None
+
+
 def require_approval() -> bool:
     """VOLT_REQUIRE_APPROVAL=1: only an approved story, at its current revision, may go to air. Off by default."""
     return os.environ.get("VOLT_REQUIRE_APPROVAL") == "1"
@@ -373,6 +380,8 @@ def set_status(store: Store, item_id: str, status: str, *, base_rev: int, actor:
             raise StoryError(409, "not_editable", f"cannot approve the story of a {row['status']} item")
         if (was, status) in _APPROVER_MOVES and not can_approve(principal, row):
             raise StoryError(403, "not_approver", "you are not on the list of people who can approve stories")
+        if status == "approved" and approvers() is not None and getattr(principal, "name", None) == last_editor(store, row):
+            raise StoryError(403, "own_story", "you wrote the current revision of this story; another approver must approve it")
         at = _now()
         if status == "approved":
             sets, params = "approved_by = ?, approved_at = ?, approved_rev = ?", (actor, at, rev)

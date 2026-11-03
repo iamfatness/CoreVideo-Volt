@@ -22,11 +22,11 @@ Rules that hold across all of it, each with a test: bearer tokens behave as they
 - **Google and Microsoft.** Nothing has been run against a real provider. The flow is exercised against `tests/oidc_fake.py` only. What the real providers send (`hd`, `tid`, `email_verified`, the group overage marker, key rotation timing, the Microsoft v2 issuer form) is from published documentation, not observation. Before relying on it: register a test app at each provider, sign in with a real account, a disabled account and an unknown account, and read the audit rows.
 - **More than one real person.** Leases, presence, comments and notifications were checked by tests, by two simulated users against one server (a real lease conflict, takeover and `lease_lost`, see the PR for the run), and by one person in an isolated browser. No team has used them over a real network, with a proxy in front, with clocks that disagree, or with browsers left open overnight.
 - **Postgres under load.** The concurrent lease and reorder tests run on SQLite always and on Postgres when `VOLT_TEST_PG_DSN` is set; they have not been run against a production-sized database.
-- **Auto-provisioning.** An unknown sign-in is refused by default (`auto_provision` is off), per the owner's call. Whether to turn it on is open, as is single Microsoft tenant per customer versus `common` (refused today).
+- **Auto-provisioning.** Decided 2026-11-03: an unknown sign-in is refused until an admin adds the user. `auto_provision` is off by default and is only an explicit opt-in per provider. Single Microsoft tenant per customer versus `common` (refused today) is still open.
 
 ## Known gaps
 
-- The page does not yet hide write controls from a viewer (Start recording, for one, is shown); the server refuses with `403 forbidden_role` and the page shows that. Hiding them is a follow-up.
-- Asset comments are admin-only, and viewers get no mention roster, until the owner decides otherwise.
+- Asset comments are admin-only (owner ruling 2026-11-03), as are viewing `//` private notes (a viewer never sees them) and other people's saved searches and bins (owner-only). Viewers do get the mention roster.
+- The page hides write controls from a viewer (see [operator-ui](operator-ui.md)); that is a convenience, the server's `403 forbidden_role` is the control.
 - Notifications are in-app only. There is no email, push or chat delivery.
 - No SAML, SCIM, back-channel logout or passwords (non-goals in the design).

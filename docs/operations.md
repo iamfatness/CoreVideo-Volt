@@ -202,6 +202,19 @@ A users-only setup (no `VOLT_TOKEN`) may bind beyond loopback once one enabled a
 exists, every non-static request needs a token. Media tickets need a signing key: set `VOLT_MEDIA_KEY` when you have no
 `VOLT_TOKEN`. Tokens cross the LAN in the clear without TLS, as before.
 
+### Newsroom approval (set this for the first customer)
+
+Approval is a deployment setting, not a code default: `VOLT_REQUIRE_APPROVAL` is off and `VOLT_APPROVERS` is empty unless you set them. For the first customer set both:
+
+```
+VOLT_REQUIRE_APPROVAL=1
+VOLT_APPROVERS=alice,carol
+```
+
+- `VOLT_REQUIRE_APPROVAL=1`: a story that is not approved at its current revision cannot go to air (Go, Take, the clock, the cue path, the prompter).
+- `VOLT_APPROVERS` (comma-separated user names): only these people can approve a story or take an approval back. The shared `VOLT_TOKEN` and open loopback cannot approve once the list is set (their actor name is only a header); sign in as a named user.
+- **A writer cannot approve their own story.** With `VOLT_APPROVERS` set, the user who saved the current revision of a story is refused (`403 own_story`); another listed approver must approve it. The last editor is the actor on the current revision's history row: after someone else edits, the earlier writer may approve; a revert is a save, so whoever reverts becomes the last editor. Text no save has touched (as first written) has no last editor. Taking an approval back is not restricted by this rule. Without `VOLT_APPROVERS` (a one-person desk) the rule does not apply.
+
 ## Start
 
 Foreground, everything, supervised:
@@ -353,7 +366,7 @@ It needs TLS (`docs/tls.md`): Google refuses plain-http redirect URIs except on 
 ]}
 ```
 
-The secret is read from the named environment variable and is never in the file, the log or the audit (a `client_secret` key in the file is refused). `scopes` defaults to `openid email profile`; `offline_access` is refused. Microsoft needs one tenant issuer (`common`, `organizations`, `consumers` are refused) and a `tenants` list; Google's `auto_provision` needs `domains`. `auto_provision` (default off) creates a `viewer` for an unknown, trusted email; otherwise an admin adds the user and sets their address with `POST /api/users/{name}/identity {email}`.
+The secret is read from the named environment variable and is never in the file, the log or the audit (a `client_secret` key in the file is refused). `scopes` defaults to `openid email profile`; `offline_access` is refused. Microsoft needs one tenant issuer (`common`, `organizations`, `consumers` are refused) and a `tenants` list; Google's `auto_provision` needs `domains`. **An unknown Google or Microsoft sign-in is refused until an admin adds the user** (owner ruling 2026-11-03): with no `auto_provision` key, or `"auto_provision": false`, a first sign-in from anyone the file does not already know ends at `not_provisioned` ("Ask an administrator to add you"), writes a `login_failed` audit row, and creates no user, no identity link and no session. The admin adds the user and sets their address with `POST /api/users/{name}/identity {email}`; the next sign-in links by that address. `auto_provision` exists only as an explicit opt-in (it needs `domains` for Google): set to `true` it creates a `viewer` for an unknown, trusted email. It is off in every example here and nothing turns it on by default.
 
 Who may sign in: a known `(issuer, sub)` always signs in as the same user, whatever email it now carries. An unknown identity is linked to an existing, enabled, not-yet-linked user whose address equals the token's, only when the address can be trusted (Google: `email_verified` and `hd` in `domains`; Microsoft: `tid` in `tenants`); otherwise it is refused as `not_provisioned`. Groups come from the token's group claim through the map an admin sets (`POST /api/groups/{name}/claims`); they replace only oidc-sourced memberships, and a Microsoft overage marker leaves the groups as they were (a log warning; Graph is not called). Membership changes at the provider apply at the next sign-in, bounded by the session limits. Every refusal writes `login_failed` (insert-only; at most one row a second per provider and reason, the skipped ones counted in the next row) and makes no session. Provider endpoints are called with 10 second timeouts, https only, no redirects.
 

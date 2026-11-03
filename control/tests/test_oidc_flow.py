@@ -586,6 +586,24 @@ class Flow(unittest.TestCase):
         self.assertEqual((row["role"], row["source"], row["email"]), ("viewer", "oidc", "newbie@example.test"))
         self.assertEqual(access.effective_role(self.store, "newbie", row["role"]), "viewer")
 
+    def test_the_default_config_refuses_an_unknown_sign_in_until_an_admin_adds_the_user(self):
+        # Owner ruling 2026-11-03: no option in the file means no account is ever made by signing in.
+        self.assertFalse(any(p.auto_provision for p in self.cfg.providers))
+        for provider, claims in (("google", {"email": "newbie@example.test"}), ("microsoft", {"email": "newbie@example.test", "name": "New Bie"})):
+            with self.subTest(provider):
+                self.fake_for(provider).claims.update(claims)
+                err = self.refused("not_provisioned", self.sign_in, provider)
+                self.assertIn("Ask an administrator to add you", oidc.MESSAGES[err.code])
+        self.assertEqual((self.count("volt_user"), self.count("identity"), self.count("session")), (0, 0, 0))
+        rows = self.audit("login_failed")
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["detail"] == "not_provisioned:no such user" for r in rows), rows)
+        self.assertEqual(self.audit("login"), [])
+        # the admin adds the user, and the same sign-in now works
+        self.user("newbie", email="newbie@example.test")
+        self.google.claims["email"] = "newbie@example.test"
+        self.assertEqual(self.sign_in().user_name, "newbie")
+
     def test_auto_provision_still_needs_a_trusted_email(self):
         self.cfg = oidc.load_config(write_config(self.tmp.name, {"auto_provision": True}), ENV)
         self.google.claims.update(email="newbie@example.test", email_verified=False)

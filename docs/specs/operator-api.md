@@ -54,7 +54,7 @@ per-user token's audit actor is its user name; `X-Volt-Actor` and body `owner` d
 | `POST /api/items/{item}/lease/release` | operator, `edit` | `{clientId}`: free your own tab's lease (idempotent; `{ok, released}`). Audited as `lease_release`, only when something was freed. |
 | `POST /api/items/{item}/lease/takeover` | operator, `edit` | `{clientId}`: take a live lease from its holder; `409 not_leased` when nobody holds it. The old holder's next write or renew is `lease_lost`, and they are notified. Audited as `lease_takeover` with the previous holder. |
 | `POST /api/presence` | viewer, `view` on the named show | `{clientId, show?, view}` where `view` is `show`, `library` or `item:<id>`: one tab's heartbeat, sent every 10 s, live for 30 s, at most 10 tabs per user. Never audited (a named exception, like a lease renew). `/api/state` carries `presence`, `leases` and `collab: {available}`. |
-| `GET /api/comments?kind=&target=` | viewer, `view` on the show | Threads on an item or a show (`kind` is `item`, `show` or `asset`; asset comments are admin-only for now). Bodies are returned to people who can view the show and are rendered as text. |
+| `GET /api/comments?kind=&target=` | viewer, `view` on the show | Threads on an item or a show (`kind` is `item`, `show` or `asset`; asset comments are admin-only for now). Bodies are returned to people who can view the show and are rendered as text. `people` is the mention roster (enabled users who can view the show), given to every role including a viewer. |
 | `POST /api/comments` | viewer, `view` on the show | `{kind, target, body, parent?}`: a comment (1 to 4000 characters, no control characters) or a one-level reply. `@name` mentions an enabled user who can view the show (at most 20). `429 rate_limited` past 30 a minute; `422 reply_depth`; `409 parent_deleted`. Audited as `comment_add` with ids only, never the body. |
 | `POST /api/comments/{id}/resolve` | operator, `edit` | `{resolved: true\|false}` on the first comment of a thread (`422 not_a_thread`, `409 deleted`). Audited `comment_resolve`. |
 | `POST /api/comments/{id}/delete` | viewer (author) or admin, `view` | Soft delete; the body is blanked. `403 forbidden_role` for anyone else. Audited `comment_delete`. |
@@ -295,7 +295,7 @@ Stories, the prompter, the wire inbox, templates, the archive and search. Bodies
 | --- | --- | --- |
 | `GET /api/items/{item}/story` | any | Slug, script (private notes removed for a viewer), `rev`, `storyStatus`, approval record, `stats`, `revisions`, `events`. |
 | `POST /api/items/{item}/script` | operator | `{script?, slug?, baseRev}`. 409 `stale_script` (with `current`), `not_editable`, `story_killed`. |
-| `POST /api/items/{item}/story-status` | operator | `{status, baseRev, note?}`. 409 `bad_transition`, 403 `not_approver`. |
+| `POST /api/items/{item}/story-status` | operator | `{status, baseRev, note?}`. 409 `bad_transition`, 403 `not_approver` (not on `VOLT_APPROVERS`, or the shared token while it is set), 403 `own_story` (with `VOLT_APPROVERS` set: you saved the current revision, so another approver must approve it). |
 | `POST /api/items/{item}/float` | operator | `{floated}`. 409 `not_floatable`. |
 | `POST /api/shows/{show}/reading-pace` | operator | `{wpm: 60..400 or null}`. |
 | `GET /api/shows/{show}/prompter` | any, or a prompter ticket for that show | Feed: items with read and instruction blocks, `version`, `current`, `wpm`. No notes. |

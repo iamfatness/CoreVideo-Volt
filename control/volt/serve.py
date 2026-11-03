@@ -1093,9 +1093,8 @@ def discuss_get(handler, store, path: str, query: dict) -> bool:
         if show_id is not None:
             _show_gate(store, handler.principal, "show", show_id, "view")
         me = handler.principal.name if handler.principal else LEGACY_ACTOR
-        # A viewer is not handed the list of other users (conservative default): operators and admins get the roster for the picker.
-        viewer = handler.principal is not None and not handler.principal.legacy and handler.principal.role == "viewer"
-        got = _discuss(lambda: {"comments": discuss.list_comments(store, kind, target, me), "people": [] if viewer else discuss.roster(store, show_id)})
+        # Everyone who can see the show gets the mention roster, a viewer included (owner ruling 2026-11-03).
+        got = _discuss(lambda: {"comments": discuss.list_comments(store, kind, target, me), "people": discuss.roster(store, show_id)})
         handler._json(200, {"ok": True, "kind": kind, "target": target, "show": show_id, **got})
         return True
     if path == "/api/notifications":

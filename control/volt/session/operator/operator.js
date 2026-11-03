@@ -783,6 +783,7 @@
       if (v == null || v === false) continue;
       if (k === 'class') n.className = v;
       else if (k === 'text') n.textContent = v;
+      else if (k === 'write') n.setAttribute('data-write', '');   // a control only an operator or admin may use: hidden from a viewer (see applyRole)
       else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
       else n.setAttribute(k, v === true ? '' : v);
     }
@@ -916,16 +917,25 @@
   // Show who the token belongs to on the Token button. Best effort: an older server has no /api/whoami.
   let whoamiFor = null;
   const WHO = { name: '', role: '' };   // who the server says this is; a hint for what to show, never what is allowed
+  const isViewer = () => WHO.role === 'viewer';
+  // The page says the role once, on the root element; operator.css hides every [data-write] control from a viewer. The server refuses a
+  // viewer's write with 403 whatever the page shows: this only keeps a read-only person from being offered buttons that cannot work.
+  function applyRole() {
+    if (WHO.role) document.documentElement.setAttribute('data-role', WHO.role); else document.documentElement.removeAttribute('data-role');
+  }
   async function showWhoami() {
     const token = getToken();
-    if (!token && !SESS.csrf) { whoamiFor = null; WHO.name = ''; WHO.role = '';$('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
+    if (!token && !SESS.csrf) { whoamiFor = null; WHO.name = ''; WHO.role = ''; applyRole(); $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
     const key = token || 'session:' + SESS.csrf;
     if (whoamiFor === key) return;
     whoamiFor = key;
     try {
       const res = await fetch('/api/whoami', { headers: authHeaders('GET', token, ''), cache: 'no-store' });
       const who = res.ok ? await res.json() : null;
+      const was = WHO.role;
       WHO.name = who && typeof who.name === 'string' ? who.name : ''; WHO.role = who && typeof who.role === 'string' ? who.role : '';
+      applyRole();
+      if (WHO.role !== was) { S.sigs = {}; render(); }   // what a role may do changes what every panel shows
       $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
       // The pill names the person and their access level; it stays hidden when the server does not say.
       const pill = $('who');
@@ -998,6 +1008,7 @@
 
   /* Run one action. `pendKey` names the button that started it so it can show as busy. */
   async function act(kind, id, body, o) {
+    if (isViewer()) return;   // every action here is an operator's: keys such as T and H do nothing for a viewer (the server refuses them too)
     o = o || {};
     const pendKey = o.key || kind + ':' + (id || '');
     const sequenced = SEQUENCED.has(kind);
@@ -1150,12 +1161,12 @@
     const busy = (a.jobs || []).find((j) => (j.type === 'archive' || j.type === 'restore') && j.status !== 'failed');
     const key = 'archive:' + a.id;
     if (a.tier === 'archived' || a.tier === 'restoring') {
-      return [stateChip(a.tier), a.tier === 'archived' && !busy ? btn('Restore', { key: 'rehydrate:' + a.id, cls: 'ghost small', aria: 'Restore the archived hi-res of ' + short(a.id),
+      return [stateChip(a.tier), a.tier === 'archived' && !busy ? btn('Restore', { write: true, key: 'rehydrate:' + a.id, cls: 'ghost small', aria: 'Restore the archived hi-res of ' + short(a.id),
         onclick: () => act('assetRehydrate', a.id, {}, { key: 'rehydrate:' + a.id, okTitle: 'Restore queued.', ok: () => 'The hi-res of ' + short(a.id) + ' is coming back. It can air and publish again when it is online.' }) }) : null];
     }
     if (busy) return [stateChip('archiving', busy.type === 'restore' ? 'Restoring' : 'Archiving')];
     if (a.open || a.legalHold || !a.file) return [];
-    return [btn(S.armed === key ? 'Confirm archive' : 'Archive', { key: 'archive-b:' + a.id, cls: 'ghost small' + (S.armed === key ? ' armed' : ''),
+    return [btn(S.armed === key ? 'Confirm archive' : 'Archive', { write: true, key: 'archive-b:' + a.id, cls: 'ghost small' + (S.armed === key ? ' armed' : ''),
       aria: (S.armed === key ? 'Confirm archive of ' : 'Archive ') + short(a.id),
       onclick: () => armedAction(key, () => act('assetArchive', a.id, {}, { key: 'archive:' + a.id, okTitle: 'Archive queued.',
         ok: () => 'The hi-res of ' + short(a.id) + ' is uploaded and checked, then the local file is removed. Playback of the proxy is unaffected.' })) })];
@@ -1175,7 +1186,7 @@
     o = o || {};
     const dis = o.disabled || S.pending.has(o.key || '\0');
     return el('button', {
-      type: 'button', class: 'btn' + (o.cls ? ' ' + o.cls : ''), 'data-fk': o.key, disabled: dis,
+      type: 'button', class: 'btn' + (o.cls ? ' ' + o.cls : ''), 'data-fk': o.key, disabled: dis, write: o.write,
       title: o.title, 'aria-label': o.aria, onclick: o.onclick,
     }, label);
   }
@@ -1501,7 +1512,7 @@
               el('small', { class: 'mono muted', text: short(a.assetId) }),
               stateChip(a.cleared ? 'cleared' : 'uncleared'), a.legalHold ? stateChip('hold') : null, a.archived ? stateChip('archived') : null, a.incomplete ? stateChip('incomplete') : null,
               el('span', { class: 'spacer' }),
-              bin ? btn('Add to ' + bin.name, { key: 'find:add:' + a.assetId, cls: 'ghost small', aria: 'Add ' + (a.camera || short(a.assetId)) + ' to the bin ' + bin.name, onclick: () => binAddAsset(a.assetId) }) : null),
+              bin ? btn('Add to ' + bin.name, { write: true, key: 'find:add:' + a.assetId, cls: 'ghost small', aria: 'Add ' + (a.camera || short(a.assetId)) + ' to the bin ' + bin.name, onclick: () => binAddAsset(a.assetId) }) : null),
             line ? el('small', { class: 'find-meta', text: line }) : null,
             a.hits.length ? el('ul', { class: 'find-hits' }, a.hits.map((h) => hitNode(a, h, r.q))) : null);
         })),
@@ -1546,10 +1557,10 @@
       s.list.length ? el('ul', { class: 'plain side' }, s.list.map((x) => el('li', {},
         el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'run:' + x.id, 'aria-label': 'Run the saved search ' + x.name, onclick: () => findApply(x.query) }, x.name),
           el('small', { class: 'block muted' }, 'by ' + x.owner + ' ', x.shared ? stateChip('shared') : null)),
-        mineOrUnknown(x.owner) ? btn(s.armDel === x.id ? 'Press again to delete' : 'Delete', { key: 'find:delsearch:' + x.id, cls: 'ghost small' + (s.armDel === x.id ? ' danger' : ''),
+        mineOrUnknown(x.owner) ? btn(s.armDel === x.id ? 'Press again to delete' : 'Delete', { write: true, key: 'find:delsearch:' + x.id, cls: 'ghost small' + (s.armDel === x.id ? ' danger' : ''),
           aria: 'Delete the saved search ' + x.name, onclick: () => findDeleteSearch(x) }) : null)))
         : (s.err ? null : el('p', { class: 'empty', text: s.load === 'loading' ? 'Reading…' : 'None yet. Search, then save the question under a name.' })),
-      el('form', { class: 'form-row', 'aria-label': 'Save this search', onsubmit: (e) => { e.preventDefault(); findSave(); } },
+      el('form', { write: true, class: 'form-row', 'aria-label': 'Save this search', onsubmit: (e) => { e.preventDefault(); findSave(); } },
         el('div', { class: 'grow' }, el('label', { for: 'find-save-name', text: 'Save this search as' }),
           el('input', { id: 'find-save-name', type: 'text', 'data-fk': 'find-save-name', maxlength: 100, autocomplete: 'off', value: s.name, oninput: (e) => { s.name = e.target.value; } })),
         el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'find-save-shared', checked: s.shared, onchange: (e) => { s.shared = e.target.checked; } }), el('span', { text: 'Share with every operator' })),
@@ -1571,7 +1582,7 @@
         el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'bin:' + x.id, 'aria-current': b.cur === x.id ? 'true' : null,
           'aria-label': 'Open the bin ' + x.name + ', ' + x.count + ' item' + (x.count === 1 ? '' : 's'), onclick: () => binOpen(x.id) }, x.name),
           el('small', { class: 'block muted' }, x.count + ' item' + (x.count === 1 ? '' : 's') + ' · by ' + x.owner + ' ', x.shared ? stateChip('shared') : null)),
-        mineOrUnknown(x.owner) ? btn(b.armDel === x.id ? 'Press again to delete' : 'Delete', { key: 'find:bindel:' + x.id, cls: 'ghost small' + (b.armDel === x.id ? ' danger' : ''),
+        mineOrUnknown(x.owner) ? btn(b.armDel === x.id ? 'Press again to delete' : 'Delete', { write: true, key: 'find:bindel:' + x.id, cls: 'ghost small' + (b.armDel === x.id ? ' danger' : ''),
           aria: 'Delete the bin ' + x.name, onclick: () => binDelete(x) }) : null)))
         : (b.err ? null : el('p', { class: 'empty', text: b.load === 'loading' ? 'Reading…' : 'No bins yet. A bin is a short list of assets to come back to.' })),
       b.cur ? el('div', { class: 'members' }, el('h3', { class: 'sub', text: 'In ' + ((b.list.find((x) => x.id === b.cur) || {}).name || 'this bin') }),
@@ -1579,9 +1590,9 @@
           : b.members.length ? el('ul', { class: 'plain side' }, b.members.map((m) => el('li', {},
             el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'open:' + m.assetId + ':' + (m.spanId || ''), onclick: () => findOpen(m.assetId, null) }, memberName(m)),
               m.gone ? el('small', { class: 'block' }, stateChip('stale', 'Clip gone')) : null, m.assetDeleted ? el('small', { class: 'block' }, stateChip('withdrawn', 'Asset deleted')) : null),
-            btn('Remove', { key: 'find:rm:' + m.assetId + ':' + (m.spanId || ''), cls: 'ghost small', aria: 'Remove ' + memberName(m) + ' from the bin', onclick: () => binRemoveMember(m) }))))
+            btn('Remove', { write: true, key: 'find:rm:' + m.assetId + ':' + (m.spanId || ''), cls: 'ghost small', aria: 'Remove ' + memberName(m) + ' from the bin', onclick: () => binRemoveMember(m) }))))
             : el('p', { class: 'empty', text: 'Empty. Choose Add to this bin on a result.' })) : null,
-      el('form', { class: 'form-row', 'aria-label': 'Make a bin', onsubmit: (e) => { e.preventDefault(); binCreate(); } },
+      el('form', { write: true, class: 'form-row', 'aria-label': 'Make a bin', onsubmit: (e) => { e.preventDefault(); binCreate(); } },
         el('div', { class: 'grow' }, el('label', { for: 'bin-name', text: 'New bin' }),
           el('input', { id: 'bin-name', type: 'text', 'data-fk': 'bin-name', maxlength: 100, autocomplete: 'off', value: b.name, oninput: (e) => { b.name = e.target.value; } })),
         el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'bin-shared', checked: b.shared, onchange: (e) => { b.shared = e.target.checked; } }), el('span', { text: 'Share with every operator' })),
@@ -1660,7 +1671,7 @@
   function fieldControl(f) {
     const id = 'd-' + f.key, key = f.key, bad = DT.errors[key] ? 'd-err-' + key : null;
     const set = (v) => { DT.draft[key] = v; };
-    const base = { id, 'data-fk': id, 'aria-describedby': bad, 'aria-invalid': bad ? 'true' : null };
+    const base = { id, 'data-fk': id, 'aria-describedby': bad, 'aria-invalid': bad ? 'true' : null, disabled: isViewer() };
     if (f.type === 'longtext') return el('textarea', Object.assign({}, base, { rows: 4, maxlength: 10000, oninput: (e) => set(e.target.value) }), DT.draft[key]);
     if (f.type === 'text' && f.multi) return el('textarea', Object.assign({}, base, { rows: 3, maxlength: 20000, 'aria-label': f.label + ', one value per line', oninput: (e) => set(e.target.value) }), DT.draft[key]);
     if (f.type === 'bool') return el('select', Object.assign({}, base, { onchange: (e) => set(e.target.value) }),
@@ -1671,7 +1682,7 @@
       for (const h of held) if (!terms.includes(h)) terms.push(h);           // a value whose term was retired stays visible until it is changed
       if (f.multi) {
         return el('div', { class: 'terms', role: 'group', 'aria-labelledby': 'd-lbl-' + key, 'aria-describedby': bad },
-          terms.length ? terms.map((t) => el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': id + ':' + t, checked: DT.draft[key].includes(t),
+          terms.length ? terms.map((t) => el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': id + ':' + t, checked: DT.draft[key].includes(t), disabled: isViewer(),
             onchange: (e) => { set(e.target.checked ? DT.draft[key].concat([t]) : DT.draft[key].filter((x) => x !== t)); } }), el('span', { text: t }))) : el('small', { class: 'hint', text: 'No terms yet. Add one below.' }));
       }
       return el('select', Object.assign({}, base, { onchange: (e) => set(e.target.value) }),
@@ -1689,12 +1700,12 @@
     return el('div', { class: 'dfield' }, head, fieldControl(f),
       f.type === 'text' && f.multi ? el('small', { class: 'hint', text: 'One value per line.' }) : null,
       el('div', { class: 'dact' },
-        btn('Save', { key: 'd:save:' + key, cls: 'small', aria: 'Save ' + f.label, onclick: () => detailsSave(f) }),
+        btn('Save', { write: true, key: 'd:save:' + key, cls: 'small', aria: 'Save ' + f.label, onclick: () => detailsSave(f) }),
         err ? el('span', { class: 'dno', id: 'd-err-' + key, role: 'alert' }, icon('alert', 's'), ' ' + err.code + ': ' + err.reason) : null,
-        canDefine() ? btn(DT.arm === key ? 'Press again to retire' : 'Retire field', { key: 'd:retire:' + key, cls: 'ghost small' + (DT.arm === key ? ' danger' : ''), aria: 'Retire the field ' + f.label, onclick: () => detailsRetire(f) }) : null),
-      f.type === 'enum' ? el('div', { class: 'dterm' }, el('label', { for: 'd-term-' + key, class: 'vh', text: 'New term for ' + f.label }),
+        canDefine() ? btn(DT.arm === key ? 'Press again to retire' : 'Retire field', { write: true, key: 'd:retire:' + key, cls: 'ghost small' + (DT.arm === key ? ' danger' : ''), aria: 'Retire the field ' + f.label, onclick: () => detailsRetire(f) }) : null),
+      f.type === 'enum' ? el('div', { write: true, class: 'dterm' }, el('label', { for: 'd-term-' + key, class: 'vh', text: 'New term for ' + f.label }),
         el('input', { id: 'd-term-' + key, type: 'text', 'data-fk': 'd-term-' + key, maxlength: 200, placeholder: 'Add a term', autocomplete: 'off', value: DT.term[key] || '', oninput: (e) => { DT.term[key] = e.target.value; } }),
-        btn('Add term', { key: 'd:term:' + key, cls: 'ghost small', aria: 'Add a term to ' + f.label, onclick: () => detailsTerm(f) })) : null);
+        btn('Add term', { write: true, key: 'd:term:' + key, cls: 'ghost small', aria: 'Add a term to ' + f.label, onclick: () => detailsTerm(f) })) : null);
   }
 
   function renderDetails() {
@@ -1714,7 +1725,7 @@
     $('lib-d-define-wrap').hidden = !canDefine();
     if (!canDefine()) return;
     const asset = ((S.data && S.data.assets) || []).find((a) => a.id === L.assetId) || {}, df = DT.def;
-    paint('lib-d-define', [df.err, asset.show, [...S.pending].filter((k) => k.startsWith('d:define'))], () => el('form', { class: 'dform padded', 'aria-label': 'Define a field', autocomplete: 'off',
+    paint('lib-d-define', [df.err, asset.show, [...S.pending].filter((k) => k.startsWith('d:define'))], () => el('form', { write: true, class: 'dform padded', 'aria-label': 'Define a field', autocomplete: 'off',
       onsubmit: (e) => { e.preventDefault(); detailsDefine(); } },
       el('div', {}, el('label', { for: 'df-key', text: 'Key (lowercase, digits, _)' }), el('input', { id: 'df-key', type: 'text', 'data-fk': 'df-key', maxlength: 40, spellcheck: 'false', value: df.key, oninput: (e) => { df.key = e.target.value; } })),
       el('div', {}, el('label', { for: 'df-label', text: 'Label' }), el('input', { id: 'df-label', type: 'text', 'data-fk': 'df-label', maxlength: 100, value: df.label, oninput: (e) => { df.label = e.target.value; } })),
@@ -1826,7 +1837,7 @@
             return el('tr', {}, el('td', {}, icon('user', 's'), ' ' + (r.subject_kind === 'group' ? 'Group ' : 'User ') + r.subject),
               el('td', {}, el('span', { class: spec.cls }, icon(spec.icon, 's'), el('span', { text: spec.word }))),
               el('td', { text: spec.does }),
-              el('td', {}, btn('Remove', { key: 'acc:' + r.subject_kind + ':' + r.subject, cls: 'ghost small', aria: 'Remove ' + r.subject + ' from this show',
+              el('td', {}, btn('Remove', { write: true, key: 'acc:' + r.subject_kind + ':' + r.subject, cls: 'ghost small', aria: 'Remove ' + r.subject + ' from this show',
                 onclick: () => accSet(r.subject_kind, r.subject, null) })));
           })))),
       el('form', { class: 'form-row', 'aria-label': 'Add or change access', onsubmit: (e) => { e.preventDefault(); if (ACC.subject) accSet(ACC.kind, ACC.subject, ACC.level); } },
@@ -1918,7 +1929,7 @@
           el('strong', { text: '⏸ Rundown held.' }),
           el('span', { class: 'why', text: hold.reason || 'No reason given.' }),
           el('span', { class: 'sub', text: 'Since ' + fmtTime(hold.heldAt) + '. Take and advance are refused until released.' })),
-          btn('Release hold', { key: 'hold-banner', cls: 'signal', onclick: toggleHold })));
+          btn('Release hold', { write: true, key: 'hold-banner', cls: 'signal', onclick: toggleHold })));
       }
       if (f) out.push(flashNode(f));
       return out;
@@ -1941,10 +1952,10 @@
         [el('span', { class: 'tk' }, icon('take'), takeBusy ? 'TAKING…' : 'TAKE'),
          el('small', {}, next ? next.slug + ' · ' + takeCues + (takeCues === 1 ? ' cue' : ' cues') : 'nothing to take'),
          el('small', { class: 'k' }, 'Key ', el('kbd', { text: 'T' }))],
-        { key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
+        { write: true, key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
       el('div', { class: 'acts' },
-        btn(hold ? 'RELEASE HOLD' : 'HOLD', { key: 'hold', cls: hold ? 'signal' : 'ghost', onclick: toggleHold, disabled: !S.data.show, title: 'Key H' }),
-        btn('Advance, no cues', { key: 'go', cls: 'ghost', disabled: !!block || S.seq,
+        btn(hold ? 'RELEASE HOLD' : 'HOLD', { write: true, key: 'hold', cls: hold ? 'signal' : 'ghost', onclick: toggleHold, disabled: !S.data.show, title: 'Key H' }),
+        btn('Advance, no cues', { write: true, key: 'go', cls: 'ghost', disabled: !!block || S.seq,
           title: 'Moves the rundown on without sending any cues to the room',
           onclick: () => act('go', S.show, {}, { okTitle: 'Advanced.', ok: (d) => (d.over ? 'End of show.' : 'Next item is on air. No cues were sent.') }) })),
       block ? el('span', { class: 'hint', text: block }) : el('span', { class: 'hint' }, 'Hold: ', el('kbd', { text: 'H' }), ' · all keys: ', el('kbd', { text: '?' })),
@@ -1992,7 +2003,7 @@
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
           el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
         cueChip(c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
-        sItem.status === 'ready' && c.status !== 'fired' ? btn('Remove', { key: 'cue-rm:' + c.id, cls: 'ghost small', aria: 'Remove cue ' + (CUE_LABEL[c.command] || c.command),
+        sItem.status === 'ready' && c.status !== 'fired' ? btn('Remove', { write: true, key: 'cue-rm:' + c.id, cls: 'ghost small', aria: 'Remove cue ' + (CUE_LABEL[c.command] || c.command),
           onclick: () => act('cueRemove', c.id, {}, { key: 'cue-rm:' + c.id, okTitle: 'Cue removed.', ok: () => '' }) }) : null)),
         el('p', { class: 'note', text: 'Take resumes at the first cue that did not fire. Fired cues are not sent twice.' })];
     });
@@ -2114,40 +2125,40 @@
     const slotNow = S.data.rundown ? S.data.rundown.slotSeconds : null;
     paint('build', [S.data.show, S.data.rundown && S.data.rundown.recurrence, b.rec.freq, sItem, sItem && [sItem.scheduledAt, sItem.scheduleState, sItem.scheduleMode], m.span, sel.map((e) => e.id + e.name), pending, S.armed, b.pick, slotNow], () => [
       el('div', { class: 'body' },
-        el('form', { 'aria-label': 'Set the slot length', onsubmit: (e) => { e.preventDefault(); setSlot(); } },
+        el('form', { write: true, 'aria-label': 'Set the slot length', onsubmit: (e) => { e.preventDefault(); setSlot(); } },
           formRow('Slot length (mm:ss or h:mm:ss)', 'build-slot', textIn('build-slot', 'slot', { maxlength: '9', disabled: !S.data.show, placeholder: slotNow != null ? fmtOffset(slotNow) : '15:00' })),
-          el('div', { class: 'bar flush' }, btn('Set slot', { key: 'show-slot', cls: 'ghost', disabled: !S.data.show, onclick: setSlot }),
-            slotNow != null ? btn('Clear slot', { key: 'show-slot-clear', cls: 'ghost', onclick: clearSlot }) : null)),
-        el('form', { 'aria-label': 'Add an item', onsubmit: (e) => { e.preventDefault(); addItem(); } },
+          el('div', { class: 'bar flush' }, btn('Set slot', { write: true, key: 'show-slot', cls: 'ghost', disabled: !S.data.show, onclick: setSlot }),
+            slotNow != null ? btn('Clear slot', { write: true, key: 'show-slot-clear', cls: 'ghost', onclick: clearSlot }) : null)),
+        el('form', { write: true, 'aria-label': 'Add an item', onsubmit: (e) => { e.preventDefault(); addItem(); } },
           formRow('New item', 'build-slug', textIn('build-slug', 'slug', { maxlength: '200', disabled: !S.data.show })),
-          el('div', { class: 'bar flush' }, btn('Add item', { key: 'item-add', cls: 'ghost', disabled: !S.data.show, onclick: addItem }))),
-        sItem ? el('fieldset', { class: 'grp' }, el('legend', { text: 'Edit ' + sItem.slug }),
+          el('div', { class: 'bar flush' }, btn('Add item', { write: true, key: 'item-add', cls: 'ghost', disabled: !S.data.show, onclick: addItem }))),
+        sItem ? el('fieldset', { write: true, class: 'grp' }, el('legend', { text: 'Edit ' + sItem.slug }),
           editable ? [
-            el('form', { 'aria-label': 'Rename the selected item', onsubmit: (e) => { e.preventDefault(); renameItem(sItem); } },
+            el('form', { write: true, 'aria-label': 'Rename the selected item', onsubmit: (e) => { e.preventDefault(); renameItem(sItem); } },
               formRow('Name', 'build-rename', textIn('build-rename', 'rename', { maxlength: '200' })),
-              el('div', { class: 'bar flush' }, btn('Rename', { key: 'item-rename', cls: 'ghost', onclick: () => renameItem(sItem) }))),
-            el('form', { 'aria-label': 'Schedule the selected item', onsubmit: (e) => { e.preventDefault(); scheduleItem(sItem); } },
+              el('div', { class: 'bar flush' }, btn('Rename', { write: true, key: 'item-rename', cls: 'ghost', onclick: () => renameItem(sItem) }))),
+            el('form', { write: true, 'aria-label': 'Schedule the selected item', onsubmit: (e) => { e.preventDefault(); scheduleItem(sItem); } },
               formRow('Take at (your local time)', 'build-sched', el('input', { id: 'build-sched', type: 'datetime-local', 'data-fk': 'build-sched', step: '1', value: b.sched || '',
                 oninput: (e) => { b.sched = e.target.value; } })),
-              el('div', { class: 'bar flush' }, btn('Set schedule', { key: 'item-schedule', cls: 'ghost', onclick: () => scheduleItem(sItem) }),
-                sItem.scheduledAt ? btn('Clear schedule', { key: 'item-schedule-clear', cls: 'ghost', onclick: () => clearSchedule(sItem) }) : null)),
-            el('form', { 'aria-label': 'Take after the previous item', onsubmit: (e) => { e.preventDefault(); afterPrevious(sItem); } },
+              el('div', { class: 'bar flush' }, btn('Set schedule', { write: true, key: 'item-schedule', cls: 'ghost', onclick: () => scheduleItem(sItem) }),
+                sItem.scheduledAt ? btn('Clear schedule', { write: true, key: 'item-schedule-clear', cls: 'ghost', onclick: () => clearSchedule(sItem) }) : null)),
+            el('form', { write: true, 'aria-label': 'Take after the previous item', onsubmit: (e) => { e.preventDefault(); afterPrevious(sItem); } },
               formRow('Or: seconds after the previous item has run', 'build-after', el('input', { id: 'build-after', type: 'number', min: '0', max: '86399', step: '1', 'data-fk': 'build-after',
                 value: b.after, oninput: (e) => { b.after = e.target.value; } })),
-              el('div', { class: 'bar flush' }, btn('Set after previous', { key: 'item-after', cls: 'ghost', onclick: () => afterPrevious(sItem) }))),
+              el('div', { class: 'bar flush' }, btn('Set after previous', { write: true, key: 'item-after', cls: 'ghost', onclick: () => afterPrevious(sItem) }))),
             formRow('Clip from the Library selection', 'build-pick', el('select', { id: 'build-pick', 'data-fk': 'build-pick', onchange: (e) => { b.pick = e.target.value; } },
               el('option', { value: '' }, sel.length ? 'Choose a clip' : 'Nothing selected in the Library'),
               sel.map((e) => el('option', { value: e.id, selected: b.pick === e.id }, e.name + ' · ' + e.tcIn)))),
             el('div', { class: 'bar flush' },
-              btn('Attach clip', { key: 'item-attach', cls: 'ghost', disabled: !sel.length, onclick: () => attachFromSelection(sItem) }),
-              m.span ? btn('Detach clip', { key: 'item-detach', cls: 'ghost', aria: 'Detach the clip from ' + sItem.slug,
+              btn('Attach clip', { write: true, key: 'item-attach', cls: 'ghost', disabled: !sel.length, onclick: () => attachFromSelection(sItem) }),
+              m.span ? btn('Detach clip', { write: true, key: 'item-detach', cls: 'ghost', aria: 'Detach the clip from ' + sItem.slug,
                 onclick: () => act('itemDetach', sItem.id, {}, { key: 'item-detach', okTitle: 'Detached.', ok: () => 'The item has no media now.' }) }) : null,
-              btn(S.armed === rmKey ? 'Confirm remove' : 'Remove item', { key: 'item-remove', cls: 'danger' + (S.armed === rmKey ? ' armed' : ''),
+              btn(S.armed === rmKey ? 'Confirm remove' : 'Remove item', { write: true, key: 'item-remove', cls: 'danger' + (S.armed === rmKey ? ' armed' : ''),
                 aria: (S.armed === rmKey ? 'Confirm remove ' : 'Remove ') + sItem.slug, onclick: () => removeItem(sItem) })),
             el('small', { text: m.span ? 'Clip ' + (m.tcIn || '') + ' to ' + (m.tcOut || '') + '.' : 'No clip yet: this item cannot be taken until one is attached.' }),
           ] : el('small', { text: 'This item is ' + sItem.status + ' and cannot be edited.' })) : null,
-        el('details', { class: 'newshow', open: b.recOpen, ontoggle: (e) => { b.recOpen = e.target.open; } }, el('summary', { text: 'Repeat this show' }),
-          el('form', { 'aria-label': 'Repeat this show', onsubmit: (e) => { e.preventDefault(); setRepeat(); } },
+        el('details', { write: true, class: 'newshow', open: b.recOpen, ontoggle: (e) => { b.recOpen = e.target.open; } }, el('summary', { text: 'Repeat this show' }),
+          el('form', { write: true, 'aria-label': 'Repeat this show', onsubmit: (e) => { e.preventDefault(); setRepeat(); } },
             formRow('How often', 'build-rec-freq', el('select', { id: 'build-rec-freq', 'data-fk': 'build-rec-freq', onchange: (e) => { b.rec.freq = e.target.value; render(); } },
               el('option', { value: 'daily', selected: b.rec.freq === 'daily' }, 'Every day'), el('option', { value: 'weekly', selected: b.rec.freq === 'weekly' }, 'Every week on'))),
             b.rec.freq === 'weekly' ? el('div', { class: 'days', role: 'group', 'aria-label': 'Days of the week' }, DAY_NAMES.map((d, n) => el('label', { class: 'day' },
@@ -2155,19 +2166,19 @@
                 onchange: (e) => { b.rec.days = e.target.checked ? [...b.rec.days, n] : b.rec.days.filter((x) => x !== n); } }), ' ' + d))) : null,
             formRow('At (24-hour time)', 'build-rec-at', el('input', { id: 'build-rec-at', type: 'time', 'data-fk': 'build-rec-at', value: b.rec.at, oninput: (e) => { b.rec.at = e.target.value; } })),
             formRow('Time zone', 'build-rec-tz', textIn2('build-rec-tz', b.rec, 'tz', { maxlength: '60' })),
-            el('div', { class: 'bar flush' }, btn('Set repeat', { key: 'show-repeat', cls: 'ghost', disabled: !S.data.show, onclick: setRepeat }),
-              S.data.rundown && S.data.rundown.recurrence ? btn('Stop repeating', { key: 'show-repeat-clear', cls: 'ghost', onclick: stopRepeat }) : null))),
-        el('details', { class: 'newshow' }, el('summary', { text: 'New show' }),
-          el('form', { 'aria-label': 'Create a show', onsubmit: (e) => { e.preventDefault(); createShow(); } },
+            el('div', { class: 'bar flush' }, btn('Set repeat', { write: true, key: 'show-repeat', cls: 'ghost', disabled: !S.data.show, onclick: setRepeat }),
+              S.data.rundown && S.data.rundown.recurrence ? btn('Stop repeating', { write: true, key: 'show-repeat-clear', cls: 'ghost', onclick: stopRepeat }) : null))),
+        el('details', { write: true, class: 'newshow' }, el('summary', { text: 'New show' }),
+          el('form', { write: true, 'aria-label': 'Create a show', onsubmit: (e) => { e.preventDefault(); createShow(); } },
             formRow('Show name', 'build-title', textIn('build-title', 'title', { maxlength: '200' })),
-            el('div', { class: 'bar flush' }, btn('Create show', { key: 'show-create', cls: 'ghost', onclick: createShow }))))),
+            el('div', { class: 'bar flush' }, btn('Create show', { write: true, key: 'show-create', cls: 'ghost', onclick: createShow }))))),
     ]);
 
     paint('cue-add', [sItem && sItem.id, editable, S.cmds, b.cmd, pending], () => {
       if (!editable) return [];
       const cmds = S.cmds || [];
       const info = cmdInfo(b.cmd);
-      return el('div', { class: 'body' }, el('form', { 'aria-label': 'Add a cue to ' + sItem.slug, onsubmit: (e) => { e.preventDefault(); addCue(sItem); } },
+      return el('div', { class: 'body' }, el('form', { write: true, 'aria-label': 'Add a cue to ' + sItem.slug, onsubmit: (e) => { e.preventDefault(); addCue(sItem); } },
         formRow('Add a cue', 'cue-cmd', el('select', { id: 'cue-cmd', 'data-fk': 'cue-cmd', disabled: !cmds.length,
           onchange: (e) => { b.cmd = e.target.value; S.sigs['cue-add'] = null; render(); } },
           cmds.length ? cmds.map((c) => el('option', { value: c.command, selected: c.command === b.cmd },
@@ -2176,7 +2187,7 @@
         info && !info.verified ? el('small', { class: 'no', text: info.adapter
           ? '? ' + info.command + ' has an adapter, but no live Program take is recorded yet. The cue is stored and a take will run it.'
           : '? No verified adapter for ' + info.command + ' yet. The cue is stored, but a take stops at it.' }) : null,
-        el('div', { class: 'bar flush' }, btn('Add cue', { key: 'cue-add', cls: 'ghost', disabled: !cmds.length, onclick: () => addCue(sItem) }))));
+        el('div', { class: 'bar flush' }, btn('Add cue', { write: true, key: 'cue-add', cls: 'ghost', disabled: !cmds.length, onclick: () => addCue(sItem) }))));
     });
   }
 
@@ -2222,11 +2233,11 @@
       backText == null ? null : el('span', { class: 'back mono', text: backText }),
       el('span', { class: 'tools' },
         ready ? [
-          btn('↑', { key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
-          btn('↓', { key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
-          btn('Skip', { key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
+          btn('↑', { write: true, key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
+          btn('↓', { write: true, key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
+          btn('Skip', { write: true, key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
           el('span', { class: 'sep', 'aria-hidden': 'true' }),
-          btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
+          btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { write: true, key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
             aria: (S.armed === killKey ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }),
         ] : null));
   }
@@ -2242,8 +2253,8 @@
         d.unconfirmed.map((show) => el('div', { class: 'note mos-wait' },
           el('p', { text: 'The running order ' + short(show) + ' was sent to ' + d.name + ' and not acknowledged. It will not be sent again until you say whether the device has it.' }),
           el('div', { class: 'acts' },
-            btn('It was created', { key: 'mos-ok:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'created' }, { key: 'mos-ok:' + d.name + show, okTitle: 'Noted.', ok: () => 'Later changes go to ' + d.name + ' as replacements.' }) }),
-            btn('Send it again', { key: 'mos-retry:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'retry' }, { key: 'mos-retry:' + d.name + show, okTitle: 'Will resend.', ok: () => 'The roCreate goes to ' + d.name + ' again.' }) }))))); 
+            btn('It was created', { write: true, key: 'mos-ok:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'created' }, { key: 'mos-ok:' + d.name + show, okTitle: 'Noted.', ok: () => 'Later changes go to ' + d.name + ' as replacements.' }) }),
+            btn('Send it again', { write: true, key: 'mos-retry:' + d.name + show, cls: 'ghost small', onclick: () => act('mosResolve', d.name + ':' + show, { action: 'retry' }, { key: 'mos-retry:' + d.name + show, okTitle: 'Will resend.', ok: () => 'The roCreate goes to ' + d.name + ' again.' }) }))))); 
     });
   }
 
@@ -2291,12 +2302,12 @@
       const starting = S.pending.has('recordStart');
       const stopping = cur && S.pending.has('recordStop:' + cur.id);
       return [
-        el('section', { class: 'panel', 'aria-labelledby': 'h-recstart' }, el('h2', { id: 'h-recstart' }, icon('record', 's'), 'Start a recording'),
+        el('section', { write: true, class: 'panel', 'aria-labelledby': 'h-recstart' }, el('h2', { id: 'h-recstart' }, icon('record', 's'), 'Start a recording'),
           el('div', { class: 'form-row' },
             el('div', {}, el('label', { for: 'rec-camera', text: 'Camera or label (optional)' }),
               el('input', { id: 'rec-camera', type: 'text', maxlength: '100', autocomplete: 'off', value: S.recCamera || '', 'data-fk': 'rec-camera',
                 oninput: (e) => { S.recCamera = e.target.value; } })),
-            btn(starting ? 'STARTING…' : 'START RECORDING', { key: 'recordStart', disabled: !room.configured || S.seq,
+            btn(starting ? 'STARTING…' : 'START RECORDING', { write: true, key: 'recordStart', disabled: !room.configured || S.seq,
               onclick: () => act('recordStart', null, S.recCamera ? { camera: S.recCamera } : {}, { key: 'recordStart', okTitle: 'Recording.', ok: (d) => 'Asset ' + short(d.asset.id) + ' minted once the room showed output.' })}),
             el('span', { class: 'hint', text: room.configured ? 'Mints the asset only after the room shows a file being written.' : 'No room configured. Set VOLT_ROOM_URL on the server.' }))),
         el('section', { class: 'panel', 'aria-labelledby': 'h-lifecycle' },
@@ -2311,9 +2322,9 @@
             el('dt', { text: 'Finalized' }), el('dd', { text: room.reachable ? (room.finalized ? 'yes' : 'no') : 'unknown' }),
             el('dt', { text: 'Checksum' }), el('dd', { text: cur && cur.checksum ? cur.checksum : 'not wrapped' }),
             room.error ? [el('dt', { text: 'Room error' }), el('dd', { text: room.error })] : null),
-          el('div', { class: 'bar top-rule' },
+          el('div', { write: true, class: 'bar top-rule' },
             btn(stopping ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' WAITING FOR THE ROOM…'] : 'STOP AND WRAP',
-              { key: 'recordStop:' + (cur ? cur.id : ''), disabled: !cur || !cur.open || S.seq,
+              { write: true, key: 'recordStop:' + (cur ? cur.id : ''), disabled: !cur || !cur.open || S.seq,
                 onclick: () => stopRecording(cur.id) }),
             el('span', { class: 'hint', text: cur && cur.open ? 'Stops, then waits for completed and finalized from the room. Never wraps on a stop ack.' : 'Nothing open to stop.' }))),
         el('section', { class: 'panel', 'aria-labelledby': 'h-assets' }, el('h2', { id: 'h-assets' }, icon('library', 's'), 'Recordings'),
@@ -2331,13 +2342,13 @@
     if (!list.length) return el('p', { class: 'empty', text: 'No recordings yet.' });
     return el('div', { class: 'tblwrap' }, el('table', {},
       el('caption', { class: 'vh', text: 'Recordings' }),
-      el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'File', 'State', 'Checksum', withStop ? 'Action' : null].filter(Boolean).map((h) => el('th', { scope: 'col', text: h })))),
+      el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'File', 'State', 'Checksum', withStop ? 'Action' : null].filter(Boolean).map((h) => el('th', { scope: 'col', text: h, write: h === 'Action' })))),
       el('tbody', {}, list.map((a) => el('tr', {},
         el('td', { class: 'mono', text: short(a.id) }), el('td', { text: a.camera || '—' }),
         el('td', { class: 'mono', text: a.file || '—' }),
         el('td', {}, stateChip(a.open ? 'recording' : 'wrapped')),
         el('td', { class: 'mono', text: a.checksum ? short(a.checksum) + '…' : '—' }),
-        withStop ? el('td', {}, a.open ? btn('Stop and wrap', { key: 'recordStop:' + a.id, cls: 'ghost small', aria: 'Stop and wrap ' + (a.camera || short(a.id)), disabled: S.seq, onclick: () => stopRecording(a.id) }) : null) : null)))));
+        withStop ? el('td', { write: true }, a.open ? btn('Stop and wrap', { write: true, key: 'recordStop:' + a.id, cls: 'ghost small', aria: 'Stop and wrap ' + (a.camera || short(a.id)), disabled: S.seq, onclick: () => stopRecording(a.id) }) : null) : null)))));
   }
 
   // ---- Rights screen -------------------------------------------------------
@@ -2349,7 +2360,7 @@
         !list.length ? el('p', { class: 'empty', text: 'No assets yet.' }) :
         el('div', { class: 'tblwrap' }, el('table', {},
           el('caption', { class: 'vh', text: 'Assets and their rights' }),
-          el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'Cleared', 'Legal hold', 'Can air or publish', 'Actions'].map((h) => el('th', { scope: 'col', text: h })))),
+          el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'Cleared', 'Legal hold', 'Can air or publish', 'Actions'].map((h) => el('th', { scope: 'col', text: h, write: h === 'Actions' })))),
           el('tbody', {}, list.map((a) => {
             const lk = 'lift:' + a.id;
             return el('tr', {},
@@ -2357,13 +2368,13 @@
               el('td', {}, stateChip(a.cleared ? 'cleared' : 'uncleared')),
               el('td', {}, a.legalHold ? stateChip('hold', 'On hold') : 'No'),
               el('td', {}, a.blockedBy ? [stateChip('blocked'), ' ' + a.blockedBy] : stateChip('canair')),
-              el('td', {}, el('div', { class: 'acts' },
-                btn(a.cleared ? 'Un-clear' : 'Clear', { key: 'cleared:' + a.id, cls: 'ghost small', aria: (a.cleared ? 'Un-clear ' : 'Clear ') + short(a.id),
+              el('td', { write: true }, el('div', { class: 'acts' },
+                btn(a.cleared ? 'Un-clear' : 'Clear', { write: true, key: 'cleared:' + a.id, cls: 'ghost small', aria: (a.cleared ? 'Un-clear ' : 'Clear ') + short(a.id),
                   onclick: () => act('cleared', a.id, { cleared: !a.cleared }, { okTitle: a.cleared ? 'Un-cleared.' : 'Cleared.', ok: () => 'Asset ' + short(a.id) }) }),
                 a.legalHold
-                  ? btn(S.armed === lk ? 'Confirm lift hold' : 'Lift hold', { key: 'lift-b:' + a.id, cls: 'danger small' + (S.armed === lk ? ' armed' : ''), aria: (S.armed === lk ? 'Confirm lift hold on ' : 'Lift hold on ') + short(a.id),
+                  ? btn(S.armed === lk ? 'Confirm lift hold' : 'Lift hold', { write: true, key: 'lift-b:' + a.id, cls: 'danger small' + (S.armed === lk ? ' armed' : ''), aria: (S.armed === lk ? 'Confirm lift hold on ' : 'Lift hold on ') + short(a.id),
                       onclick: () => armedAction(lk, () => act('legalHold', a.id, { held: false }, { key: 'lift:' + a.id, okTitle: 'Hold lifted.', ok: () => 'Asset ' + short(a.id) })) })
-                  : btn('Place hold', { key: 'hold-a:' + a.id, cls: 'ghost small', aria: 'Place hold on ' + short(a.id) + ' (legal hold)',
+                  : btn('Place hold', { write: true, key: 'hold-a:' + a.id, cls: 'ghost small', aria: 'Place hold on ' + short(a.id) + ' (legal hold)',
                       onclick: () => act('legalHold', a.id, { held: true }, { key: 'holda:' + a.id, okTitle: 'Hold placed.', ok: () => 'Asset ' + short(a.id) + ' cannot air or publish.' }) }))));
           })))));
     });
@@ -2408,17 +2419,17 @@
               v ? stateChip(v.status) : stateChip('pending', 'Not made'),
               url ? (/^https?:\/\//i.test(url) ? el('a', { class: 'url', href: url, rel: 'noopener', text: url }) : el('span', { class: 'url', text: url })) : el('span', { class: 'url muted', text: '' }));
           })), el('div', { class: 'muted', text: running ? 'Rendering…' : s.versions.length ? done + ' of 3 done' : '' })),
-          el('td', {},
+          el('td', { write: true },
             s.blockedBy ? el('div', { class: 'blocked' }, stateChip('blocked', 'Blocked'), ' ' + s.blockedBy + ' ', el('a', { href: '#rights', text: 'Fix on Rights' })) : null,
             btn(running ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' RENDERING…'] : label,
-              { key, cls: s.blockedBy ? 'ghost' : '', disabled: !!s.blockedBy,
+              { write: true, key, cls: s.blockedBy ? 'ghost' : '', disabled: !!s.blockedBy,
                 aria: (running ? 'Rendering' : label) + ' ' + (s.label || s.text || short(s.id)),
                 onclick: () => act('publish', s.id, {}, { key, span: s.id, okTitle: 'Published.', ok: (d) => d.versions.length + ' versions done.' }) })));
       });
       return [head, el('section', { class: 'panel', 'aria-labelledby': 'h-clips' }, el('h2', { id: 'h-clips' }, icon('publish', 's'), 'Clips'),
         rows.length ? el('div', { class: 'tblwrap' }, el('table', {},
           el('caption', { class: 'vh', text: 'Clips and their published versions' }),
-          el('thead', {}, el('tr', {}, ['Clip', 'Versions', 'Action'].map((h) => el('th', { scope: 'col', text: h })))),
+          el('thead', {}, el('tr', {}, ['Clip', 'Versions', 'Action'].map((h) => el('th', { scope: 'col', text: h, write: h === 'Action' })))),
           el('tbody', {}, rows))) : el('p', { class: 'empty', text: S.pubFilter ? 'No clip or shot matches.' : 'No clips or shots in this rundown yet. Mark one in the Library, or attach one to a rundown item.' }),
         info.more ? el('p', { class: 'note', text: info.more + ' more. Type to narrow the list.' }) : null)];
     });
@@ -3088,7 +3099,7 @@
     const armed = S.armed === 'detect:' + L.assetId;
     const label = armed ? 'Confirm re-detect' : (d.detect && d.detect.status === 'failed') ? 'Try again' : (d.lastRun || detected.length) ? 'Re-detect' : 'Detect shots';
     paint('lib-detectbar', [L.assetId, info, idx, label, blockedWhy, replaceable, hand, armed, D.threshold, D.minFrames, D.open], () => [
-      el('div', { class: 'bar flush' },
+      el('div', { write: true, class: 'bar flush' },
         el('button', { type: 'button', class: 'btn' + (armed ? ' armed' : ' ghost'), id: 'lib-detect', 'data-fk': 'lib-detect', 'aria-disabled': blockedWhy ? 'true' : null,
           'aria-describedby': blockedWhy ? 'lib-detect-why' : null, onclick: () => { if (!blockedWhy) detectClick(view); } }, label),
         el('details', { class: 'detect-set', open: D.open, ontoggle: (e) => { D.open = e.target.open; } },
@@ -3157,15 +3168,15 @@
     else if (inUse(next.s)) why = next.name + ' is in use, so it cannot be merged in.';
     else why = 'Merge folds ' + next.name + ' (' + next.s.tcIn + ' to ' + next.s.tcOut + ') into this shot, which keeps its name. Split needs a timecode strictly inside the shot.';
     const canSplit = isShot && !used, canMerge = isShot && !used && adjacent && !inUse(next.s);
-    return el('fieldset', { class: 'grp' }, el('legend', { text: 'Split and merge' }),
+    return el('fieldset', { write: true, class: 'grp' }, el('legend', { text: 'Split and merge' }),
       el('label', { class: 'f', for: 'span-split', text: 'Split at' }),
       el('input', { id: 'span-split', type: 'text', class: 'mono', value: d.splitAt || '', 'data-fk': 'span-split', disabled: !canSplit, spellcheck: 'false', 'aria-describedby': 'span-sm-why',
         oninput: (e) => { d.splitAt = e.target.value; },
         onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); splitSpan(s); } } }),
       el('div', { class: 'bar flush' },
         btn('Playhead as split point', { key: 'ph-split', cls: 'ghost small', disabled: !canSplit || !videoReady(), onclick: () => { d.splitAt = playheadTc(view); $('span-split').value = d.splitAt; } }),
-        btn('Split', { key: 'lib:split:' + s.id, cls: 'ghost', disabled: !canSplit, onclick: () => splitSpan(s) }),
-        btn('Merge with next', { key: 'lib:merge:' + s.id, cls: 'ghost', disabled: !canMerge, onclick: () => mergeNext(s, next) })),
+        btn('Split', { write: true, key: 'lib:split:' + s.id, cls: 'ghost', disabled: !canSplit, onclick: () => splitSpan(s) }),
+        btn('Merge with next', { write: true, key: 'lib:merge:' + s.id, cls: 'ghost', disabled: !canMerge, onclick: () => mergeNext(s, next) })),
       el('small', { id: 'span-sm-why', class: canSplit ? null : 'no', text: why }));
   }
 
@@ -3305,7 +3316,7 @@
     const a = r && ((S.data && S.data.assets) || []).find((x) => x.id === r.asset);
     paint('lib-ingest', [I.busy, I.err, r, a && [a.jobs, a.cleared, a.hasProxy]], () => {
       const out = [
-        el('form', { 'aria-label': 'Ingest a file', autocomplete: 'off', onsubmit: (e) => { e.preventDefault(); ingestNow(); } },
+        el('form', { write: true, 'aria-label': 'Ingest a file', autocomplete: 'off', onsubmit: (e) => { e.preventDefault(); ingestNow(); } },
           el('div', { class: 'form-row' },
             el('div', { class: 'grow' }, el('label', { for: 'ingest-path', text: 'Path of the file, as the server sees it' }),
               el('input', { id: 'ingest-path', type: 'text', 'data-fk': 'ingest-path', value: I.path, spellcheck: 'false', maxlength: '4096',
@@ -3477,7 +3488,7 @@
           el('button', { type: 'button', class: 'mini', 'data-fk': 'rm:' + e.id, 'aria-label': 'Remove ' + e.name, onclick: () => { L.sel = L.sel.filter((x) => x.id !== e.id); store('volt.lib.sel', L.sel); render(); } }, '×')))),
         el('dl', { class: 'kv' }, el('dt', { text: 'Total' }), el('dd', { text: total }), el('dt', { text: 'Assets' }), el('dd', { text: String(new Set(tray.map((e) => e.assetId)).size) })),
         el('div', { class: 'bar' },
-          el('button', { type: 'button', class: 'btn', 'data-fk': 'tray-export', 'aria-describedby': 'lib-export-why', onclick: xOpen }, 'EXPORT TO NLE'),
+          el('button', { write: true, type: 'button', class: 'btn', 'data-fk': 'tray-export', 'aria-describedby': 'lib-export-why', onclick: xOpen }, 'EXPORT TO NLE'),
           el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'tray-clear', onclick: () => { L.sel = []; store('volt.lib.sel', L.sel); render(); } }, 'Clear')),
         el('p', { class: 'note', id: 'lib-export-why', text: 'Opens the Export tab with this selection in this order. Nothing is written until you press Export there. The selection is kept for this tab.' }),
       ];
@@ -3500,11 +3511,11 @@
           el('dt', { text: 'Span' }), el('dd', { text: (row ? row.tag : s.kind) + ' · ' + short(s.id) }),
           el('dt', { text: 'Range' }), el('dd', { text: s.tcIn + ' to ' + s.tcOut }),
           el('dt', { text: 'Length' }), el('dd', { text: lengthTc(spanLen(s), view.rate) })),
-        el('label', { class: 'f', for: 'span-name', text: 'Name' }),
-        el('input', { id: 'span-name', type: 'text', maxlength: '200', value: d.name, 'data-fk': 'span-name', oninput: (e) => { d.name = e.target.value; },
+        el('label', { write: true, class: 'f', for: 'span-name', text: 'Name' }),
+        el('input', { write: true, id: 'span-name', type: 'text', maxlength: '200', value: d.name, 'data-fk': 'span-name', oninput: (e) => { d.name = e.target.value; },
           onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); saveName(s); } } }),
-        el('div', { class: 'bar flush' }, btn('Save name', { key: 'lib:label:' + s.id, cls: 'ghost', onclick: () => saveName(s) })),
-        el('fieldset', { class: 'grp' }, el('legend', { text: 'Trim' }),
+        el('div', { write: true, class: 'bar flush' }, btn('Save name', { write: true, key: 'lib:label:' + s.id, cls: 'ghost', onclick: () => saveName(s) })),
+        el('fieldset', { write: true, class: 'grp' }, el('legend', { text: 'Trim' }),
           el('label', { class: 'f', for: 'span-in', text: 'In' }),
           el('input', { id: 'span-in', type: 'text', class: 'mono', value: d.tcIn, 'data-fk': 'span-in', disabled: used, spellcheck: 'false', oninput: (e) => { d.tcIn = e.target.value; } }),
           el('label', { class: 'f', for: 'span-out', text: 'Out' }),
@@ -3512,16 +3523,16 @@
           el('div', { class: 'bar flush' },
             btn('Playhead as in', { key: 'ph-in', cls: 'ghost small', disabled: used || !videoReady(), onclick: () => { d.tcIn = playheadTc(view); $('span-in').value = d.tcIn; } }),
             btn('Playhead as out', { key: 'ph-out', cls: 'ghost small', disabled: used || !videoReady(), onclick: () => { d.tcOut = playheadTc(view); $('span-out').value = d.tcOut; } }),
-            btn('Apply trim', { key: 'lib:trim:' + s.id, cls: 'ghost', disabled: used, onclick: () => applyTrim(s) }))),
+            btn('Apply trim', { write: true, key: 'lib:trim:' + s.id, cls: 'ghost', disabled: used, onclick: () => applyTrim(s) }))),
         splitMergeBlock(s, view, d, used, next),
-        items.length ? el('div', {},
+        items.length ? el('div', { write: true },
           el('label', { class: 'f', for: 'span-attach', text: 'Attach to a rundown item' }),
           el('select', { id: 'span-attach', 'data-fk': 'span-attach', onchange: (e) => { d.item = e.target.value; } },
             el('option', { value: '' }, 'Choose an item'), items.map((i) => el('option', { value: i.id, selected: d.item === i.id }, i.slug))),
-          el('div', { class: 'bar flush' }, btn('Attach', { key: 'lib:attach:' + s.id, cls: 'ghost', disabled: S.seq,
+          el('div', { class: 'bar flush' }, btn('Attach', { write: true, key: 'lib:attach:' + s.id, cls: 'ghost', disabled: S.seq,
             onclick: () => { const it = items.find((i) => i.id === d.item); if (it) attachSpan(s, it.id, it.slug); else { setFlash({ kind: 'bad', title: 'Choose an item first.', code: 'bad_input', reason: 'Pick the rundown item to attach this span to.' }); render(); } } })),
-          s.blockedBy ? el('small', { class: 'no', text: '✕ ' + s.blockedBy + ': attaching works, but this span cannot air or publish until that is fixed on Rights.' }) : null) : el('small', { text: 'No ready rundown item to attach to.' }),
-        el('div', { class: 'bar flush' }, btn(S.armed === delKey ? 'Confirm delete' : 'Delete', { key: 'lib:del:' + s.id, cls: 'danger' + (S.armed === delKey ? ' armed' : ''), disabled: used,
+          s.blockedBy ? el('small', { class: 'no', text: '✕ ' + s.blockedBy + ': attaching works, but this span cannot air or publish until that is fixed on Rights.' }) : null) : el('small', { write: true, text: 'No ready rundown item to attach to.' }),
+        el('div', { write: true, class: 'bar flush' }, btn(S.armed === delKey ? 'Confirm delete' : 'Delete', { write: true, key: 'lib:del:' + s.id, cls: 'danger' + (S.armed === delKey ? ' armed' : ''), disabled: used,
           aria: (S.armed === delKey ? 'Confirm delete ' : 'Delete ') + (row ? row.name : short(s.id)), onclick: () => deleteSpan(s) })),
         el('small', { class: used ? 'no' : null, text: used ? 'In use by ' + s.usedBy.items + ' rundown item(s) and ' + s.usedBy.versions + ' version(s): trim and delete are refused. Rename is allowed.' : 'Delete is refused while a rundown item or a version uses the span.' }));
     });
@@ -3777,10 +3788,11 @@
     const live = !!L.live;                       // an asset is loaded and markable
     if (W.for !== L.assetId) wordsReset();
     tabs.hidden = false;
+    if (isViewer() && W.tab === 'export') W.tab = 'shots';
     const xpanel = $('lib-export'), finding = W.tab === 'find', details = W.tab === 'details';
     for (const name of LIB_TABS) {
       const b = $('lib-tab-' + name), on = W.tab === name;
-      b.hidden = name !== 'find' && !live;       // Find needs no asset; the rest do
+      b.hidden = (name !== 'find' && !live) || (name === 'export' && isViewer());   // Find needs no asset; the rest do; export is an operator's
       b.setAttribute('aria-selected', String(on));
       b.tabIndex = on ? 0 : -1;
     }
@@ -3908,7 +3920,7 @@
             el('dt', { text: 'Length' }), el('dd', { text: lengthTc(Math.max(0, p.fo - p.fi), view.rate) })),
           p.warn.map((t) => el('p', { class: 'no', role: 'alert', text: '✕ ' + t }))),
         el('div', { class: 'bar' },
-          btn('Add clip', { key: 'lib:words', onclick: addFromWords }),
+          btn('Add clip', { write: true, key: 'lib:words', onclick: addFromWords }),
           btn('Clear selection', { key: 'w-clear', cls: 'ghost', onclick: clearWordSel })),
       ];
     });
@@ -4272,6 +4284,7 @@
   // Why this story cannot be edited right now, in words; null when it can.
   function scReason(it, st) {
     if (!it || !st) return null;
+    if (isViewer()) return 'Your role is viewer: you can read this story and its history, not change it.';
     if (SC_PLAYOUT_WORD[it.status]) return 'This item ' + SC_PLAYOUT_WORD[it.status] + ', so its script is part of the record and cannot be edited.';
     if (st.storyStatus === 'killed') return 'This story is killed. Revive it to edit.';
     return null;
@@ -4440,7 +4453,7 @@
   function scPrompter() {
     const L = SC.link;
     return el('div', { class: 'form-row' },
-      btn('Make a prompter link', { key: 'sc-link', cls: 'ghost small', disabled: !S.show, title: 'A read-only link for the prompter computer, good for four hours', onclick: scMakeLink }),
+      btn('Make a prompter link', { write: true, key: 'sc-link', cls: 'ghost small', disabled: !S.show, title: 'A read-only link for the prompter computer, good for four hours', onclick: scMakeLink }),
       L ? el('div', { class: 'grow' }, el('label', { for: 'sc-link-url', text: 'Open this on the prompter. It expires at ' + new Date(L.expires * 1000).toLocaleTimeString([], { hour12: false }) + '.' }),
         el('input', { id: 'sc-link-url', type: 'text', readonly: true, 'data-fk': 'sc-link-url', value: L.url, onfocus: (e) => e.target.select() })) : null);
   }
@@ -4491,15 +4504,15 @@
       el('label', { for: 'sc-text', text: 'Script' }), ta,
       el('p', { class: 'hint' }, 'A line in [brackets] is an instruction for the crew: it is not read and does nothing on air. A line starting // is a private note and never leaves the editing screens.'),
       el('div', { class: 'bar flush' },
-        btn(SC.saving ? 'Saving…' : 'Save', { key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving || !leaseAllowsEdit(), title: 'Ctrl+S inside the script', onclick: scSave }),
+        btn(SC.saving ? 'Saving…' : 'Save', { write: true, key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving || !leaseAllowsEdit(), title: 'Ctrl+S inside the script', onclick: scSave }),
         el('span', { class: 'sep', 'aria-hidden': 'true' }),
         moves.map((to) => {
           const arm = to === 'approved' && S.armed === 'scappr:' + SC.sel;
-          return btn(arm ? 'Confirm approve' : scMoveLabel(st.storyStatus, to), { key: 'sc-status:' + to, cls: (to === 'approved' ? 'signal' : 'ghost') + (arm ? ' armed' : ''),
+          return btn(arm ? 'Confirm approve' : scMoveLabel(st.storyStatus, to), { write: true, key: 'sc-status:' + to, cls: (to === 'approved' ? 'signal' : 'ghost') + (arm ? ' armed' : ''),
             disabled: !!d, title: d ? 'Save first: a status applies to the saved revision.' : null, onclick: () => scMove(to) });
         }),
         el('span', { class: 'sep', 'aria-hidden': 'true' }),
-        btn(it.floated ? 'Put back in the rundown' : 'Float', { key: 'sc-float', cls: 'ghost', disabled: !it.floated && it.status !== 'ready',
+        btn(it.floated ? 'Put back in the rundown' : 'Float', { write: true, key: 'sc-float', cls: 'ghost', disabled: !it.floated && it.status !== 'ready',
           title: !it.floated && it.status !== 'ready' ? 'Only a ready item can be floated.' : null, onclick: scFloat })),
       it.status === 'on air' ? el('p', { class: 'hint', text: 'This item is on air. Saving changes the prompter text on its next refresh and takes the approval back; it does not touch playout.' }) : null);
   }
@@ -4580,10 +4593,10 @@
       el('div', { class: 'meta' }, w.feed + (w.byline ? ' · ' + w.byline : '') + (w.publishedAt ? ' · ' + fmtTime(w.publishedAt) : '')),
       w.snippet ? el('p', { class: 'snip', text: w.snippet }) : null,
       el('div', { class: 'bar flush' },
-        btn('Take into this show', { key: take, cls: 'small', disabled: !S.show, aria: 'Take "' + w.headline + '" into this show as a draft',
+        btn('Take into this show', { write: true, key: take, cls: 'small', disabled: !S.show, aria: 'Take "' + w.headline + '" into this show as a draft',
           onclick: () => act('wireTake', w.id, { show: S.show }, { key: take, okTitle: 'Taken as a draft.', ok: () => 'It is at the end of the rundown, not approved and not on air. Open it in the editor to work on it.',
             hint: 'Someone else may have taken or dismissed it. The inbox is reloaded.' }).then(() => wireLoad(false)) }),
-        btn('Dismiss', { key: dis, cls: 'ghost small', aria: 'Dismiss "' + w.headline + '"',
+        btn('Dismiss', { write: true, key: dis, cls: 'ghost small', aria: 'Dismiss "' + w.headline + '"',
           onclick: () => act('wireDismiss', w.id, {}, { key: dis, okTitle: 'Dismissed.', ok: () => 'It leaves the inbox.' }).then(() => wireLoad(false)) })));
   }
   function wirePanel() {
@@ -4633,13 +4646,13 @@
   }
   function tplPanel() {
     const hasStory = !!scLoaded();
-    return [el('div', { class: 'sc-tplform' },
+    return [el('div', { write: true, class: 'sc-tplform' },
         el('label', { for: 'tpl-name', text: 'Save as a template' }),
         el('input', { id: 'tpl-name', type: 'text', 'data-fk': 'tpl-name', value: TPL.name, maxlength: '120', autocomplete: 'off', placeholder: 'Template name', oninput: (e) => { TPL.name = e.target.value; } }),
         el('div', { class: 'bar flush' },
-          btn('New from this story', { key: 'tpl-save-story', cls: 'ghost small', disabled: !hasStory, title: hasStory ? null : 'Choose a story first', onclick: () => tplSave('story') }),
-          btn('New from this show', { key: 'tpl-save-show', cls: 'ghost small', disabled: !S.show, onclick: () => tplSave('show') }))),
-      el('div', { class: 'sc-tplform' }, el('label', { for: 'tpl-title', text: 'Title for a new show' }),
+          btn('New from this story', { write: true, key: 'tpl-save-story', cls: 'ghost small', disabled: !hasStory, title: hasStory ? null : 'Choose a story first', onclick: () => tplSave('story') }),
+          btn('New from this show', { write: true, key: 'tpl-save-show', cls: 'ghost small', disabled: !S.show, onclick: () => tplSave('show') }))),
+      el('div', { write: true, class: 'sc-tplform' }, el('label', { for: 'tpl-title', text: 'Title for a new show' }),
         el('input', { id: 'tpl-title', type: 'text', 'data-fk': 'tpl-title', value: TPL.title, maxlength: '200', autocomplete: 'off', placeholder: 'Used by show templates', oninput: (e) => { TPL.title = e.target.value; } })),
       TPL.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', TPL.err) : null,
       TPL.rows.length ? el('ul', { class: 'list wirelist', 'aria-label': 'Templates' }, TPL.rows.map((t) => {
@@ -4647,9 +4660,9 @@
         return el('li', { class: 'wirerow' }, el('div', { class: 'wh', text: t.name }),
           el('div', { class: 'meta', text: t.kind === 'story' ? 'Story template' : 'Show template · ' + t.stories + (t.stories === 1 ? ' story' : ' stories') + (t.slotSeconds ? ' · slot ' + fmtOffset(t.slotSeconds) : '') + ' · ' + (t.createdBy || '') }),
           el('div', { class: 'bar flush' },
-            btn(t.kind === 'story' ? 'Add to this show' : 'Make a show', { key: 'tpl-use:' + t.id, cls: 'small', disabled: t.kind === 'story' && !S.show,
+            btn(t.kind === 'story' ? 'Add to this show' : 'Make a show', { write: true, key: 'tpl-use:' + t.id, cls: 'small', disabled: t.kind === 'story' && !S.show,
               aria: (t.kind === 'story' ? 'Add a draft from ' : 'Make a show from ') + t.name, onclick: () => tplUse(t) }),
-            btn(S.armed === del ? 'Confirm delete' : 'Delete', { key: 'tpl-delb:' + t.id, cls: 'danger small' + (S.armed === del ? ' armed' : ''), aria: (S.armed === del ? 'Confirm delete of ' : 'Delete ') + t.name,
+            btn(S.armed === del ? 'Confirm delete' : 'Delete', { write: true, key: 'tpl-delb:' + t.id, cls: 'danger small' + (S.armed === del ? ' armed' : ''), aria: (S.armed === del ? 'Confirm delete of ' : 'Delete ') + t.name,
               onclick: () => armedAction(del, () => act('templateDelete', t.id, {}, { key: 'tpl-del-act:' + t.id, okTitle: 'Template deleted.', ok: () => 'Stories made from it are not affected.' }).then(tplLoad)) })));
       })) : el('p', { class: 'empty', text: TPL.loaded ? 'No templates yet.' : 'Reading the templates…' }),
       el('p', { class: 'note', text: 'A template keeps text and cues, never media. Anything made from one starts as a draft with no approval.' })];
@@ -4687,7 +4700,7 @@
           el('div', { class: 'chips scchips' }, stateChip(storyKind(r.storyStatus)), r.archived ? stateChip('archived') : null),
           el('div', { class: 'meta', text: (r.show || '') + (r.at ? ' · ' + fmtTime(r.at) : '') }),
           r.snippet ? el('p', { class: 'snip', text: r.snippet }) : null,
-          el('div', { class: 'bar flush' }, btn('Copy to this show', { key, cls: 'small', disabled: !S.show, aria: 'Copy "' + r.slug + '" to this show as a draft',
+          el('div', { class: 'bar flush' }, btn('Copy to this show', { write: true, key, cls: 'small', disabled: !S.show, aria: 'Copy "' + r.slug + '" to this show as a draft',
             onclick: () => act('itemCopy', r.id, { show: S.show }, { key, okTitle: 'Copied as a draft.', ok: () => 'It is at the end of the rundown, revision 1, not approved. The original is unchanged.' }) })));
       })) : el('p', { class: 'empty', text: ARC.loaded ? 'No story matches.' : 'Reading the archive…' }),
       ARC.next ? el('div', { class: 'bar' }, btn('Load more', { key: 'arc-more', cls: 'ghost small', disabled: ARC.busy, onclick: () => arcLoad(true) })) : null,
@@ -4720,10 +4733,10 @@
     paint('sc-pace', [wpm, SC.pace, S.show, [...S.pending].filter((k) => k.startsWith('sc-pace'))], () => el('form', { class: 'form-row', 'aria-labelledby': 'h-sc-list',
       onsubmit: (e) => { e.preventDefault(); pacePress(); } },
       el('div', {}, el('label', { for: 'sc-wpm', text: 'Reading pace, words a minute' }),
-        el('input', { id: 'sc-wpm', type: 'text', inputmode: 'numeric', 'data-fk': 'sc-wpm', value: paceText, autocomplete: 'off', size: '5',
+        el('input', { id: 'sc-wpm', type: 'text', inputmode: 'numeric', 'data-fk': 'sc-wpm', value: paceText, autocomplete: 'off', size: '5', readonly: isViewer(),
           oninput: (e) => { SC.pace = e.target.value; } })),
-      btn('Set pace', { key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
-      btn('Default', { key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
+      btn('Set pace', { write: true, key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
+      btn('Default', { write: true, key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
     paint('sc-prompter', [SC.link, S.show, [...S.pending].filter((k) => k === 'sc-link')], scPrompter);
     paint('sc-filter', [SC.filter], () => el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'sc-filter-sel', text: 'Show' }),
       el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
@@ -5094,7 +5107,7 @@
   }
   async function leaseAsk(renew) {
     const id = LS.item;
-    if (!id || LS.busy) return;
+    if (!id || LS.busy || isViewer()) return;   // a lease is an edit: a viewer is never offered one
     LS.busy = true;
     let res;
     try {
@@ -5150,7 +5163,7 @@
       return el('div', { class: 'lease-banner', role: 'status' }, icon('lock', 's'),
         el('div', { class: 'msg' }, el('strong', { text: who + ' is editing this item. ' }),
           'The editor is read-only' + (left && left <= 60 ? '; their lease ends in ' + left + ' seconds if they stop' : '') + '. You can take over: they are told, and their next save is refused.'),
-        btn(armed ? 'Confirm take over' : 'Take over', { key: 'lease-takeover', cls: 'ghost small' + (armed ? ' armed' : ''), onclick: () => armedAction('takeover:' + SC.sel, leaseTakeover) }));
+        btn(armed ? 'Confirm take over' : 'Take over', { write: true, key: 'lease-takeover', cls: 'ghost small' + (armed ? ' armed' : ''), onclick: () => armedAction('takeover:' + SC.sel, leaseTakeover) }));
     }
     if (state === 'lost') {
       return el('div', { class: 'lease-banner', role: 'alert' }, icon('alert', 's'),
