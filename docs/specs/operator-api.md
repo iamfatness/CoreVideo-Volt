@@ -47,8 +47,21 @@ per-user token's audit actor is its user name; `X-Volt-Actor` and body `owner` d
 | `POST /api/shows/{show}/access` | admin | `{subject_kind: user\|group, subject, level: view\|edit\|run\|null}` (null removes): `422 bad_input`, `422 no_such_user`/`no_such_group`, `404`. A show with no rows is open; the first row restricts it to the listed people and groups plus every admin; removing the last reopens it. Audited `show_access` with the subject and level. `POST /api/groups/{name}/delete` is `409 group_in_use` while a row names the group. |
 | `GET /api/users` | admin | `{ok, users: [{name, role, created_at, disabled_at}]}`; never tokens |
 | `POST /api/users` | admin | `{name, role}` -> `{ok, user, token}`; the token is shown only here |
-| `POST /api/users/{name}/disable` / `enable` | admin | disable is immediate; the last enabled admin is `409 last_admin` unless `VOLT_TOKEN` is set |
+| `POST /api/users/{name}/disable` | admin | immediate; the last enabled admin is `409 last_admin` unless `VOLT_TOKEN` is set |
+| `POST /api/users/{name}/enable` | admin | `{ok, user}`; the user's token and groups work again on the next request |
 | `POST /api/users/{name}/rotate` | admin | `{ok, user, token}`; the old token stops working at once; `409 user_disabled` for a disabled user |
+| `POST /api/items/{item}/lease` | operator, `edit` on the show | `{clientId, renew?}`: take the edit lease on an item, or renew your own (the same call). A lease lasts 45 s and the page renews every 15 s. `409 leased` names the holder (`holder`, `expiresAt`, `secondsLeft`); `409 lease_lost` when `renew: true` and the lease is gone; `409 not_editable` for a past item; `404`; `422 bad_input`; `503 collab_unavailable`. Audited as `lease_acquire` when a lease begins, not on each renew. |
+| `POST /api/items/{item}/lease/release` | operator, `edit` | `{clientId}`: free your own tab's lease (idempotent; `{ok, released}`). Audited as `lease_release`, only when something was freed. |
+| `POST /api/items/{item}/lease/takeover` | operator, `edit` | `{clientId}`: take a live lease from its holder; `409 not_leased` when nobody holds it. The old holder's next write or renew is `lease_lost`, and they are notified. Audited as `lease_takeover` with the previous holder. |
+| `POST /api/presence` | viewer, `view` on the named show | `{clientId, show?, view}` where `view` is `show`, `library` or `item:<id>`: one tab's heartbeat, sent every 10 s, live for 30 s, at most 10 tabs per user. Never audited (a named exception, like a lease renew). `/api/state` carries `presence`, `leases` and `collab: {available}`. |
+| `GET /api/comments?kind=&target=` | viewer, `view` on the show | Threads on an item or a show (`kind` is `item`, `show` or `asset`; asset comments are admin-only for now). Bodies are returned to people who can view the show and are rendered as text. |
+| `POST /api/comments` | viewer, `view` on the show | `{kind, target, body, parent?}`: a comment (1 to 4000 characters, no control characters) or a one-level reply. `@name` mentions an enabled user who can view the show (at most 20). `429 rate_limited` past 30 a minute; `422 reply_depth`; `409 parent_deleted`. Audited as `comment_add` with ids only, never the body. |
+| `POST /api/comments/{id}/resolve` | operator, `edit` | `{resolved: true\|false}` on the first comment of a thread (`422 not_a_thread`, `409 deleted`). Audited `comment_resolve`. |
+| `POST /api/comments/{id}/delete` | viewer (author) or admin, `view` | Soft delete; the body is blanked. `403 forbidden_role` for anyone else. Audited `comment_delete`. |
+| `GET /api/notifications[?unread=1]` | any signed-in user | Your own in-app notifications (mention, reply, lease taken), newest first, at most 100, only for shows you can still view. `unread` is the count. |
+| `POST /api/notifications/read` | viewer | `{ids: [...]}` (at most 200) or `{all: true}`: mark your own read; another user's ids change nothing. Audited `notifications_read` with a count. |
+
+Other operator routes: `POST /api/mos/{id}/resolve` (`id` is `device:show`; `{action: created|retry}`, operator with `run` on the show) answers a show whose `roCreate` got no acknowledgement; `POST /api/devices/safe-mode` (`{on, reason?}`, operator) stops Volt sending to any device but CoreVideo Pro. Both are audited.
 
 Errors: `403 forbidden_role`, `401 unauthorized` (also a disabled or rotated-out token), `422 bad_name`/`bad_role`, `409
 user_exists`, `404 no_such_user`, `503 auth_unavailable` (the user table could not be read; the request is refused, not let through).

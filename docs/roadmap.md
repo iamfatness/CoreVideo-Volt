@@ -17,3 +17,7 @@ Room track: [next-bundle](next-bundle.md). Default pre-take is `input.assign` th
 A MOS sender (TCP 10540/10541) and the other MOS messages, and validation of the export against a real NCS. Hardware playout adapter. Archive tier with restore. A second NLE. Recurring and relative playout schedules. 
 
 Newsroom scripts ([spec](specs/newsroom-scripts.md), [plan](superpowers/plans/2026-11-01-newsroom-scripts.md)): script editor with markup and read time, status and approval, floating, a prompter feed and page, wire intake, templates and a story archive are in the tree, unvalidated against any real newsroom system, agency feed or prompter.
+
+## Identity and collaboration
+
+In the tree (identity plan tasks 1 to 9, migrations 22 to 34): viewer role and groups, activity view, cookie sessions with CSRF, sign-in with Google and Microsoft, per-show access, edit leases and presence, comments with mentions and notifications. Unvalidated against a real provider or a real team: [collaboration](specs/collaboration.md). Open for the owner: whether unknown sign-ins are auto-provisioned (default: refused), single Microsoft tenant versus `common`, asset comments and the viewer mention roster, and hiding write controls from viewers in the page.
