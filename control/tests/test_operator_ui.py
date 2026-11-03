@@ -186,7 +186,7 @@ class Library(Api):
                        'id="lib-x-act"', 'id="lib-x-done"', "Library, Selection to export tab"):
             self.assertIn(needle, html)
         self.assertIn("exportNle:   ['POST', '/api/exports/nle']", js)
-        body = js[js.index("// ---- Library: export to an NLE"):js.index("// ---- dialogs, keys, screens")]
+        body = js[js.index("// ---- Library: export to an NLE"):js.index("// ---- Scripts: write")]
         # the format is unverified until the owner records the import check; the page says so and the switch is one constant
         self.assertIn("const FORMAT_VERIFIED = false;", body)
         self.assertIn("Not checked in an NLE yet.", body)
@@ -651,7 +651,7 @@ class Tokens(unittest.TestCase):
 
 ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
               "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
-              "lower3 mark signin").split()
+              "lower3 mark signin script float").split()
 
 
 class Icons(unittest.TestCase):
@@ -676,7 +676,7 @@ def _node(*calls):
     script = ("const m = require(process.argv[1]); const calls = JSON.parse(process.argv[2]);"
               "console.log(JSON.stringify(calls.map(([fn, ...a]) => m[fn] && m[fn].apply ? m[fn](...a) : m[fn])));")
     out = subprocess.run([NODE, "-e", script, str(SESSION / "operator.js"), json.dumps(list(calls))],
-                         capture_output=True, text=True, timeout=60)
+                         capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -685,7 +685,8 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
+        self.assertEqual(sorted(state), sorted(["aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped",
+                                       "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved"]))
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -719,10 +720,10 @@ class Workspaces(unittest.TestCase):
     def test_rail_has_the_workspaces_screens_and_one_extra_for_an_off_rail_hash(self):
         got = _node(["railFor", "operator", "rights"], ["railFor", "editor", "library"], ["railFor", "operator", "nonsense"],
                     ["railFor", "producer", "show"])
-        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "rights"})
+        self.assertEqual(got[0], {"screens": ["show", "scripts", "record"], "extra": "rights"})
         self.assertIsNone(got[1]["extra"])
         self.assertIsNone(got[2]["extra"])
-        self.assertEqual(got[3]["screens"], ["show", "rights", "publish", "library"])
+        self.assertEqual(got[3]["screens"], ["show", "scripts", "rights", "publish", "library"])
 
     def test_default_screen_is_the_first_on_the_rail(self):
         self.assertEqual(_node(["defaultScreen", "editor"], ["defaultScreen", "operator"], ["defaultScreen", "producer"]),
@@ -1307,7 +1308,7 @@ class ActivityScreen(unittest.TestCase):
 
     def test_the_rail_accepts_activity_only_as_an_extra(self):
         got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])
-        self.assertEqual(got[0], {"screens": ["show", "record"], "extra": "activity"})
+        self.assertEqual(got[0], {"screens": ["show", "scripts", "record"], "extra": "activity"})
         self.assertEqual(got[1]["extra"], "activity")
 
 
@@ -1428,3 +1429,143 @@ class ProviderAnchors(unittest.TestCase):
         for rule in rules:
             self.assertNotRegex(rule, r"#[0-9a-fA-F]{3,8}\b")                       # no new colour: both themes come from the same tokens
             self.assertNotRegex(rule, r"\b(rgb|hsl)a?\(")
+
+
+class ScriptsScenario(Api):
+    """The harness's `scripts` scenario read back through the real routes the Scripts screen calls."""
+
+    def setUp(self):
+        super().setUp()
+        serve.ROOM, self.show, self.spans = seed(self.store, "scripts")
+        _, state, _ = self.call("GET", "/api/state")
+        self.items = {i["slug"]: i for i in state["rundown"]["items"]}
+
+    def test_every_editorial_state_is_reachable_on_the_screen(self):
+        got = {slug: (i["storyStatus"], i["floated"]) for slug, i in self.items.items()}
+        self.assertEqual(got["Open / theme"], ("approved", False))
+        self.assertEqual(got["Game action"], ("ready", False))
+        self.assertEqual(got["Under review"], ("killed", False))
+        self.assertEqual(got["Player spotlight"], ("draft", True))
+
+    def test_the_story_read_the_screen_makes_carries_what_it_paints(self):
+        status, payload, _ = self.call("GET", "/api/items/%s/story" % self.items["Game action"]["id"])
+        self.assertEqual(status, 200)
+        for key in ("slug", "script", "rev", "storyStatus", "approvedBy", "approvedAt", "approvedRev", "floated", "itemStatus", "stats", "revisions", "events"):
+            self.assertIn(key, payload)
+        self.assertIn("// Check the final score", payload["script"])      # an editor sees the private note
+        self.assertEqual(payload["revisions"][0]["actor"], "dana")
+
+    def test_a_stale_save_hands_back_the_other_text_at_the_top_level_the_dialog_reads(self):
+        item = self.items["Game action"]["id"]
+        status, payload = self.post("/api/items/%s/script" % item, {"script": "mine", "baseRev": 1})
+        self.assertEqual((status, payload["error"]["code"]), (409, "stale_script"))
+        self.assertTrue(set(payload["current"]) >= {"rev", "slug", "script", "actor", "at"})
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class ScriptsScreenContract(unittest.TestCase):
+    HTML, JS, CSS = FILES["index.html"], FILES["operator.js"], FILES["operator.css"]
+
+    def section(self):
+        return self.JS[self.JS.index("// ---- Scripts: write"):self.JS.index("// ---- dialogs, keys, screens")]
+
+    def test_scripts_is_on_the_producer_and_operator_rails_and_not_the_editor_one(self):
+        (ws,) = _node(["WORKSPACES"])
+        self.assertIn("scripts", ws["producer"])
+        self.assertIn("scripts", ws["operator"])
+        self.assertNotIn("scripts", ws["editor"])
+        self.assertRegex(self.HTML, r'<a href="#scripts" data-screen="scripts"[^>]*>\s*<svg class="ic"')
+        self.assertIn('id="screen-scripts"', self.HTML)
+        # keys 1 to 6 are where they were: the new screen is appended
+        self.assertIn("'show', 'record', 'rights', 'publish', 'library', 'activity', 'scripts'", self.JS)
+
+    def test_legal_moves_match_the_server_table(self):
+        from volt import story
+        got = _node(*[["legalMoves", s] for s in story.STATUSES], ["legalMoves", "nonsense"])
+        for status, moves in zip(story.STATUSES, got):
+            self.assertEqual(set(moves), story.TRANSITIONS[status], status)
+            self.assertEqual(len(moves), len(set(moves)), status)
+        self.assertEqual(got[-1], [])
+
+    def test_blocks_twin(self):
+        cases = json.loads((Path(__file__).parent / "golden" / "script_markup.json").read_text(encoding="utf-8"))["cases"]
+        got = _node(*[["scriptBlocks", c["text"]] for c in cases])
+        for c, blocks in zip(cases, got):
+            with self.subTest(case=c["name"]):
+                self.assertEqual(blocks, c["blocks"])
+
+    def test_story_chips_use_the_state_language_and_never_the_playout_words(self):
+        (state,) = _node(["STATE"])
+        self.assertEqual(state["storyKilled"]["word"], "Story killed")
+        self.assertEqual(state["killed"]["word"], "Killed")          # the playout kill keeps its word
+        self.assertEqual(_node(["storyKind", "ready"], ["storyKind", "killed"], ["storyKind", "approved"], ["storyKind", "draft"], ["storyKind", None]),
+                         ["storyReady", "storyKilled", "approved", "draft", "draft"])
+        for kind in ("draft", "storyReady", "approved", "storyKilled", "floated", "unsaved"):
+            self.assertIn(state[kind]["icon"], Icons.SPRITE_IDS, kind)
+        self.assertRegex(self.CSS, r"\.st\.inform\{color:var\(--blue-ink\)\}")   # an existing token, already in the contrast pairs
+
+    def test_ctrl_s_is_on_the_textarea_and_nowhere_else(self):
+        sec = self.section()
+        editor = sec[sec.index("function scEditor"):sec.index("function scPreviewNodes")]
+        self.assertRegex(editor, r"el\('textarea', \{[^}]*onkeydown")
+        self.assertIn("toLowerCase() === 's'", editor)
+        self.assertEqual(self.JS.count("toLowerCase() === 's'"), 1)       # no document-level Ctrl+S anywhere
+        self.assertIn("aria-keyshortcuts", editor)
+        self.assertIn("<kbd>Ctrl</kbd>+<kbd>S</kbd>", self.HTML)
+        # the page-wide handler still ignores any Ctrl chord, so Save never reaches the Show keys
+        self.assertIn("if (e.ctrlKey || e.metaKey || e.altKey || anyDialog()) return;", self.JS)
+
+    def test_a_lost_race_keeps_the_editor_text_and_offers_both_ways_out(self):
+        mine, theirs = {"slug": "A", "script": "my words"}, {"rev": 4, "slug": "B", "script": "their words"}
+        keep, take = _node(["resolveConflict", mine, theirs, "mine"], ["resolveConflict", mine, theirs, "theirs"])
+        self.assertEqual(keep, {"slug": "A", "script": "my words", "baseRev": 4, "save": True})
+        self.assertEqual(take, {"slug": "B", "script": "their words", "baseRev": 4, "save": False})
+        sec = self.section()
+        save = sec[sec.index("async function scSave"):sec.index("function scOpenConflict")]
+        # the stale branch opens the dialog and never touches the draft; only a successful save removes it
+        stale = save[save.index("e.code === 'stale_script'"):save.index("else { setFlash")]
+        self.assertNotIn("SC.drafts", stale)
+        self.assertIn("baseRev: d.base", save)                             # a save quotes the revision the draft STARTED from
+        self.assertIn("Keep mine", sec)
+        self.assertIn("Take theirs", sec)
+        self.assertIn('id="sc-conflict"', self.HTML)
+        self.assertIn("showModal", sec)                                    # a modal <dialog> traps focus; Esc returns it to the editor
+        self.assertIn("$(SC.returnTo || 'sc-text')", sec)
+
+    def test_approve_needs_two_presses(self):
+        sec = self.section()
+        self.assertIn("if (to === 'approved') armedAction('scappr:' + SC.sel, go); else go();", sec)
+        self.assertIn("'Confirm approve'", sec)
+
+    def test_a_status_never_applies_to_unsaved_text(self):
+        sec = self.section()
+        self.assertIn("disabled: !!d,", sec[sec.index("moves.map"):sec.index("btn(it.floated")])
+
+    def test_editing_is_off_with_the_reason_in_words_for_aired_skipped_killed_and_a_killed_story(self):
+        sec = self.section()
+        for words in ("has aired", "was skipped", "was killed from air", "This story is killed. Revive it to edit.", "Editing is off. "):
+            self.assertIn(words, sec)
+        self.assertIn("readonly: !!reason", sec)
+        self.assertIn("'aria-describedby': reason ? 'sc-reason' : null", sec)
+
+    def test_the_live_count_is_a_polite_status_region_and_changes_at_most_once_a_second(self):
+        self.assertRegex(self.HTML, r'<p id="sc-count"[^>]*role="status"[^>]*aria-live="polite"')
+        self.assertIn("const SC_COUNT_MS = 1000", self.section())
+        self.assertIn("SC_COUNT_MS - (Date.now() - SC.countAt)", self.section())
+
+    def test_script_text_only_ever_becomes_text_nodes(self):
+        sec = self.section()
+        self.assertNotIn("innerHTML", sec)
+        self.assertNotIn("insertAdjacentHTML", sec)
+        self.assertNotIn("outerHTML", sec)
+        # the preview, list, history and dialog are built with el() text and textContent
+        self.assertIn("el('p', { class: 'sc-read', text: b.text })", sec)
+
+    def test_the_screen_uses_only_endpoints_the_server_has(self):
+        for name in ("story", "scriptSave", "storyStatus", "itemFloat", "showPace"):
+            self.assertRegex(self.JS, r"%s:\s*\['(GET|POST)'" % name)
+
+    def test_saves_status_moves_floats_and_pace_do_not_wait_on_the_take_lock(self):
+        seq = re.search(r"const SEQUENCED = new Set\(\[(.*?)\]\)", self.JS).group(1)
+        for name in ("scriptSave", "storyStatus", "itemFloat", "showPace"):
+            self.assertNotIn(name, seq)
