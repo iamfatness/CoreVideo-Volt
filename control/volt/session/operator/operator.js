@@ -127,6 +127,31 @@
     }
     return { words, readSeconds: Math.floor((words * 120 + rate) / (2 * rate)), instructions, notes, warnings: unclosed ? ['unclosed_bracket'] : [] };
   }
+  // The script as blocks, one per non-blank line, with the paragraph each belongs to: the twin of story.parse_script (same fixture).
+  function scriptBlocks(text) {
+    const out = [];
+    let para = 0, pendingBreak = false;
+    for (const raw of String(text == null ? '' : text).split(/\r\n|\r|\n/)) {
+      const line = raw.trim();
+      if (!line) { pendingBreak = out.length > 0; continue; }
+      if (pendingBreak) { para++; pendingBreak = false; }
+      const kind = line.startsWith('//') ? 'note' : line.startsWith('[') && line.endsWith(']') ? 'instruction' : 'read';
+      out.push({ kind, text: line, para });
+    }
+    return out;
+  }
+  // The story status moves, mirroring story.TRANSITIONS (a test pins the two together). Listed in the order the buttons appear.
+  const STORY_MOVES = { draft: ['ready', 'killed'], ready: ['approved', 'draft', 'killed'], approved: ['ready', 'killed'], killed: ['draft'] };
+  function legalMoves(storyStatus) {
+    return Object.prototype.hasOwnProperty.call(STORY_MOVES, storyStatus) ? STORY_MOVES[storyStatus].slice() : [];
+  }
+  // A save that lost the race: `mine` is the editor's text, `theirs` what the server now holds ({rev, slug, script}). Keep mine saves
+  // my text on top of their revision; take theirs drops mine. Neither ever discards text without the person choosing it.
+  function resolveConflict(mine, theirs, choice) {
+    if (choice === 'mine') return { slug: mine.slug, script: mine.script, baseRev: theirs.rev, save: true };
+    if (choice === 'theirs') return { slug: theirs.slug, script: theirs.script, baseRev: theirs.rev, save: false };
+    throw new Error('choice must be mine or theirs');
+  }
   function fmtOffset(sec) {
     if (sec == null || isNaN(sec)) return '--:--';
     const t = Math.max(0, Math.round(sec)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), x = t % 60;
@@ -251,9 +276,19 @@
     stale:     { icon: 'alert',   word: 'Stale',       cls: 'st pend' },
     canair:    { icon: 'ready',   word: 'Yes',         cls: 'st ok' },
     blocked:   { icon: 'alert',   word: 'No',          cls: 'st fail' },
-
+    // The editorial side of a story (the Scripts screen). Its words never collide with the playout ones: "Story killed" is not "Killed".
+    draft:       { icon: 'script', word: 'Draft',        cls: 'st done' },
+    storyReady:  { icon: 'ready',  word: 'Ready',        cls: 'st inform' },
+    approved:    { icon: 'rights', word: 'Approved',     cls: 'st ok' },
+    storyKilled: { icon: 'close',  word: 'Story killed', cls: 'st fail' },
+    floated:     { icon: 'float',  word: 'Floated',      cls: 'st done' },
+    unsaved:     { icon: 'pending', word: 'Unsaved',     cls: 'st pend' },
 
   };
+  // The state-language kind of an item's story status (draft, ready, approved, killed). Not the playout status.
+  function storyKind(storyStatus) {
+    return storyStatus === 'ready' ? 'storyReady' : storyStatus === 'killed' ? 'storyKilled' : storyStatus === 'approved' ? 'approved' : 'draft';
+  }
   // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
   const itemStateKind = (status, isNext) => (isNext ? 'next' : status === 'on air' ? 'onair' : status);
   const CUE_STATE = { fired: ['ready', 'Fired'], failed: ['failed', 'Failed'], armed: ['pending', 'Armed'], stored: ['pending', 'Stored'], unsupported: ['locked', 'Unsupported'] };
@@ -267,12 +302,12 @@
 
   // Workspaces are saved layouts (which screens the rail shows), not permissions: the server still decides what a user may do.
   const WORKSPACES = {
-    producer: ['show', 'rights', 'publish', 'library'],
+    producer: ['show', 'scripts', 'rights', 'publish', 'library'],
     editor:   ['library', 'publish', 'rights'],
-    operator: ['show', 'record'],
+    operator: ['show', 'scripts', 'record'],
   };
   const DEFAULT_WORKSPACE = 'operator';
-  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access'];
+  const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access', 'scripts'];
   // The number keys reach the first six screens only; Access (an admin's screen, opened from the pill) takes no key.
   const KEY_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity'];
   const screenForKey = (key) => (/^[1-9]$/.test(String(key)) ? KEY_SCREENS[+key - 1] || null : null);
@@ -364,7 +399,7 @@
   }
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -418,13 +453,18 @@
     users:       ['GET',  '/api/users'],
     groups:      ['GET',  '/api/groups'],
     ingest:      ['POST', '/api/ingest'],
+    story:       ['GET',  '/api/items/{id}/story'],
+    scriptSave:  ['POST', '/api/items/{id}/script'],
+    storyStatus: ['POST', '/api/items/{id}/story-status'],
+    itemFloat:   ['POST', '/api/items/{id}/float'],
+    showPace:    ['POST', '/api/shows/{id}/reading-pace'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
   const SEQUENCED = new Set(['go', 'take', 'skip', 'kill', 'reorder', 'recordStart', 'recordStop', 'attach']);
 
   const POLL_MS = 2000, POLL_HIDDEN_MS = 6000, TAKE_COOLDOWN_MS = 1500, ARM_MS = 4000;
-  const SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access'];
+  const SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access', 'scripts'];
 
   const ERR_LABEL = {
     held: 'Held', not_cleared: 'Not cleared', no_media: 'No media', cue_failed: 'Cue failed',
@@ -444,6 +484,8 @@
     id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
     taking: 'Taking',
+    stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
+    not_floatable: 'Cannot float', story_not_approved: 'Not approved',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -894,6 +936,7 @@
     if (S.screen === 'library') renderLibrary();
     if (S.screen === 'library') renderWordsTab();
     if (S.screen === 'activity') renderActivity();
+    if (S.screen === 'scripts') renderScripts();
     if (S.screen === 'access') renderAccess();
   }
 
@@ -1372,8 +1415,13 @@
           schedChip ? el('span', { class: 'sched' }, ' ', stateChip(schedChip[0], schedChip[1]),
             it.scheduledAt ? ' ' + new Date(it.scheduledAt).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
               : it.scheduleMode === 'after_previous' ? ' +' + fmtOffset(it.scheduleOffsetSeconds || 0) : '',
-            it.scheduleNote ? ' · ' + it.scheduleNote : '') : null)),
-      el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
+            it.scheduleNote ? ' · ' + it.scheduleNote : '') : null,
+          // The story: its editorial chip once there is text or a status to show, and a marker when it is a backup.
+          it.words > 0 || it.storyStatus !== 'draft' ? el('span', { class: 'sched' }, ' ', stateChip(storyKind(it.storyStatus))) : null,
+          it.floated ? el('span', { class: 'sched' }, ' ', stateChip('floated')) : null)),
+      it.lengthSource === 'read' && !(tm && tm.offset == null)
+        ? el('span', { class: 'dur mono', title: 'No media is attached, so the planned length is the read time of the script' }, '~' + fmtOffset(secs), el('small', { class: 'rd', text: 'read' }))
+        : el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
       el('span', { class: 'front mono', text: front }),
       backText == null ? null : el('span', { class: 'back mono', text: backText }),
       el('span', { class: 'tools' },
@@ -3396,6 +3444,322 @@
       el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'x-again', onclick: () => { d.saved = xSave(d); render(); } }, 'Save again')));
   }
 
+  // ---- Scripts: write, revise and approve the story on each rundown item (docs/superpowers/specs/2026-11-01-newsroom-scripts-design.md) ----
+  // The list comes from /rundown (which never carries script text); a story is read with GET /api/items/{id}/story when its row is chosen.
+  // Text typed but not saved lives in SC.drafts, one per item, with the revision it started from: the server's answer replaces the screen,
+  // never the draft, and a save quotes that revision so a lost race is a conflict dialog and not a silent overwrite.
+  const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
+  const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
+    pace: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }];
+  const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
+  const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
+
+  const scItems = () => (S.data && S.data.rundown ? S.data.rundown.items : []);
+  const scItem = () => scItems().find((i) => i.id === SC.sel) || null;
+  const scLoaded = () => (SC.story && SC.story.item === SC.sel ? SC.story : null);
+  const scWpm = () => (S.data && S.data.rundown ? S.data.rundown.readWpm : 160);
+  // Why this story cannot be edited right now, in words; null when it can.
+  function scReason(it, st) {
+    if (!it || !st) return null;
+    if (SC_PLAYOUT_WORD[it.status]) return 'This item ' + SC_PLAYOUT_WORD[it.status] + ', so its script is part of the record and cannot be edited.';
+    if (st.storyStatus === 'killed') return 'This story is killed. Revive it to edit.';
+    return null;
+  }
+  const scDraftOf = (id) => SC.drafts[id] || null;
+  const scText = () => { const d = scDraftOf(SC.sel), st = scLoaded(); return d ? d.script : st ? st.script : ''; };
+  const scSlug = () => { const d = scDraftOf(SC.sel), st = scLoaded(); return d ? d.slug : st ? st.slug : ''; };
+
+  function scSelect(id, quiet) {
+    if (SC.sel === id && scLoaded()) return;
+    SC.sel = id; SC.story = null; SC.loadErr = null;
+    scLoad(id);
+    if (!quiet) render();
+  }
+  async function scLoad(id) {
+    SC.loading = true;
+    try {
+      const { status, data } = await call('story', id);
+      if (SC.sel !== id) return;
+      if (status === 200 && data && data.ok) { SC.story = data; SC.loadErr = null; }
+      else SC.loadErr = status === 401 ? 'A token is needed to read this story.' : codeOf(data, status).reason || 'The server refused to show this story.';
+    } catch (e) { if (SC.sel === id) SC.loadErr = 'The server did not answer.'; }
+    SC.loading = false; SC.loadedAt = Date.now(); render();
+  }
+
+  // Typing: the draft starts from the loaded story and remembers its revision. Back to the saved text means no draft at all.
+  function scEdit(field, value) {
+    const st = scLoaded();
+    if (!st) return;
+    const was = !!SC.drafts[SC.sel];
+    const d = SC.drafts[SC.sel] || (SC.drafts[SC.sel] = { slug: st.slug, script: st.script, base: st.rev });
+    d[field] = value;
+    if (d.slug === st.slug && d.script === st.script) delete SC.drafts[SC.sel];
+    scCountSoon(); scPreviewSoon();
+    if (was !== !!SC.drafts[SC.sel]) render();
+  }
+
+  // The live count is a polite status region that changes at most once a second, however fast the typing is.
+  function scCountText() {
+    const st = scLoaded();
+    if (!st) return '';
+    const n = scriptStats(scText(), scWpm());
+    return n.words + (n.words === 1 ? ' word' : ' words') + ' · read time ' + fmtOffset(n.readSeconds) + ' at ' + scWpm() + ' words a minute' +
+      (n.instructions ? ' · ' + n.instructions + (n.instructions === 1 ? ' instruction' : ' instructions') : '') +
+      (n.notes ? ' · ' + n.notes + (n.notes === 1 ? ' private note' : ' private notes') : '') +
+      (n.warnings.length ? ' · a line starts with [ and never closes, so it is read aloud' : '') +
+      (scText().length > SC_MAX * 0.9 ? ' · ' + scText().length + ' of ' + SC_MAX + ' characters' : '');
+  }
+  function scCountNow() {
+    const n = $('sc-count'), text = scCountText();
+    if (n.textContent !== text) n.textContent = text;
+    SC.countAt = Date.now();
+  }
+  function scCountSoon() {
+    const wait = SC_COUNT_MS - (Date.now() - SC.countAt);
+    if (wait <= 0) scCountNow();
+    else if (!SC.countTimer) SC.countTimer = setTimeout(() => { SC.countTimer = null; scCountNow(); }, wait);
+  }
+  function scPreviewSoon() {
+    clearTimeout(SC.prevTimer);
+    SC.prevTimer = setTimeout(() => { SC.prevTimer = null; renderScPreview(); }, SC_PREVIEW_MS);
+  }
+
+  // Save: one request quoting the revision the draft started from. 409 stale_script opens the conflict dialog with both texts.
+  async function scSave() {
+    const id = SC.sel, d = scDraftOf(id), it = scItem();
+    if (!d || SC.saving || !it || scReason(it, scLoaded())) return;
+    if (!d.slug.trim()) { setFlash({ kind: 'bad', title: 'Name the story first.', code: 'bad_input', reason: 'A story needs a slug.' }); render(); return; }
+    SC.saving = true; render();
+    const sent = { slug: d.slug, script: d.script };
+    try {
+      const { status, data } = await call('scriptSave', id, { slug: d.slug, script: d.script, baseRev: d.base });
+      if (status === 401) { setConn('token'); openToken(); }
+      if (data && data.ok) {
+        const cur = SC.drafts[id];
+        if (cur && cur.slug === sent.slug && cur.script === sent.script) delete SC.drafts[id];
+        else if (cur) cur.base = data.rev;      // typed more while the request ran: that text starts from the revision just saved
+        setFlash({ kind: 'good', title: data.changed ? 'Saved.' : 'Nothing to save.', reason: 'Revision ' + data.rev + (data.stats ? ', ' + data.stats.words + ' words.' : '.') });
+        announce((data.changed ? 'Saved. ' : 'Nothing changed. ') + 'Revision ' + data.rev + '.');
+        await scLoad(id);
+      } else {
+        const e = codeOf(data, status);
+        if (e.code === 'stale_script' && data && data.current) { SC.conflict = { id, mine: sent, theirs: data.current }; scOpenConflict(); }
+        else { setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason }); announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason); }
+      }
+    } catch (err) {
+      setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'Your text is still here and unsaved. Try again when the connection is back.' });
+      setConn('lost');
+    }
+    SC.saving = false; render(); refresh();
+  }
+
+  function scOpenConflict() {
+    const c = SC.conflict, dlg = $('sc-conflict');
+    if (!c) return;
+    SC.returnTo = document.activeElement && document.activeElement.id ? document.activeElement.id : 'sc-text';
+    const pane = (id, label, who, v) => el('div', { class: 'sc-pane' }, el('label', { for: id, text: label }),
+      el('textarea', { id, rows: '10', readonly: true, spellcheck: 'false' }, v.slug + '\n\n' + v.script),
+      el('small', { class: 'muted', text: who }));
+    $('sc-conflict-body').replaceChildren(
+      el('p', { id: 'sc-conflict-why' }, el('strong', { text: 'Changed by ' + (c.theirs.actor || 'someone') + (c.theirs.at ? ' at ' + fmtTime(c.theirs.at) : '') + '. ' }),
+        'This story is now at revision ' + c.theirs.rev + '. Nothing was saved, and your text is still in the editor.'),
+      el('div', { class: 'sc-two' }, pane('sc-cf-mine', 'Your version', 'What is in your editor now', c.mine),
+        pane('sc-cf-theirs', 'Their version', 'Revision ' + c.theirs.rev, c.theirs)),
+      el('div', { class: 'bar' },
+        el('button', { type: 'button', class: 'btn', 'data-fk': 'sc-keep-mine', onclick: () => scResolve('mine') }, 'Keep mine'),
+        el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'sc-take-theirs', onclick: () => scResolve('theirs') }, 'Take theirs'),
+        el('button', { type: 'button', class: 'btn ghost', 'data-fk': 'sc-decide-later', onclick: () => $('sc-conflict').close() }, 'Decide later')));
+    if (!dlg.open) dlg.showModal();
+    document.querySelector('[data-fk="sc-keep-mine"]').focus();
+  }
+  function scResolve(choice) {
+    const c = SC.conflict;
+    if (!c) return;
+    const r = resolveConflict(c.mine, c.theirs, choice);
+    SC.conflict = null;
+    $('sc-conflict').close();
+    if (choice === 'mine') { SC.drafts[c.id] = { slug: r.slug, script: r.script, base: r.baseRev }; scSave(); }
+    else { delete SC.drafts[c.id]; scLoad(c.id); setFlash({ kind: 'good', title: 'Took their version.', reason: 'Your text was dropped because you chose theirs.' }); render(); }
+  }
+
+  // Status moves, float and pace go through act(), like every other write on the page.
+  function scMoveLabel(from, to) {
+    if (from === 'killed') return 'Revive';
+    if (from === 'approved' && to === 'ready') return 'Take back to ready';
+    return { ready: 'Mark ready', draft: 'Back to draft', approved: 'Approve', killed: 'Kill story' }[to];
+  }
+  function scMove(to) {
+    const st = scLoaded(), it = scItem();
+    if (!st || !it) return;
+    const key = 'sc-status:' + to, go = () => act('storyStatus', SC.sel, { status: to, baseRev: st.rev }, { key, okTitle: scMoveLabel(st.storyStatus, to) + '.',
+      ok: () => (to === 'killed' && it.status === 'on air' ? 'The item is still on air: killing the story does not take it off.' : 'Revision ' + st.rev + ' is now ' + to + '.'),
+      hint: 'The story changed since this screen loaded it. It is reloaded now: read it again before you decide.' });
+    if (to === 'approved') armedAction('scappr:' + SC.sel, go); else go();
+  }
+  function scFloat() {
+    const it = scItem();
+    if (!it) return;
+    act('itemFloat', it.id, { floated: !it.floated }, { key: 'sc-float', okTitle: it.floated ? 'Back in the rundown.' : 'Floated.',
+      ok: () => (it.floated ? '"' + it.slug + '" counts in the timing and can go to air again.' : '"' + it.slug + '" stays in the list but is passed over by Go and left out of the timing.') });
+  }
+  function scSetPace(wpm) {
+    if (wpm !== null && (!Number.isInteger(wpm) || wpm < 60 || wpm > 400)) {
+      setFlash({ kind: 'bad', title: 'Pace not understood.', code: 'bad_input', reason: 'Write a whole number of words a minute from 60 to 400.' }); render(); return;
+    }
+    SC.pace = null;
+    act('showPace', S.show, { wpm }, { key: 'sc-pace', okTitle: wpm === null ? 'Default pace.' : 'Pace set.', ok: () => 'Read times use ' + (wpm === null ? 160 : wpm) + ' words a minute.' });
+  }
+
+  function scChips(it) {
+    const draft = !!SC.drafts[it.id];
+    return [stateChip(storyKind(it.storyStatus)), it.floated ? stateChip('floated') : null,
+      it.status !== 'ready' ? stateChip(itemStateKind(it.status, false), it.status === 'killed' ? 'Killed from air' : null) : null,
+      draft ? stateChip('unsaved') : null];
+  }
+  function scRow(it) {
+    return el('li', { class: 'scrow' + (SC.sel === it.id ? ' sel' : '') },
+      el('button', { type: 'button', class: 'pick', 'data-fk': 'scpick:' + it.id, 'aria-current': SC.sel === it.id ? 'true' : null, onclick: () => scSelect(it.id) },
+        el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
+        el('span', { class: 'chips' }, scChips(it)),
+        el('span', { class: 'meta mono', text: it.words + (it.words === 1 ? ' word' : ' words') + ' · ' + fmtOffset(it.readSeconds) })));
+  }
+  function scList() {
+    const all = scItems().filter((i) => SC.filter === 'all' || i.storyStatus === SC.filter);
+    const main = all.filter((i) => !i.floated), floated = all.filter((i) => i.floated);
+    if (!all.length) return el('p', { class: 'empty', text: scItems().length ? 'No story is ' + (SC_FILTERS.find((f) => f[0] === SC.filter) || ['', ''])[1].toLowerCase() + '.' : 'This show has no items.' });
+    return [main.length ? el('ol', { class: 'list sc-ul', 'aria-label': 'Stories in rundown order' }, main.map(scRow)) : null,
+      floated.length ? [el('h3', { class: 'sc-floated', id: 'sc-floated-h' }, icon('float', 's'), 'Floated'),
+        el('ul', { class: 'list sc-ul', 'aria-labelledby': 'sc-floated-h' }, floated.map(scRow))] : null];
+  }
+
+  function scEditor() {
+    const it = scItem(), st = scLoaded();
+    if (!it) return el('p', { class: 'empty', text: scItems().length ? 'Choose a story.' : 'This show has no items.' });
+    if (!st) return el('p', { class: 'empty', text: SC.loadErr || 'Reading the story…' });
+    const reason = scReason(it, st), d = scDraftOf(SC.sel);
+    const old = $('sc-text'), top = old ? old.scrollTop : 0;
+    const newer = d && st.rev > d.base;
+    const moves = legalMoves(st.storyStatus);
+    const ta = el('textarea', { id: 'sc-text', 'data-fk': 'sc-text', rows: '16', spellcheck: 'true', readonly: !!reason, maxlength: String(SC_MAX), 'aria-keyshortcuts': 'Control+S',
+      'aria-describedby': reason ? 'sc-reason' : null,
+      oninput: (e) => scEdit('script', e.target.value),
+      // Ctrl+S saves from inside the editor only; the page-wide key handler never sees it.
+      onkeydown: (e) => { if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); scSave(); } } }, scText());
+    requestAnimationFrame(() => { const n = $('sc-text'); if (n) n.scrollTop = top; });
+    return el('div', { class: 'sc-form' },
+      reason ? el('p', { class: 'info', id: 'sc-reason' }, icon('lock', 's'), ' ', el('strong', { text: 'Editing is off. ' }), reason) : null,
+      newer ? el('p', { class: 'info', role: 'status' }, icon('alert', 's'), ' ', el('strong', { text: 'Newer revision. ' }),
+        'Revision ' + st.rev + ' was saved while you were typing. Saving will show you both versions; nothing is overwritten.') : null,
+      el('label', { for: 'sc-slug', text: 'Slug' }),
+      el('input', { id: 'sc-slug', type: 'text', 'data-fk': 'sc-slug', value: scSlug(), maxlength: '200', autocomplete: 'off', readonly: !!reason,
+        oninput: (e) => scEdit('slug', e.target.value) }),
+      el('label', { for: 'sc-text', text: 'Script' }), ta,
+      el('p', { class: 'hint' }, 'A line in [brackets] is an instruction for the crew: it is not read and does nothing on air. A line starting // is a private note and never leaves the editing screens.'),
+      el('div', { class: 'bar flush' },
+        btn(SC.saving ? 'Saving…' : 'Save', { key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving, title: 'Ctrl+S inside the script', onclick: scSave }),
+        el('span', { class: 'sep', 'aria-hidden': 'true' }),
+        moves.map((to) => {
+          const arm = to === 'approved' && S.armed === 'scappr:' + SC.sel;
+          return btn(arm ? 'Confirm approve' : scMoveLabel(st.storyStatus, to), { key: 'sc-status:' + to, cls: (to === 'approved' ? 'signal' : 'ghost') + (arm ? ' armed' : ''),
+            disabled: !!d, title: d ? 'Save first: a status applies to the saved revision.' : null, onclick: () => scMove(to) });
+        }),
+        el('span', { class: 'sep', 'aria-hidden': 'true' }),
+        btn(it.floated ? 'Put back in the rundown' : 'Float', { key: 'sc-float', cls: 'ghost', disabled: !it.floated && it.status !== 'ready',
+          title: !it.floated && it.status !== 'ready' ? 'Only a ready item can be floated.' : null, onclick: scFloat })),
+      it.status === 'on air' ? el('p', { class: 'hint', text: 'This item is on air. Saving changes the prompter text on its next refresh and takes the approval back; it does not touch playout.' }) : null);
+  }
+
+  function scPreviewNodes(text) {
+    const blocks = scriptBlocks(text);
+    if (!blocks.length) return el('p', { class: 'empty', text: 'Nothing to read yet.' });
+    const paras = [];
+    for (const b of blocks) (paras[b.para] || (paras[b.para] = [])).push(b);
+    return paras.map((lines) => el('div', { class: 'sc-para' }, lines.map((b) => b.kind === 'read' ? el('p', { class: 'sc-read', text: b.text })
+      : el('p', { class: b.kind === 'note' ? 'sc-note' : 'sc-ins' }, el('span', { class: 'tag', text: b.kind === 'note' ? 'Private note' : 'Instruction' }), ' ', b.text))));
+  }
+  function renderScPreview() {
+    const st = scLoaded();
+    paint('sc-preview', [SC.sel, !!st, st ? scText() : ''], () => (st ? scPreviewNodes(scText()) : el('p', { class: 'empty', text: 'Choose a story.' })));
+  }
+
+  function scFoot() {
+    const st = scLoaded(), d = scDraftOf(SC.sel);
+    if (!st) return null;
+    const cur = (st.revisions || []).find((r) => r.rev === st.rev) || {};
+    return [el('span', { class: 'mono', text: 'Revision ' + st.rev }),
+      el('span', { text: cur.actor ? 'saved by ' + cur.actor + (cur.at ? ' at ' + fmtTime(cur.at) : '') : 'as first written' }),
+      st.storyStatus === 'approved' && st.approvedBy ? el('span', { class: 'ok' }, icon('rights', 's'), 'Approved by ' + st.approvedBy + (st.approvedAt ? ' at ' + fmtTime(st.approvedAt) : '') + ', revision ' + st.approvedRev) : null,
+      d ? stateChip('unsaved') : null];
+  }
+
+  function scHistory() {
+    const st = scLoaded();
+    if (!st) return el('p', { class: 'empty', text: 'Choose a story.' });
+    const eventText = (e) => (e.kind === 'status' ? e.actor + ' moved it from ' + e.from + ' to ' + e.to : e.kind === 'float' ? e.actor + ': ' + e.to : e.actor + ': ' + e.kind) +
+      (e.rev ? ' (revision ' + e.rev + ')' : '') + (e.note ? ' · ' + e.note : '');
+    return [el('h3', { text: 'Revisions' }),
+      el('ul', { class: 'list sc-hist' }, (st.revisions || []).map((r) => el('li', {}, el('span', { class: 'mono', text: 'r' + r.rev }), ' ',
+        r.actor ? r.actor + (r.at ? ' · ' + fmtTime(r.at) : '') : 'as first written', r.rev === st.rev ? el('span', { class: 'muted', text: ' · current' }) : null))),
+      el('h3', { text: 'Status and float' }),
+      (st.events || []).length ? el('ul', { class: 'list sc-hist' }, st.events.map((e) => el('li', {}, el('span', { class: 'muted', text: fmtTime(e.at) + ' ' }), eventText(e))))
+        : el('p', { class: 'empty', text: 'No status changes yet.' })];
+  }
+  function scTabs() {
+    const tabs = $('sc-tabs');
+    paint('sc-tabs', [SC.tab, SC_TABS.map((t) => t.id)], () => SC_TABS.map((t) => el('button', { type: 'button', role: 'tab', id: 'sc-tab-' + t.id, 'aria-controls': 'sc-side',
+      'aria-selected': String(SC.tab === t.id), tabindex: SC.tab === t.id ? null : '-1', 'data-fk': 'sc-tab-' + t.id, onclick: () => { SC.tab = t.id; render(); } }, icon(t.icon, 's'), t.label)));
+    $('sc-side').setAttribute('aria-labelledby', 'sc-tab-' + SC.tab);
+    if (!tabs.dataset.keys) {
+      tabs.dataset.keys = '1';
+      tabs.addEventListener('keydown', (e) => {   // arrow keys move between tabs, as in the Library
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        const i = SC_TABS.findIndex((t) => t.id === SC.tab), j = (i + (e.key === 'ArrowRight' ? 1 : SC_TABS.length - 1)) % SC_TABS.length;
+        e.preventDefault(); SC.tab = SC_TABS[j].id; render();
+        const n = $('sc-tab-' + SC.tab); if (n) n.focus();
+      });
+    }
+  }
+
+  function renderScripts() {
+    const items = scItems();
+    if (S.data && S.data.rundown && !items.find((i) => i.id === SC.sel)) { SC.sel = null; SC.story = null; }
+    if (!SC.sel && items.length) scSelect((items.find((i) => i.status === 'on air' || i.status === 'taking') || items.find((i) => i.status === 'ready') || items[0]).id, true);
+    const it = scItem(), st = scLoaded();
+    // Someone else (or an action here) changed the story: the rundown summary no longer matches what was read, so read it again.
+    if (it && st && !SC.loading && Date.now() - SC.loadedAt > 1500 &&
+        (it.scriptRev !== st.rev || it.storyStatus !== st.storyStatus || it.floated !== st.floated || it.status !== st.itemStatus)) scLoad(SC.sel);
+    const wpm = scWpm();
+    const paceText = SC.pace === null ? String(wpm) : SC.pace;
+    const pacePress = () => { const v = (SC.pace === null ? String(scWpm()) : SC.pace).trim(); scSetPace(/^\d+$/.test(v) ? Number(v) : NaN); };
+    paint('sc-pace', [wpm, SC.pace, S.show, [...S.pending].filter((k) => k.startsWith('sc-pace'))], () => el('form', { class: 'form-row', 'aria-labelledby': 'h-sc-list',
+      onsubmit: (e) => { e.preventDefault(); pacePress(); } },
+      el('div', {}, el('label', { for: 'sc-wpm', text: 'Reading pace, words a minute' }),
+        el('input', { id: 'sc-wpm', type: 'text', inputmode: 'numeric', 'data-fk': 'sc-wpm', value: paceText, autocomplete: 'off', size: '5',
+          oninput: (e) => { SC.pace = e.target.value; } })),
+      btn('Set pace', { key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
+      btn('Default', { key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
+    paint('sc-filter', [SC.filter], () => el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'sc-filter-sel', text: 'Show' }),
+      el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
+        SC_FILTERS.map(([v, label]) => el('option', { value: v, selected: v === SC.filter }, label))))));
+    paint('sc-list', [items, SC.sel, SC.filter, Object.keys(SC.drafts)], scList);
+    paint('sc-edit', [SC.sel, !!st, st && [st.rev, st.storyStatus, st.approvedBy], it && [it.status, it.floated], SC.loadErr, SC.saving, !!scDraftOf(SC.sel),
+      scDraftOf(SC.sel) && scDraftOf(SC.sel).base < (st ? st.rev : 0), S.armed, [...S.pending].filter((k) => k.startsWith('sc-'))], scEditor);
+    paint('sc-foot', [SC.sel, st && [st.rev, st.storyStatus, st.approvedBy, st.approvedAt, (st.revisions || []).length], !!scDraftOf(SC.sel)], scFoot);
+    scCountNow();
+    renderScPreview();
+    scTabs();
+    paint('sc-side', [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'history' ? scHistory() : null));
+  }
+  // Closing the conflict dialog (Esc included) gives focus back to the editor and keeps the draft exactly as it was.
+  function scConflictInit() {
+    $('sc-conflict').addEventListener('close', () => {
+      if (SC.conflict) SC.conflict = null;
+      const n = $(SC.returnTo || 'sc-text') || $('sc-text');
+      if (n) n.focus();
+    });
+  }
+
   // ---- dialogs, keys, screens ----------------------------------------------
   function openToken() { const d = $('token-dlg'); if (!d.open) { d.showModal(); $('token-in').focus(); loadProviders(); } }
   // The Token dialog also offers 'Sign in with ...' when the server has OIDC configured (GET /auth/providers, 404 when off). Anchors, not
@@ -3416,7 +3780,7 @@
       renderProviders(data && data.providers, location.pathname + location.search);
     } catch (e) { providersLoaded = false; }   // offline or an older server: try again next time the dialog opens
   }
-  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open; }
+  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open || $('sc-conflict').open; }
 
   function setScreen(name) {
     const was = S.screen;
@@ -3492,6 +3856,7 @@
     setTheme(currentTheme());
     $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
     libInit();
+    scConflictInit();
     $('keys-close').addEventListener('click', () => $('keys-dlg').close());
     document.addEventListener('keydown', onKey);
     // A mouse click leaves focus on the button it pressed. Drop it so Space is TAKE, not that button again.
