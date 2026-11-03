@@ -5,7 +5,7 @@
 # starting points (docs/superpowers/specs/2026-11-01-scale-operations-design.md section 5) and rehearse them.
 #
 # severity "page" wakes someone; "ticket" waits for the next working day.
-# Rules that need series the code does not emit yet (rate-limit rejections, replica lag, node versions) are not here.
+# Rules that need series the code does not emit yet (replica lag, node versions) are not here.
 
 groups:
   - name: volt-page
@@ -85,6 +85,22 @@ groups:
           severity: ticket
         annotations:
           summary: "Requests are waiting for a Postgres connection; raise VOLT_PG_POOL_MAX or add capacity"
+      - alert: VoltRateLimited
+        # Refusals sustained for an hour: a client in a loop, a guesser, or limits set too low. The counter has no tenant label (a tenant
+        # must not learn another's load); find the tenant in the access log.
+        expr: sum(rate(volt_rate_limited_total[15m])) > 0.2
+        for: 1h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Requests are being refused with 429 (rate, failed sign-ins or quota) at a sustained rate"
+      - alert: VoltBusy
+        expr: sum(rate(volt_busy_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A node is at its concurrency limit (503 busy); add nodes or raise VOLT_MAX_CONCURRENT"
       - alert: VoltSlowState
         # The operator poll's p95 over 250 ms for 15 minutes: the 50-desk target in the spec, a guess until measured.
         expr: histogram_quantile(0.95, sum by (le) (rate(volt_http_request_seconds_bucket{route_class="state"}[5m]))) > 0.25

@@ -74,13 +74,14 @@ class FakeCoreHttp:
 class Node:
     """One `python -m volt.serve --port 0` process; its address is read from the line it prints at start."""
 
-    def __init__(self, db, env_extra):
+    def __init__(self, db, env_extra, new_group=False):
         env = dict(os.environ, VOLT_PYTHON_UNBUFFERED="1", **env_extra)
         for name in ("VOLT_TOKEN", "VOLT_DB", "VOLT_LOG_DIR", "VOLT_TEST_PG_DSN"):
             env.pop(name, None)
         env.update(env_extra)
         self.proc = subprocess.Popen([sys.executable, "-u", "-m", "volt.serve", "--port", "0", "--db", db],
-                                     cwd=CONTROL, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                     cwd=CONTROL, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if (new_group and os.name == "nt") else 0)
         self.port = None
         self.lines = []
         deadline = time.monotonic() + 60

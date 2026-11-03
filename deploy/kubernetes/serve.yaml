@@ -1,0 +1,55 @@
+# UNVALIDATED: never applied to a cluster, never linted. A starting point for rehearsal R2 (a rolling upgrade across an additive migration
+# with the poll test running; zero failed requests that were not in flight on a stopping node). See docs/scale.md.
+#
+# Secrets are referenced, never written here: create `volt-secrets` with VOLT_DB (a DSN), VOLT_MEDIA_KEY and anything else sensitive.
+# Postgres is the provider's managed HA service; media lives on object storage (so a node can answer a proxy request with a redirect).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volt-serve
+  labels: {app: volt, role: serve}
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: volt, role: serve}
+  template:
+    metadata:
+      labels: {app: volt, role: serve}
+    spec:
+      terminationGracePeriodSeconds: 40          # longer than VOLT_DRAIN_SECONDS
+      containers:
+        - name: serve
+          image: registry.example.com/volt:REPLACE_ME      # a registry and a tag you build; none is provided
+          command: ["volt", "serve", "--host", "0.0.0.0", "--port", "8765"]
+          ports: [{containerPort: 8765, name: http}]
+          envFrom:
+            - secretRef: {name: volt-secrets}
+          env:
+            - {name: VOLT_PG_POOL_MAX, value: "6"}
+            - {name: VOLT_DRAIN_SECONDS, value: "20"}
+            - {name: VOLT_TRUSTED_PROXIES, value: "10.0.0.0/8"}
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]       # let the endpoint controller remove the pod before SIGTERM starts the drain
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: volt-serve
+spec:
+  selector: {app: volt, role: serve}
+  ports: [{port: 80, targetPort: http, name: http}]

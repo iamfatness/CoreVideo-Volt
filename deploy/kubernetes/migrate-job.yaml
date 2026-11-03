@@ -1,0 +1,21 @@
+# UNVALIDATED: never applied. Run this Job to completion BEFORE rolling serve, runner and clock: nodes do not migrate while serving.
+# `volt upgrade plan` first (it exits 2 when a pending migration is breaking, and then a rolling upgrade is not safe); take a verified backup
+# first (docs/operations.md). Re-running is safe: migrations are idempotent and recorded.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: volt-migrate-
+  labels: {app: volt, role: migrate}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: volt, role: migrate}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: registry.example.com/volt:REPLACE_ME
+          command: ["volt", "migrate"]
+          envFrom:
+            - secretRef: {name: volt-secrets}

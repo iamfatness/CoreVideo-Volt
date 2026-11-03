@@ -1,0 +1,23 @@
+# UNVALIDATED: never applied. The clock claims each scheduled item with a conditional UPDATE and a unique occurrence index, so two replicas
+# are safe (and one is enough); two means a node loss does not stop schedules.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volt-clock
+  labels: {app: volt, role: clock}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: volt, role: clock}
+  template:
+    metadata:
+      labels: {app: volt, role: clock}
+    spec:
+      containers:
+        - name: clock
+          image: registry.example.com/volt:REPLACE_ME
+          command: ["volt", "clock"]
+          envFrom:
+            - secretRef: {name: volt-secrets}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}

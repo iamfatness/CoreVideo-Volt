@@ -1,0 +1,23 @@
+# UNVALIDATED: never applied. An Ingress for the serve Service. It must pass the original Host header through (tenant mode picks the
+# organisation from it) and cover every tenant domain with a certificate (a wildcard, or one per domain). Which controller you run decides
+# the annotations; this assumes ingress-nginx and a cert-manager ClusterIssuer named letsencrypt.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: volt
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["volt.example.com", "*.volt.example.com"]
+      secretName: volt-tls
+  rules:
+    - host: volt.example.com
+      http:
+        paths: [{path: /, pathType: Prefix, backend: {service: {name: volt-serve, port: {number: 80}}}}]
+    - host: "*.volt.example.com"
+      http:
+        paths: [{path: /, pathType: Prefix, backend: {service: {name: volt-serve, port: {number: 80}}}}]

@@ -57,7 +57,7 @@ class Supervisor:
     backoff_initial: float = 1.0
     backoff_max: float = 60.0
     stable_after: float = 60.0
-    grace: float = 20.0
+    grace: float = 30.0       # covers serve's drain (VOLT_DRAIN_SECONDS, default 20) with room to spare
     tick: float = 0.2
     clock: Callable[[], float] = time.monotonic
     _stop: threading.Event = field(default_factory=threading.Event)

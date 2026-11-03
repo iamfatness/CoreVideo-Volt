@@ -492,6 +492,50 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 22,
+      "title": "Refused requests per second by kind (429)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 49
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(volt_rate_limited_total[5m]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Requests refused because the node was full (503 busy)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 49
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(volt_busy_total[5m]))",
+          "legendFormat": "busy",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

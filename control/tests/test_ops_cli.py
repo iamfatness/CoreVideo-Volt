@@ -161,12 +161,20 @@ class BackupAndSkew(unittest.TestCase):
         self.assertTrue(Path(target).exists())
         self.assertEqual(self.volt("verify-storage", target).returncode, 0)
 
-    def _make_newer(self):
+    def _make_newer(self, breaking=True):
+        """A database a newer release migrated. `breaking` (the default) records that code older than that release must not run."""
         import sqlite3
         conn = sqlite3.connect(self.db)
-        conn.execute("INSERT INTO schema_version (version, name, applied_at) VALUES (999, 'future', 'now')")
+        conn.execute("INSERT INTO schema_version (version, name, applied_at, min_code) VALUES (999, 'future', 'now', ?)",
+                     (999 if breaking else None,))
         conn.commit()
         conn.close()
+
+    def test_an_older_build_runs_against_an_additive_newer_database(self):
+        """The expand/contract rule: only a breaking newer migration stops an older build (see docs/scale.md)."""
+        self._make_newer(breaking=False)
+        out = self.volt("runner", "--once", env={"VOLT_DB": self.db, "VOLT_ROOM_URL": "http://127.0.0.1:1"})
+        self.assertEqual(out.returncode, 0, out.stderr)
 
     def test_serve_runner_and_clock_refuse_a_newer_database_with_exit_78(self):
         self._make_newer()

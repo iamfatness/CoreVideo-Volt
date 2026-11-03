@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import tenancy, collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
+from volt import ratelimit, tenancy, collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, discuss, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, telemetry, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -260,6 +260,23 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _build_limiter():
+    """Token buckets are off for an installed single-tenant Volt unless a VOLT_RATE_* variable asks for them; tenant mode turns them on."""
+    on = os.environ.get("VOLT_TENANCY", "").lower() == "on" or ratelimit.any_rate_configured(os.environ)
+    return ratelimit.Limiter(ratelimit.rates_from_env(os.environ)) if on else None
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+LIMITER = _build_limiter()                                             # per node, in memory (volt/ratelimit.py); None = off
+GATE = ratelimit.ConcurrencyGate(_int_env("VOLT_MAX_CONCURRENT", ratelimit.DEFAULT_MAX_CONCURRENT))
+FAILURES = ratelimit.FailureTracker(exempt_loopback=True)               # failed bearer tokens per client address
+TRUSTED_PROXIES = ratelimit.parse_trusted(os.environ.get("VOLT_TRUSTED_PROXIES", ""))
 TENANTS = None   # a tenancy.TenantResolver when VOLT_TENANCY=on (set in main()); None is today's single-tenant behaviour
 REGISTRY = telemetry.REGISTRY      # request, pool and job series (volt/telemetry.py); tests swap it for a fresh one
 INFLIGHT = telemetry.Inflight()
@@ -283,6 +300,44 @@ def open_request_store() -> Store:
                 Store(DB_PATH).close()
                 _BOOTSTRAPPED.add(DB_PATH)
     return Store(DB_PATH, init=False)
+
+
+DRAIN_DEFAULT_SECONDS = 20
+
+
+class Drain:
+    """Graceful stop for a rolling restart: SIGTERM marks the node draining (/ready goes 503 so the balancer stops sending), the node waits up
+    to VOLT_DRAIN_SECONDS for in-flight requests to finish, then exits. A second signal stops at once. Requests that still arrive while
+    draining are served and told to close the connection; show control is never shed."""
+
+    def __init__(self):
+        self._event = threading.Event()
+
+    @property
+    def active(self) -> bool:
+        return self._event.is_set()
+
+    def begin(self) -> bool:
+        """True the first time (start draining); False when already draining (the caller should stop at once)."""
+        if self._event.is_set():
+            return False
+        self._event.set()
+        return True
+
+    def reset(self) -> None:
+        self._event.clear()
+
+    def wait_idle(self, seconds: float, inflight=lambda: INFLIGHT.n, sleep=time.sleep, now=time.monotonic) -> bool:
+        """Wait until nothing is in flight or `seconds` pass. True when idle."""
+        deadline = now() + seconds
+        while now() < deadline:
+            if inflight() <= 0:
+                return True
+            sleep(0.05)
+        return inflight() <= 0
+
+
+DRAIN = Drain()
 
 
 class VoltServer(ThreadingHTTPServer):
@@ -695,6 +750,7 @@ def act_record_start(store, _unused, body):
     camera = _str(body, "camera", limit=100)
     show = _str(body, "show", limit=200)
     room = get_room()
+    _quota(store, "max_assets")
     try:
         with exclusive(store, record_lease_name(_room_key())):
             try:
@@ -1482,12 +1538,28 @@ def act_cue_remove(store, cue_id, body):
             "orderVersion": building.order_version(store, show_id)}
 
 
+def _quota(store, name: str, adding: int = 1) -> None:
+    """Refuse (429 quota_exceeded) work that would pass this tenant's limit. Tenancy off, or no limit set: nothing is refused. Never called
+    on a read or on show control."""
+    ctx = current_tenant()
+    try:
+        ratelimit.check_quota(store, ctx.limits if ctx is not None else None, name, adding)
+    except ratelimit.QuotaExceeded as exc:
+        try:
+            REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "quota"}).inc()
+        except Exception:  # noqa: BLE001
+            pass
+        raise ApiError(429, "quota_exceeded", f"this account has reached its {name} limit of {exc.limit}", quota=name, limit=exc.limit) from None
+
+
 def act_ingest(store, _unused, body):
     """Enqueue ingest of one file from an allowed folder (VOLT_INGEST_ROOTS). The runner copies, probes, and
     checksums. Replay is safe (same file, same asset)."""
     _unknown_keys(body, {"path", "owner", "show", "camera"})
     path = _str(body, "path", required=True, limit=4096)
     owner = _str(body, "owner", default="desk", limit=100)
+    _quota(store, "max_assets")
+    _quota(store, "max_jobs_per_day")
     out = _build_errors(lambda: building.ingest_allowed(
         store, path, (current_tenant().settings.quarantine_dir if current_tenant() is not None
          else Path(os.environ.get("VOLT_QUARANTINE") or OUT_DIR / "quarantine")), owner,
@@ -2218,9 +2290,19 @@ class Handler(BaseHTTPRequestHandler):
             return True
 
     def _authenticate(self) -> Principal:
+        address = self._client()
+        if FAILURES.blocked(address):
+            try:
+                REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "auth"}).inc()
+            except Exception:  # noqa: BLE001
+                pass
+            raise ApiError(429, "rate_limited", "too many failed sign-in attempts from this address; wait a minute",
+                           headers={"Retry-After": "60"}, retryAfterSeconds=60)
         found = self._bearer_principal()
         if found is not None:
             return found
+        if self._bearer():       # a token was presented and is wrong: that is a guess
+            FAILURES.failed(address)
         if not self._bearer():  # a bearer header, even a wrong one, never falls back to a cookie
             found = self._session_principal()
             if found is not None:
@@ -2285,6 +2367,28 @@ class Handler(BaseHTTPRequestHandler):
                 return False
             return True
         return self._gate()
+
+    def _ready(self) -> None:
+        if DRAIN.active:
+            self._json(503, {"status": "draining"})
+            return
+        try:
+            if TENANTS is not None:
+                TENANTS.registry.epoch()
+            else:
+                store = self._store()
+                store.conn.execute("SELECT 1").fetchone()
+        except Exception:  # noqa: BLE001 - the answer is "not ready"; the cause goes to the log
+            log.warning("readiness check failed", exc_info=True)
+            self._json(503, {"status": "unavailable"})
+            return
+        self._json(200, {"status": "ready"})
+
+    def end_headers(self):
+        if DRAIN.active and not self.close_connection:
+            self.send_header("Connection", "close")    # a draining node asks clients to reconnect, and the balancer sends them elsewhere
+            self.close_connection = True
+        super().end_headers()
 
     def _empty_401(self) -> None:
         self.send_response(401)
@@ -2351,20 +2455,67 @@ class Handler(BaseHTTPRequestHandler):
         self._req_store, self._body_read, self._status, self._fn_name = None, method != "POST", 0, None
         started = time.perf_counter()
         _REQUEST.tenant = None
+        exempt = self._gate_exempt(method)
         with INFLIGHT:
+            admitted = GATE.enter(exempt)
             try:
-                if self._resolve_tenant():
+                if not admitted:
+                    self._refuse_busy()
+                elif self._resolve_tenant():
                     run()
             finally:
+                if admitted:
+                    GATE.leave(exempt)
                 self._close_store()
                 _REQUEST.tenant = None
                 telemetry.record_request(method, self._fn_name, urlparse(self.path).path, self._status or 500,
                                          time.perf_counter() - started, REGISTRY)
 
+    def _gate_exempt(self, method: str) -> bool:
+        """Health, readiness and show control never wait behind the concurrency gate."""
+        path = urlparse(self.path).path
+        if path in ("/health", "/ready"):
+            return True
+        if method == "POST":
+            for pattern, fn in ROUTES:
+                if pattern.match(path):
+                    return fn.__name__ in ratelimit.SHOW_CONTROL
+        return False
+
+    def _refuse_busy(self) -> None:
+        try:
+            REGISTRY.counter(telemetry.BUSY).inc()
+        except Exception:  # noqa: BLE001
+            pass
+        self._error(ApiError(503, "busy", "this server is at its concurrency limit; retry in a moment",
+                             headers={"Retry-After": "1"}, retryAfterSeconds=1))
+
+    def _client(self) -> str:
+        return ratelimit.client_address(self.client_address[0], self.headers, TRUSTED_PROXIES)
+
+    def _rate_limit(self, cls: str, fn_name=None) -> None:
+        """Raise 429 when this principal (or its tenant as a whole) is over its bucket. Show control and tenancy-off-without-config pass."""
+        if LIMITER is None:
+            return
+        ctx = current_tenant()
+        who = self.principal
+        # The legacy shared token (and open loopback) is one name for every desk, so those are told apart by address.
+        name = f"{who.name}@{self._client()}" if who is None or who.legacy else who.name
+        decision = LIMITER.check((ctx.ref.slug if ctx else "", name), cls, fn_name)
+        if not decision.allowed:
+            wait = ratelimit.retry_seconds(decision.retry_after)
+            try:
+                REGISTRY.counter(telemetry.RATE_LIMITED, {"kind": "rate"}).inc()
+            except Exception:  # noqa: BLE001
+                pass
+            raise ApiError(429, "rate_limited", "too many requests; slow down", headers={"Retry-After": str(wait)}, retryAfterSeconds=wait)
+
     def _resolve_tenant(self) -> bool:
         """Tenant mode: find the tenant from the Host header, before anything else (before auth). The tenant is never taken from a body, a
         query or any other header. False when the request has been answered (unknown host, suspended, registry unreadable)."""
         if TENANTS is None:
+            return True
+        if urlparse(self.path).path in ("/health", "/ready"):   # a balancer probes by address, not by a tenant's host name
             return True
         try:
             ctx = TENANTS.resolve(self.headers.get("Host"))
@@ -2396,11 +2547,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":  # liveness for a supervisor or load balancer: no auth, no data
             self._json(200, health.liveness())
             return
+        if path == "/ready":   # readiness for a balancer: 503 while draining or when the database cannot be read; no auth, no data
+            self._ready()
+            return
         if path == "/auth" or path.startswith("/auth/"):   # sign-in: before the gate, because the browser has no credential yet
             self._auth(path)
             return
         if path != "/" and not self._gate_or_ticket():
             return
+        if path != "/":
+            try:
+                self._rate_limit("read")
+            except ApiError as err:
+                self._error(err)
+                return
         # One connection per request (auth shares it). Postgres schema is applied once in main().
         store = self._store()
         try:
@@ -2503,6 +2663,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ApiError(404, "not_found", "no such route")
             self._fn_name = fn.__name__
+            self._rate_limit("heavy" if fn.__name__ in telemetry.HEAVY_ROUTES else "write", fn.__name__)
             need = ROUTE_ROLES.get(fn.__name__, "admin")
             if acl.RANK[need] > acl.RANK.get(self.principal.role, -1):
                 raise ApiError(403, "forbidden_role",
@@ -2583,6 +2744,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if report["status"] != "down" else 503, "text/plain; version=0.0.4; charset=utf-8",
                            health.prometheus(report, REGISTRY if ctx is None else None).encode())
             else:
+                report["mediaKeyFingerprint"] = health.media_key_fingerprint(_media_secret())   # nodes of one deployment must agree
                 self._json(200 if report["status"] != "down" else 503, report)
             return
         if parsed.path == "/api/state":
@@ -2939,8 +3101,22 @@ def _config_exit(message: str):
     raise SystemExit(EX_CONFIG)
 
 
+_SERVER = None
+
+
 def _on_stop(signum, frame):
-    raise KeyboardInterrupt
+    """First signal: drain (readiness 503, finish what is in flight, up to VOLT_DRAIN_SECONDS), then stop. A second one stops at once."""
+    server = _SERVER
+    if server is None or not DRAIN.begin():
+        raise KeyboardInterrupt
+    seconds = float(_int_env("VOLT_DRAIN_SECONDS", DRAIN_DEFAULT_SECONDS))
+    log.info("drain started seconds=%.0f inflight=%d", seconds, INFLIGHT.n)
+
+    def finish():
+        idle = DRAIN.wait_idle(seconds)
+        log.info("drain finished idle=%s inflight=%d", idle, INFLIGHT.n)
+        server.shutdown()
+    threading.Thread(target=finish, name="drain", daemon=True).start()
 
 
 def main(argv=None):
@@ -3002,6 +3178,8 @@ def main(argv=None):
             _config_exit(str(exc))
         except OSError as exc:
             _config_exit(f"cannot start on {host}:{port}: {exc.strerror or exc}")
+        global _SERVER
+        _SERVER = server
         port = server.server_address[1]
         print(f"Volt session on http://{host}:{port}" + (" (tenancy on: tokens required per tenant)" if tenant_mode else " (token required)" if TOKEN or users.db_has_enabled_admin(DB_PATH) else "")
               + (f" (postgres pool of up to {pool.max_size})" if pool else ""), flush=True)

@@ -8,6 +8,8 @@
     volt run      all three, supervised: restart on crash, clean stop on Ctrl-C or SIGTERM
     volt check    preflight: is this machine ready?
     volt user     per-user tokens: add, list, disable, enable, rotate (operator and admin roles)
+    volt migrate  bring the database (or every tenant) to the latest schema as its own step; idempotent
+    volt upgrade  volt upgrade plan [--verify]: what an upgrade would do, and whether it can roll one node at a time
     volt tenant   platform commands for a hosted multi-tenant deployment: create, adopt, list, suspend, resume, limit, domain, migrate
     volt watch    enqueue ingest for files sitting still in VOLT_INGEST_ROOTS
     volt mos      volt mos export <show> [--out file]: the rundown as a MOS roCreate message (read-only)
@@ -89,7 +91,7 @@ def _run(argv: list) -> int:
     ap.add_argument("--access-log", action="store_true", help="serve: log every request")
     ap.add_argument("--only", default=None, help="comma list of serve,runner,clock (default: all that are configured)")
     ap.add_argument("--backoff-max", type=float, default=60.0, help="longest wait between restarts, seconds")
-    ap.add_argument("--stop-grace", type=float, default=20.0, help="seconds to let children finish before killing them")
+    ap.add_argument("--stop-grace", type=float, default=30.0, help="seconds to let children finish before killing them")
     ap.add_argument("--env-file", default=None, help="KEY=VALUE file of settings; variables already set win")
     ap.add_argument("--no-preflight", action="store_true", help="skip the quick configuration check before starting")
     args = ap.parse_args(argv)
@@ -172,6 +174,117 @@ def _mos(argv: list) -> int:
     return 0
 
 
+def _db_target(args_db):
+    from volt import preflight
+    target = args_db if args_db is not None else os.environ.get("VOLT_DB")
+    return target
+
+
+def _tenant_registry():
+    from volt import tenancy
+    return tenancy._registry_from_env()
+
+
+def _migrate(argv: list) -> int:
+    """Run the numbered migrations as a step of their own, before nodes roll. Safe to re-run."""
+    from volt import migrations, tenancy
+    from volt.store import Store
+
+    ap = argparse.ArgumentParser(prog="volt migrate", description="Bring the database (or every tenant's schema) to the latest migration.")
+    ap.add_argument("--db", default=None, help="SQLite path or DSN (default: VOLT_DB)")
+    ap.add_argument("--tenants", default=None, help="tenant mode (VOLT_TENANCY=on): all, or slug,slug")
+    args = ap.parse_args(argv)
+    if os.environ.get("VOLT_TENANCY", "").lower() == "on" or args.tenants:
+        try:
+            registry = _tenant_registry()
+            slugs = None if args.tenants in (None, "all") else [s for s in args.tenants.split(",") if s]
+            report = migrations.run_all_tenants(registry, slugs=slugs)
+        except tenancy.TenantError as exc:
+            print(f"volt: {exc}", file=sys.stderr)
+            return 78
+        bad = 0
+        for slug, res in report.items():
+            if res["ok"]:
+                print(f"{slug}\tok\tapplied {res['applied'] or 'nothing'}")
+            else:
+                bad += 1
+                print(f"{slug}\tFAILED\t{res['error']}")
+        return 1 if bad else 0
+    target = _db_target(args.db)
+    if not target:
+        print("volt: set VOLT_DB or pass --db", file=sys.stderr)
+        return 78
+    try:
+        store = Store(target)
+    except migrations.SchemaTooNewError as exc:
+        print(f"volt: {exc}", file=sys.stderr)
+        return 78
+    try:
+        applied = list(store.last_migrations) if store.postgres else None
+        if applied is None:     # SQLite: compare before and after, since the bootstrap does not return what it applied
+            applied = []
+    finally:
+        store.close()
+    print(f"ok\tschema {migrations.known_version()}\tapplied {applied or 'nothing (or already current)'}")
+    return 0
+
+
+def _upgrade(argv: list) -> int:
+    """volt upgrade plan: pending migrations, expand or breaking, and whether the upgrade can roll one node at a time."""
+    from volt import migrations
+    from volt.store import Store
+
+    ap = argparse.ArgumentParser(prog="volt upgrade")
+    ap.add_argument("what", choices=["plan"])
+    ap.add_argument("--db", default=None)
+    ap.add_argument("--verify", action="store_true", help="check that the database is at this build's schema (after the upgrade)")
+    args = ap.parse_args(argv)
+    target = _db_target(args.db)
+    if not target:
+        print("volt: set VOLT_DB or pass --db", file=sys.stderr)
+        return 78
+    from volt import pg
+    try:
+        if pg.is_dsn(target):
+            import psycopg
+            with psycopg.connect(target) as c:
+                db = migrations.PostgresBackend(c)
+                db.ensure_version_table()
+                applied, required = db.applied(), db.required_code()
+                c.commit()
+        else:
+            import sqlite3
+            if not os.path.exists(target):
+                print(f"volt: no database at {target}", file=sys.stderr)
+                return 78
+            conn = sqlite3.connect(target)
+            db = migrations.SqliteBackend(conn)
+            db.ensure_version_table()
+            applied, required = db.applied(), db.required_code()
+            conn.commit()
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"volt: cannot read the database: {exc}", file=sys.stderr)
+        return 78
+    behind = [m.version for m in migrations.MIGRATIONS if m.version not in applied]
+    if args.verify:
+        if behind:
+            print(f"behind: this build knows schema {migrations.known_version()}; the database lacks {behind}")
+            return 1
+        print(f"ok: the database is at schema {migrations.known_version()}")
+        return 0
+    result = migrations.plan(applied, migrations.MIGRATIONS, required=required)
+    print(f"database at schema {max(applied) if applied else 0}; this build knows {migrations.known_version()}; required code version {required}")
+    for version, breaking in result.pending:
+        print(f"  pending {version}: {'BREAKING' if breaking else 'expand (additive)'}")
+    if not result.pending:
+        print("  nothing pending")
+    for reason in result.reasons:
+        print(f"  refused: {reason}")
+    print("rolling upgrade: " + ("ok" if result.rolling_ok else "NOT ok"))
+    return 0 if result.rolling_ok else 2
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -208,6 +321,8 @@ def main(argv=None) -> int:
     if command == "tenant":
         from volt import tenancy
         return tenancy.main(rest)
+    if command in ("migrate", "upgrade"):
+        return _migrate(rest) if command == "migrate" else _upgrade(rest)
     if command == "watch":
         from volt import watch
         _bridge_break_signal()

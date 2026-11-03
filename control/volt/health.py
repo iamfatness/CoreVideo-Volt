@@ -246,6 +246,15 @@ def _label(value) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+def media_key_fingerprint(key):
+    """A short, one-way tag of the media signing key, so a status page can see that every node holds the same one without anyone reading it
+    off a server. None when no key is set."""
+    if not key:
+        return None
+    import hashlib
+    return hashlib.sha256(b"volt-media-fingerprint:" + key.encode("utf-8")).hexdigest()[:12]
+
+
 def prometheus(report: dict, registry=None) -> str:
     lines: list = []
 

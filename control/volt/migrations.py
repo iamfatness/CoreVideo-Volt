@@ -46,6 +46,11 @@ class Migration:
     # Raw statements for changes that are not a plain ADD COLUMN. One per backend; either may be empty.
     sqlite: tuple = ()
     postgres: tuple = ()
+    # expand/contract. False (the default) is an expand: it adds a column with a default or NULL, a table or an index, so the previous
+    # release still works against it. True is a contract (drops, renames, narrows, tightens): code older than this version must not run.
+    # A breaking change is split over two releases: N stops using the old shape, N+1 drops it. `volt upgrade plan` refuses a rolling
+    # upgrade across one.
+    breaking: bool = False
 
 
 def _device_tables(ts: str) -> list:
@@ -322,6 +327,9 @@ class _Backend:
     def columns(self, table: str) -> set:
         raise NotImplementedError
 
+    def has_column(self, table: str, column: str) -> bool:
+        raise NotImplementedError
+
     def type_of(self, neutral: str) -> str:
         return _TYPES[neutral][1 if self.postgres else 0]
 
@@ -330,16 +338,25 @@ class _Backend:
 
     def ensure_version_table(self) -> None:
         self.execute(f"CREATE TABLE IF NOT EXISTS {VERSION_TABLE} ("
-                     "version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)")
+                     "version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL, min_code INTEGER)")
+        if not self.has_column(VERSION_TABLE, "min_code"):     # a version table made before the skew rule existed
+            self.execute(f"ALTER TABLE {VERSION_TABLE} ADD COLUMN min_code INTEGER")   # (checked first: a steady-state start takes no table lock)
 
     def applied(self) -> set:
         return {row[0] for row in self.execute(f"SELECT version FROM {VERSION_TABLE}").fetchall()}
 
+    def required_code(self) -> int:
+        """The oldest code version allowed to run against this database (0 when nothing recorded is breaking)."""
+        row = self.execute(f"SELECT MAX(min_code) FROM {VERSION_TABLE}").fetchone()
+        return int(row[0] or 0)
+
     def record(self, migration: Migration) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         ph = "%s" if self.postgres else "?"
-        self.execute(f"INSERT INTO {VERSION_TABLE} (version, name, applied_at) VALUES ({ph}, {ph}, {ph})",
-                     (migration.version, migration.name, stamp))
+        # A breaking migration requires code at least as new as itself; any other carries the requirement forward unchanged.
+        min_code = migration.version if migration.breaking else self.required_code()
+        self.execute(f"INSERT INTO {VERSION_TABLE} (version, name, applied_at, min_code) VALUES ({ph}, {ph}, {ph}, {ph})",
+                     (migration.version, migration.name, stamp, min_code))
 
 
 class SqliteBackend(_Backend):
@@ -351,6 +368,9 @@ class SqliteBackend(_Backend):
 
     def columns(self, table):
         return {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def has_column(self, table, column):
+        return column in {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
 
 
 class PostgresBackend(_Backend):
@@ -367,6 +387,12 @@ class PostgresBackend(_Backend):
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = current_schema() AND table_name = %s", (table,)).fetchall()
         return {row[0] for row in rows}
+
+    def has_column(self, table, column):
+        row = self.conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = %s AND column_name = %s",
+            (table, column)).fetchone()
+        return row is not None
 
 
 def legacy_columns() -> tuple:
@@ -406,12 +432,46 @@ def known_version() -> int:
     return max(m.version for m in MIGRATIONS)
 
 
+def required_code_version(db: _Backend) -> int:
+    """The oldest code version allowed to run against this database: the newest breaking migration applied to it, else 0."""
+    return db.required_code()
+
+
 def check_not_newer(db: _Backend) -> int:
-    """Raise SchemaTooNewError when the database is ahead of this code. Returns the database's version."""
+    """Raise SchemaTooNewError when this code is too old for the database. Returns the database's version.
+
+    The rule is expand/contract: a database that only gained additive migrations from a newer release is still safe for this code
+    (so a node that restarts mid-rollout comes back), and one that gained a breaking migration is not. A database whose recorded
+    versions predate the rule has no minimum and is treated as additive."""
     have = current_version(db)
-    if have > known_version():
-        raise SchemaTooNewError(have, known_version())
+    required = required_code_version(db)
+    if required > known_version():
+        raise SchemaTooNewError(required if required > 0 else have, known_version())
     return have
+
+
+@dataclass
+class UpgradePlan:
+    rolling_ok: bool
+    pending: list            # [(version, breaking)] not yet applied, in order
+    reasons: list            # why a rolling upgrade is refused, as sentences
+
+
+def plan(applied, migrations_list, required: int = 0, nodes=None) -> UpgradePlan:
+    """What an upgrade would do to a database that has `applied` versions. A rolling upgrade (nodes replaced one at a time while the others
+    serve) is refused when any pending migration is breaking, or when a running node is older than the code version the database already
+    requires. `nodes` is a list of {"name", "knownVersion"}, or None when the caller cannot list them."""
+    pending = [(m.version, bool(m.breaking)) for m in migrations_list if m.version not in applied]
+    reasons = []
+    for version, breaking in pending:
+        if breaking:
+            reasons.append(f"migration {version} is breaking: older nodes cannot run against it, so a rolling upgrade is not safe; "
+                           "stop everything, migrate, start the new release (or split the change over two releases)")
+    for node in nodes or []:
+        if int(node.get("knownVersion", 0)) < required:
+            reasons.append(f"node {node.get('name', '?')} knows schema {node.get('knownVersion')} but the database requires code at "
+                           f"least {required}")
+    return UpgradePlan(not reasons, pending, reasons)
 
 
 def run(db: _Backend) -> list:

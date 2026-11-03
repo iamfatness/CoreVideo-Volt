@@ -1,0 +1,15 @@
+# UNVALIDATED: never run. Caddy in front of two serve nodes. Replace volt.example.com; Caddy gets the certificate itself.
+# A health check on /ready takes a draining or unreadable node out of rotation before it exits (the node answers 503 while draining).
+# Caddy passes the original Host header (tenant mode picks the organisation from it) and adds X-Forwarded-For.
+
+volt.example.com {
+	encode zstd gzip
+	reverse_proxy serve-1:8765 serve-2:8765 {
+		lb_policy round_robin
+		health_uri /ready
+		health_interval 3s
+		health_timeout 2s
+		fail_duration 10s
+		lb_try_duration 5s
+	}
+}

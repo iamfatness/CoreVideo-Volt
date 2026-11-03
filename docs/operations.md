@@ -98,6 +98,9 @@ Defaults below are what applies when the variable is unset.
 | `VOLT_LOG_MAX_MB` | `10` | Size at which a log file rotates. |
 | `VOLT_LOG_BACKUPS` | `5` | Rotated files kept per process. |
 | `VOLT_TENANCY` | off | `on` makes `serve` resolve a tenant from the `Host` header (hosted multi-tenant, Postgres only; see "Several organisations in one deployment"). Refused together with `VOLT_TOKEN` or `VOLT_OIDC_CONFIG` (exit 78). |
+| `VOLT_MAX_CONCURRENT` | `64` | Requests one `serve` node handles at once; over it the answer is `503 busy` with `Retry-After: 1`. `/health`, `/ready` and show control (go, take, hold, release, kill, skip) are never refused. |
+| `VOLT_TRUSTED_PROXIES` | none | Comma-separated IPs or CIDRs of proxies whose `X-Forwarded-For` is believed (the first untrusted entry from the right is the client). Unset: the socket peer is the client, so behind a proxy every client looks like the proxy and the failed-token lockout does nothing (loopback peers are exempt from it). |
+| `VOLT_RATE_READ`, `VOLT_RATE_WRITE`, `VOLT_RATE_HEAVY` | tenant mode: `20,40` / `5,10` / `1,3`; otherwise off | Token buckets per principal as `rate,burst` (per second). Setting any of them turns the buckets on for an installed Volt too. Over the limit: `429 rate_limited` with `Retry-After`. Per node. |
 | `VOLT_CONTROL_DSN` | `VOLT_DB` when that is a Postgres DSN | The Postgres database holding the tenant registry (hosted multi-tenant only). Read by `volt tenant`. |
 | `VOLT_CONTROL_SCHEMA` | `volt_control` | The schema in that database that holds the registry. |
 | `VOLT_REQUEST_TIMEOUT` | `30` | Seconds a client socket may stall before `serve` drops it and frees the thread. Matters because connections are kept alive (HTTP/1.1). |
@@ -223,6 +226,17 @@ Proven by `control/tests/test_tenancy.py` on Postgres 16 only (a pooled connecti
 
 Proven by `control/tests/test_tenant_http.py` on Postgres 16 with two tenants and a fake room. **Not proven or not built:** browser (cookie) sign-in on a tenant host; per-tenant proxy, publish and quarantine folders in the runner and ingest (they still read the process environment, so a worker serving tenants needs the tenant-aware runner slice); quotas and rate limits; Postgres roles per tenant; a real hosted deployment. Migration from today's data: `volt tenant adopt --schema public` registers it where it is, then set `VOLT_TENANCY=on`, remove `VOLT_TOKEN` and add a user per tenant first.
 
+### Limits and abuse protection
+
+All of this is in the memory of one process, so **every limit is per node**: two nodes allow twice the rate. The proxy in front carries the global per-address limit; these are the second line. Show control (`go`, `take`, `hold`, `release`, `kill`, `skip`) is never rejected by a bucket or the gate, and a quota never applies to a read or to show control.
+
+- **Bounded server.** A client that stalls mid-request is dropped after `VOLT_REQUEST_TIMEOUT` (30 s) so it cannot hold a thread. At most `VOLT_MAX_CONCURRENT` (64) requests run at once per node; the next gets `503 busy`.
+- **Token buckets** (tenant mode, or when a `VOLT_RATE_*` variable is set): per principal and route class (`read`, `write`, `heavy` = ingest, detect, NLE export, publish, archive), plus a tenant aggregate (5 times a principal's) so one tenant's many users cannot take the node. The legacy shared token and open loopback are one name for every desk, so those are told apart by client address. `429 rate_limited`, `Retry-After` header and `retryAfterSeconds` in the body.
+- **Guessing.** 10 wrong bearer tokens from one address in 60 s block that address for 60 s (`429 rate_limited`); a right token afterwards does not clear the count. Needs `VOLT_TRUSTED_PROXIES` behind a proxy.
+- **Quotas** (per tenant, set with `volt tenant limit`): `max_assets` and `max_jobs_per_day` are checked where work is added (ingest, record start) and answer `429 quota_exceeded` with `quota` and `limit`. `max_running_jobs` belongs to the tenant-aware runner (not built) and `max_storage_bytes` needs a recorded file size the schema does not have; both can be set and are not yet enforced. No tenancy, or no limit set: nothing is refused.
+
+Series: `volt_rate_limited_total{kind="rate"|"auth"|"quota"}` and `volt_busy_total`. The default rates are the design's guesses (a desk polls at 0.5 per second); they have not been tuned against real traffic.
+
 ### More than one serve process
 
 Two or more `volt serve` processes behind a balancer are supported on **Postgres only** (SQLite is one host; the guarantees below are tested on Postgres). Set `VOLT_PG_POOL_MAX` on every node, and give every node the same `VOLT_MEDIA_KEY` (or `VOLT_TOKEN`) so a media ticket from one verifies on the other. Pool arithmetic: `nodes * VOLT_PG_POOL_MAX + runners * 2 + reserve` must not exceed the server's `max_connections`.
@@ -281,7 +295,7 @@ volt run --env-file /etc/volt/volt.env
 ```
 
 or with flags: `volt run --db postgresql://... --port 8765 --log-dir /var/log/volt`. Ctrl-C or SIGTERM stops
-serve, runner and clock together (the runner finishes the job in flight, up to `--stop-grace`, default 20 s, then
+serve, runner and clock together (the runner finishes the job in flight, up to `--stop-grace`, default 30 s, which covers serve's drain, then
 it is killed and its lease recovers the job). A crashed child is restarted after 1 s, 2 s, 4 s, up to 60 s
 (`--backoff-max`); the wait resets after a child has stayed up for a minute. A child that exits with code 78
 (configuration error) is not restarted and `volt run` stops with 78.
@@ -403,6 +417,8 @@ See `docs/specs/backup.md`. `volt check` reports whether `pg_dump` and `pg_resto
 
 Run the new version on every machine that shares a database; a runner on older code against a newer database
 is not blocked from starting.
+
+To upgrade several nodes one at a time without stopping (expand/contract migrations, `volt migrate`, `volt upgrade plan`, `/ready` and drain, the one-time bridge release), see [scale](scale.md).
 
 ## Not done yet (decisions and work outside this page)
 
