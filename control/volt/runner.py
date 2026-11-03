@@ -701,6 +701,14 @@ def main(argv: list[str]) -> int:
             print(f"volt runner: {exc}", file=sys.stderr)
             return 78
         runner.periodic.append(Periodic("mos", 2.0, sender.step))
+    from volt import wire as wire_mod
+    try:
+        wire_feeds = wire_mod.feeds_from_env(os.environ)
+    except ValueError as exc:
+        print(f"volt runner: {exc}", file=sys.stderr)
+        return 78
+    if wire_feeds:      # nothing configured means nothing fetched
+        runner.periodic.append(Periodic("wire", 15.0, lambda st: wire_mod.poll(st, wire_feeds, wire_mod.fetch, datetime.now(timezone.utc))))
     from volt import roomreg as roomreg_mod
     device_registry = roomreg_mod.from_env()
     if any(hasattr(device_registry.get(k), "ACTIONS") for k in device_registry.names()):

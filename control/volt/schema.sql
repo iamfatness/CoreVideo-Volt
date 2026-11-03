@@ -186,6 +186,15 @@ CREATE TABLE IF NOT EXISTS wire_story (
   UNIQUE (feed, external_id)
 );
 
+CREATE TABLE IF NOT EXISTS wire_feed (
+  feed TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  last_attempt_at TIMESTAMPTZ,
+  last_ok_at TIMESTAMPTZ,
+  last_error TEXT,
+  next_attempt_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS story_template (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,

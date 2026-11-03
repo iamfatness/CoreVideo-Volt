@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -116,6 +116,7 @@ _AUDIT_KIND = {
     "schema": "schema",
     "searches": "search",
     "bins": "bin",
+    "wire": "wire",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
@@ -339,6 +340,8 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "search_delete" if parts[-1] == "delete" else "search_save"
         if not captured and isinstance(out.get("search"), dict):
             captured = out["search"].get("id") or ""
+    if len(parts) >= 2 and parts[1] == "wire":
+        action = "wire_" + parts[-1]
     if len(parts) >= 2 and parts[1] == "bins":
         action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("bin"), dict):
@@ -929,6 +932,41 @@ def act_show_pace(store, show_id, body):
     return {"ok": True, "rundown": rundown_payload(store, show_id)}
 
 
+def _wire_errors(fn):
+    try:
+        return fn()
+    except (wire.WireRefusal, building.BuildError, story.StoryError) as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **getattr(exc, "extra", {})) from None
+
+
+def act_wire_take(store, wire_id, body):
+    """A person turns an inbox entry into a draft story in a show. {show, slug?, position?}. Nothing from a wire airs without this."""
+    _unknown_keys(body, {"show", "slug", "position"})
+    show_id = _str(body, "show", required=True, limit=128)
+    slug = _str(body, "slug", limit=200)
+    out = _wire_errors(lambda: wire.take(store, wire_id, show_id, slug, body.get("position"), _who()[0]))
+    return {"ok": True, "wire": wire_id, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+
+
+def act_wire_dismiss(store, wire_id, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "wire": wire_id, **_wire_errors(lambda: wire.dismiss(store, wire_id, _who()[0]))}
+
+
+def wire_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/wire?state=new&limit=&cursor=: the inbox, newest first, with each feed's last success and last error."""
+    if path != "/api/wire":
+        return False
+    extra = sorted(set(query) - {"state", "limit", "cursor"})
+    if extra or any(len(v) != 1 for v in query.values()):
+        raise ApiError(422, "bad_input", "this route takes state, limit and cursor, each once")
+    limit = query.get("limit", ["50"])[0]
+    if not limit.isdigit():
+        raise ApiError(422, "bad_input", "limit must be a whole number from 1 to 200")
+    handler._json(200, _wire_errors(lambda: wire.list_inbox(store, query.get("state", ["new"])[0], int(limit), query.get("cursor", [None])[0])))
+    return True
+
+
 PROMPTER_TTL_DEFAULT, PROMPTER_TTL_MAX = 4 * 3600, 12 * 3600
 
 
@@ -1468,6 +1506,8 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
     (re.compile(rf"^/api/shows/{_ID}/prompter-ticket$"), act_prompter_ticket),
+    (re.compile(rf"^/api/wire/{_ID}/take$"), act_wire_take),
+    (re.compile(rf"^/api/wire/{_ID}/dismiss$"), act_wire_dismiss),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1523,7 +1563,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_wire_take": "operator", "act_wire_dismiss": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -2029,6 +2069,8 @@ class Handler(BaseHTTPRequestHandler):
         if devices_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if wire_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if schema_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return

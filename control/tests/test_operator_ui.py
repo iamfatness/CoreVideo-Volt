@@ -101,6 +101,9 @@ class Endpoints(Api):
             elif tpl == "/api/audit":   # needs a target or the admin role: refused, never a missing route
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (200, 401, 403, 422), tpl)
+            elif tpl == "/api/wire":     # the inbox: a list, empty without feeds
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"], payload["stories"]), (200, True, []), tpl)
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
@@ -651,7 +654,7 @@ class Tokens(unittest.TestCase):
 
 ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
               "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
-              "lower3 mark signin script float").split()
+              "lower3 mark signin script float wire").split()
 
 
 class Icons(unittest.TestCase):
@@ -1569,3 +1572,15 @@ class ScriptsScreenContract(unittest.TestCase):
         seq = re.search(r"const SEQUENCED = new Set\(\[(.*?)\]\)", self.JS).group(1)
         for name in ("scriptSave", "storyStatus", "itemFloat", "showPace"):
             self.assertNotIn(name, seq)
+
+
+    def test_the_wire_tab_takes_only_by_a_person_and_draws_text_only(self):
+        sec = self.JS[self.JS.index("// ---- Wire: the inbox"):self.JS.index("function renderScripts")]
+        self.assertNotIn("innerHTML", sec)
+        self.assertIn("act('wireTake', w.id, { show: S.show }", sec)       # the one write that makes a story, behind a button press
+        self.assertEqual(self.JS.count("'wireTake'"), 1)
+        self.assertNotIn("setInterval", sec)                                # the inbox is read, never auto-taken; reads are paced by the render poll
+        self.assertIn("wireTake:    ['POST', '/api/wire/{id}/take']", self.JS)
+        self.assertIn("{ id: 'wire', label: 'Wire', icon: 'wire' }", self.JS)
+        self.assertIn("VOLT_WIRE_FEEDS", sec)                                # the empty state says who sets the feeds
+        self.assertIn("not against a real agency feed", sec)                 # the unvalidated line

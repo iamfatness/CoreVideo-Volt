@@ -420,6 +420,12 @@ ul.paths li{overflow-wrap:anywhere;color:var(--muted)}
 .sc-hist li{padding:var(--space-1) 0;font-size:var(--fs-sm);overflow-wrap:anywhere}
 #sc-side h3{margin:0;padding:var(--space-3) var(--space-3) var(--space-1);font-size:var(--fs-xs);letter-spacing:1px;text-transform:uppercase;color:var(--muted)}
 .sc-tabs{margin:var(--space-2) var(--space-2) 0}
+.wirerow{padding:var(--space-3);border-bottom:1px solid var(--hair)}
+.wirerow .wh{font-weight:600;overflow-wrap:anywhere}
+.wirerow .meta{color:var(--muted);font-size:var(--fs-sm)}
+.wirerow .snip{margin:var(--space-1) 0 0;color:var(--text);font-size:var(--fs-sm);overflow-wrap:anywhere}
+.wirefeeds{padding:var(--space-2) var(--space-3);border-bottom:1px solid var(--hair)}
+.wirefeeds li{padding:var(--space-1) 0;font-size:var(--fs-sm)}
 .rrow .dur small.rd{display:block;font-size:var(--fs-xs);letter-spacing:1px;text-transform:uppercase}
 dialog.wide{max-width:min(900px,94vw);width:min(900px,94vw)}
 .sc-two{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4);margin:var(--space-3) 0}

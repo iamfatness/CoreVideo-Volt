@@ -422,6 +422,9 @@
     itemFloat:   ['POST', '/api/items/{id}/float'],
     showPace:    ['POST', '/api/shows/{id}/reading-pace'],
     prompterTicket: ['POST', '/api/shows/{id}/prompter-ticket'],
+    wireList:    ['GET',  '/api/wire'],
+    wireTake:    ['POST', '/api/wire/{id}/take'],
+    wireDismiss: ['POST', '/api/wire/{id}/dismiss'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -449,7 +452,7 @@
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
     taking: 'Taking',
     stale_script: 'Story changed', story_killed: 'Story killed', bad_transition: 'Move not allowed', not_approver: 'Not an approver',
-    not_floatable: 'Cannot float', story_not_approved: 'Not approved',
+    not_floatable: 'Cannot float', story_not_approved: 'Not approved', already_taken: 'Already taken',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -3345,7 +3348,7 @@
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
     pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
-  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }];
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
 
@@ -3634,6 +3637,50 @@
     }
   }
 
+  // ---- Wire: the inbox. A person takes an entry into the open show as a draft story, or dismisses it. Nothing arrives on air by itself.
+  const WIRE = { rows: [], feeds: [], next: null, busy: false, err: null, at: 0, loaded: false };
+  const WIRE_EVERY_MS = 15000;
+  async function wireLoad(more) {
+    if (WIRE.busy) return;
+    WIRE.busy = true; WIRE.err = null; render();
+    try {
+      const q = { state: 'new', limit: '50' };
+      if (more && WIRE.next) q.cursor = WIRE.next;
+      const { status, data } = await call('wireList', null, null, q);
+      if (status === 200 && data && data.ok) { WIRE.rows = more ? WIRE.rows.concat(data.stories) : data.stories; WIRE.feeds = data.feeds || []; WIRE.next = data.next || null; WIRE.loaded = true; }
+      else WIRE.err = status === 401 ? 'A token is needed to read the inbox.' : codeOf(data, status).reason || 'The server refused to list the inbox.';
+    } catch (e) { WIRE.err = 'The server did not answer. The list may be out of date.'; }
+    WIRE.busy = false; WIRE.at = Date.now(); render();
+  }
+  function wireMaybeLoad() {
+    if (!WIRE.busy && (!WIRE.loaded || Date.now() - WIRE.at > WIRE_EVERY_MS) && !(WIRE.err && Date.now() - WIRE.at < WIRE_EVERY_MS)) wireLoad(false);
+  }
+  function wireRow(w) {
+    const take = 'wire-take:' + w.id, dis = 'wire-dismiss:' + w.id;
+    return el('li', { class: 'wirerow' },
+      el('div', { class: 'wh', text: w.headline }),
+      el('div', { class: 'meta' }, w.feed + (w.byline ? ' · ' + w.byline : '') + (w.publishedAt ? ' · ' + fmtTime(w.publishedAt) : '')),
+      w.snippet ? el('p', { class: 'snip', text: w.snippet }) : null,
+      el('div', { class: 'bar flush' },
+        btn('Take into this show', { key: take, cls: 'small', disabled: !S.show, aria: 'Take "' + w.headline + '" into this show as a draft',
+          onclick: () => act('wireTake', w.id, { show: S.show }, { key: take, okTitle: 'Taken as a draft.', ok: () => 'It is at the end of the rundown, not approved and not on air. Open it in the editor to work on it.',
+            hint: 'Someone else may have taken or dismissed it. The inbox is reloaded.' }).then(() => wireLoad(false)) }),
+        btn('Dismiss', { key: dis, cls: 'ghost small', aria: 'Dismiss "' + w.headline + '"',
+          onclick: () => act('wireDismiss', w.id, {}, { key: dis, okTitle: 'Dismissed.', ok: () => 'It leaves the inbox.' }).then(() => wireLoad(false)) })));
+  }
+  function wirePanel() {
+    return [el('div', { class: 'bar' }, btn(WIRE.busy ? 'Loading…' : 'Refresh', { key: 'wire-refresh', cls: 'ghost small', disabled: WIRE.busy, onclick: () => wireLoad(false) }),
+        el('span', { class: 'hint', text: 'Copy from feeds the server is set to read. Nothing here airs until you take it and approve it.' })),
+      WIRE.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', WIRE.err) : null,
+      WIRE.feeds.length ? el('ul', { class: 'list wirefeeds', 'aria-label': 'Feeds' }, WIRE.feeds.map((f) => el('li', {},
+        f.lastError ? stateChip('failed', 'Feed error') : stateChip('fresh', 'Feed ok'), ' ', el('strong', { text: f.feed }),
+        f.lastError ? el('span', { class: 'hint', text: ' · ' + f.lastError }) : f.lastOkAt ? el('span', { class: 'hint', text: ' · last read ' + fmtTime(f.lastOkAt) }) : null))) : null,
+      WIRE.rows.length ? el('ul', { class: 'list wirelist', 'aria-label': 'Wire stories not yet taken' }, WIRE.rows.map(wireRow))
+        : el('p', { class: 'empty', text: WIRE.loaded ? (WIRE.feeds.length ? 'Nothing waiting in the inbox.' : 'No feed has been read yet. Whoever runs the server sets the feeds (VOLT_WIRE_FEEDS); with none set, nothing is fetched.') : 'Reading the inbox…' }),
+      WIRE.next ? el('div', { class: 'bar' }, btn('Load more', { key: 'wire-more', cls: 'ghost small', disabled: WIRE.busy, onclick: () => wireLoad(true) })) : null,
+      el('p', { class: 'note', text: 'Wire formats are checked against sample files only, not against a real agency feed.' })];
+  }
+
   function renderScripts() {
     const items = scItems();
     if (S.data && S.data.rundown && !items.find((i) => i.id === SC.sel)) { SC.sel = null; SC.story = null; }
@@ -3663,7 +3710,9 @@
     scCountNow();
     renderScPreview();
     scTabs();
-    paint('sc-side', [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'history' ? scHistory() : null));
+    if (SC.tab === 'wire') wireMaybeLoad();
+    paint('sc-side', SC.tab === 'wire' ? ['wire', WIRE.rows, WIRE.feeds, WIRE.err, WIRE.busy, S.show, [...S.pending].filter((k) => k.startsWith('wire-'))]
+      : [SC.tab, SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]], () => (SC.tab === 'wire' ? wirePanel() : scHistory()));
   }
   // Closing the conflict dialog (Esc included) gives focus back to the editor and keeps the draft exactly as it was.
   function scConflictInit() {

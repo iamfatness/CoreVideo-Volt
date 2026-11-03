@@ -249,6 +249,11 @@ MIGRATIONS = (
               postgres=("CREATE TABLE IF NOT EXISTS auth_flow (state TEXT PRIMARY KEY, nonce TEXT NOT NULL, code_verifier TEXT NOT NULL, provider TEXT NOT NULL, next TEXT NOT NULL, binder_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)",
                         "CREATE TABLE IF NOT EXISTS identity (issuer TEXT NOT NULL, sub TEXT NOT NULL, user_name TEXT NOT NULL, email TEXT, display_name TEXT, last_login_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (issuer, sub))",
                         "CREATE TABLE IF NOT EXISTS oidc_group_map (provider TEXT NOT NULL, claim_value TEXT NOT NULL, group_name TEXT NOT NULL, PRIMARY KEY (provider, claim_value, group_name))")),
+    # Wire intake (volt/wire.py): one row per configured feed with its last attempt, last success, last error and next attempt, so one bad
+    # feed shows up in the inbox without stopping the others. A new table, so SCHEMA makes it on a fresh database.
+    Migration(31, "wire feed state",
+              sqlite=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TEXT, last_ok_at TEXT, last_error TEXT, next_attempt_at TEXT)",),
+              postgres=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TIMESTAMPTZ, last_ok_at TIMESTAMPTZ, last_error TEXT, next_attempt_at TIMESTAMPTZ)",)),
 )
 
 LATEST = MIGRATIONS[-1].version
