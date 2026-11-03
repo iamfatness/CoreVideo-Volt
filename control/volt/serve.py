@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, leases, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -34,7 +34,7 @@ from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
 from volt.rooms import CoreVideoProRoom, LiveError
-from volt.rundown import ItemNotReady, attach, kill, reorder
+from volt.rundown import ItemNotReady, attach, kill, reorder, show_lock
 from volt.session import list_assets, rundown, seek_hit
 from volt.shots import ShotError
 from volt.store import ArchivedError, NotClearedError, Store
@@ -118,6 +118,7 @@ _AUDIT_KIND = {
     "bins": "bin",
     "wire": "wire",
     "templates": "template",
+    "presence": "presence",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
@@ -353,6 +354,8 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("bin"), dict):
             captured = out["bin"].get("id") or ""
+    if len(parts) >= 4 and parts[1] == "items" and parts[3] == "lease":
+        action = "lease_" + {"lease": "acquire"}.get(parts[-1], parts[-1])
     kind = _AUDIT_KIND.get(parts[1] if len(parts) > 1 else "", "unknown")
     target = captured or ""
     if not target:
@@ -877,10 +880,25 @@ def act_item_add(store, show_id, body):
             "orderVersion": building.order_version(store, show_id)}
 
 
+def _client_tab(body: dict):
+    """The optional `clientId` a browser tab sends so the server can tell its own lease from another tab's."""
+    value = body.get("clientId")
+    if value is None:
+        return None
+    try:
+        return leases.check_client_id(value)
+    except leases.LeaseError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason) from None
+
+
 def act_item_rename(store, item_id, body):
-    _unknown_keys(body, {"slug", "script"})
+    """Rename an item / set its text. Optional `version` (the item's content version: 409 `stale_item` with the current text when it moved on)
+    and `clientId` (this tab; a live lease held by anyone else is 409 `leased`). Without either it behaves as it always did."""
+    _unknown_keys(body, {"slug", "script", "version", "clientId"})
     slug = _str(body, "slug", limit=200)
     script = _str(body, "script", limit=20000)
+    version = _str(body, "version", limit=64)
+    client = _client_tab(body)
     if slug is None and script is None:
         raise ApiError(422, "bad_input", "give slug, script or both")
     if slug is not None:
@@ -888,9 +906,87 @@ def act_item_rename(store, item_id, body):
         if not slug:
             raise ApiError(422, "bad_input", "slug cannot be empty")
     show_id, _ = _item_show(store, item_id)
-    _build_errors(lambda: building.rename_item(store, item_id, slug, script, _who()[0]))
+    _build_errors(lambda: building.rename_item(store, item_id, slug, script, _who()[0], version=version, client_id=client, now=CLOCK()))
     return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id),
             "orderVersion": building.order_version(store, show_id)}
+
+
+# ---- edit leases and presence (volt/leases.py) ------------------------------------------------------------------------
+# Advisory UX plus a server check. Nothing on the on-air path calls these, and a lease table that cannot be read is a 503 here and
+# "collaboration unavailable" in the page: never a reason for take, go, hold, release, skip or kill to wait.
+
+# The one POST function whose success is not audited: a presence heartbeat is ephemeral state, not a record. A lease renew is the other
+# named exception; act_item_lease marks it `auditSkip` itself, because only it knows whether the call began a lease or extended one.
+HEARTBEAT_ROUTES = frozenset({"act_presence"})
+
+
+def _collab(fn):
+    try:
+        return fn()
+    except leases.LeaseError as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **exc.extra) from None
+    except ApiError:
+        raise
+    except Exception:  # noqa: BLE001 - a missing or locked collaboration table: say so, change nothing
+        log.exception("collaboration tables unavailable")
+        raise ApiError(503, "collab_unavailable", "editing leases are unavailable right now; the show itself is unaffected") from None
+
+
+def _lease_client(body: dict) -> str:
+    if "clientId" not in body:
+        raise ApiError(422, "bad_input", "clientId is required: a random id for this browser tab")
+    return _client_tab(body)
+
+
+def act_item_lease(store, item_id, body):
+    """Acquire the edit lease on an item, or renew your own (the same call; `renew: true` says you believe you hold it, so a lost lease is
+    409 `lease_lost`). 409 `leased` names the holder. Audited when it begins a lease, not when it extends one."""
+    _unknown_keys(body, {"clientId", "renew"})
+    client = _lease_client(body)
+    renew = body.get("renew", False)
+    if not isinstance(renew, bool):
+        raise ApiError(422, "bad_input", "renew must be true or false")
+    actor, now = _who()[0], CLOCK()
+    held = _collab(lambda: leases.acquire(store, "item", item_id, actor, client, now, renew))
+    out = {"ok": True, "lease": held.public(now)}
+    if not held.fresh:
+        out["auditSkip"] = True
+    return out
+
+
+def act_item_lease_release(store, item_id, body):
+    """Give up your lease (closing the editor). Idempotent; only your own tab's lease is freed."""
+    _unknown_keys(body, {"clientId"})
+    client = _lease_client(body)
+    freed = _collab(lambda: leases.release(store, "item", item_id, _who()[0], client))
+    out = {"ok": True, "released": freed}
+    if not freed:
+        out["auditSkip"] = True
+    return out
+
+
+def act_item_lease_takeover(store, item_id, body):
+    """Take a live lease from its holder (a producer fixing a script whose editor walked away). 409 `not_leased` when nobody holds it.
+    The previous holder's next renew is `lease_lost`; the takeover is audited with who lost it."""
+    _unknown_keys(body, {"clientId"})
+    client = _lease_client(body)
+    actor, now = _who()[0], CLOCK()
+    held = _collab(lambda: leases.takeover(store, "item", item_id, actor, client, now))
+    return {"ok": True, "lease": held.public(now), "auditDetail": json.dumps({"previous": held.previous}, sort_keys=True)}
+
+
+def act_presence(store, _unused, body):
+    """A heartbeat from one browser tab: {clientId, show?, view}. Sent every 10 s, live for 30, never audited."""
+    _unknown_keys(body, {"clientId", "show", "view"})
+    client = _lease_client(body)
+    show = _str(body, "show", limit=128)
+    view = body.get("view")
+    actor, principal = _who()
+    if show is not None:
+        _show_exists(store, show)
+        _show_gate(store, principal, "show", show, "view")     # presence names a show: only someone who can see it may say they are looking
+    _collab(lambda: leases.beat(store, actor, client, show, view, CLOCK()))
+    return {"ok": True}
 
 
 # ---- stories: the script save and the story read (docs/superpowers/specs/2026-11-01-newsroom-scripts-design.md) -----------
@@ -905,7 +1001,7 @@ def _base_rev(body: dict) -> int:
 
 def act_story_script(store, item_id, body):
     """Save an item's slug and/or script text, based on revision `baseRev`. A stale base is 409 with what is current."""
-    _unknown_keys(body, {"script", "slug", "baseRev"})
+    _unknown_keys(body, {"script", "slug", "baseRev", "clientId"})
     script = _str(body, "script", limit=story.MAX_SCRIPT)
     slug = _str(body, "slug", limit=200)
     if script is None and slug is None:
@@ -913,8 +1009,15 @@ def act_story_script(store, item_id, body):
     if slug is not None and not slug.strip():
         raise ApiError(422, "bad_input", "slug cannot be empty")
     base = _base_rev(body)
-    _item_show(store, item_id)
-    out = _build_errors(lambda: story.set_script(store, item_id, script=script, slug=slug, base_rev=base, actor=_who()[0]))
+    client = _client_tab(body)
+    show, _ = _item_show(store, item_id)
+    actor = _who()[0]
+
+    def save():
+        with store.transaction(show_lock(show)):        # the lease check and the write are one step, under the lock go and take hold
+            building.guard_edit(store, item_id, actor, client, CLOCK())
+            return story.set_script(store, item_id, script=script, slug=slug, base_rev=base, actor=actor)
+    out = _build_errors(save)
     row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
     text = store.conn.execute("SELECT script FROM item WHERE id = ?", (item_id,)).fetchone()["script"]
     return {"ok": True, "item": item_id, **out, "stats": story.script_stats(text, story.wpm_of(store, row["show_id"]))}
@@ -1610,6 +1713,10 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/shows/{_ID}/delete$"), act_show_delete),
     (re.compile(rf"^/api/items/{_ID}/rename$"), act_item_rename),
     (re.compile(rf"^/api/items/{_ID}/script$"), act_story_script),
+    (re.compile(rf"^/api/items/{_ID}/lease$"), act_item_lease),
+    (re.compile(rf"^/api/items/{_ID}/lease/release$"), act_item_lease_release),
+    (re.compile(rf"^/api/items/{_ID}/lease/takeover$"), act_item_lease_takeover),
+    (re.compile(r"^/api/presence$()"), act_presence),
     (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
@@ -1692,6 +1799,8 @@ ROUTE_ROLES = {
     "act_user_end_sessions": "admin",
     # sessions: a viewer may sign in with a token and sign out
     "act_session_start": "viewer", "act_session_end": "viewer",
+    # collaboration: a lease is an edit, so it needs an operator; presence is only "I am looking", so a viewer may send it
+    "act_item_lease": "operator", "act_item_lease_release": "operator", "act_item_lease_takeover": "operator", "act_presence": "viewer",
 }
 
 
@@ -1711,6 +1820,7 @@ ROUTE_SHOW_LEVEL = {
     "act_prompter_ticket": "edit", "act_item_copy": "edit", "act_item_add": "edit", "act_item_schedule": "edit", "act_attach": "edit", "act_item_rename": "edit", "act_story_script": "edit",
     "act_story_status": "edit", "act_item_float": "edit", "act_item_remove": "edit", "act_item_detach": "edit", "act_cue_add": "edit",
     "act_cue_remove": "edit",
+    "act_item_lease": "edit", "act_item_lease_release": "edit", "act_item_lease_takeover": "edit",
 }
 # How to find the show from the id the path captured: the show itself, an item, a cue, or a MOS "device:show" id.
 SHOW_RESOLVER = {
@@ -1720,6 +1830,7 @@ SHOW_RESOLVER = {
     "act_skip": "item", "act_kill": "item", "act_item_schedule": "item", "act_attach": "item", "act_item_rename": "item",
     "act_prompter_ticket": "show", "act_item_copy": "item", "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
     "act_cue_add": "item", "act_cue_remove": "cue",
+    "act_item_lease": "item", "act_item_lease_release": "item", "act_item_lease_takeover": "item",
 }
 NOT_SHOW_SCOPED = frozenset({
     "act_show_create",                                                       # there is no show yet
@@ -1733,6 +1844,7 @@ NOT_SHOW_SCOPED = frozenset({
     "act_user_add", "act_user_disable", "act_user_enable", "act_user_rotate", "act_user_end_sessions", "act_user_identity", "act_user_role",
     "act_group_create", "act_group_members", "act_group_delete", "act_group_claims",
     "act_session_start", "act_session_end",
+    "act_presence",                                                          # names a show in the body and checks view access on it itself
     "act_template_create", "act_template_instantiate", "act_template_delete",   # the show is in the body: act_template_instantiate and _create check it themselves
     "act_wire_take", "act_wire_dismiss",                                     # the show is in the body: act_wire_take checks it itself
 })
@@ -2115,7 +2227,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = dict(out)
                 out.pop("httpStatus")
                 status = 202
-            if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300:
+            skip_audit = bool(isinstance(out, dict) and out.pop("auditSkip", False)) or fn.__name__ in HEARTBEAT_ROUTES
+            if isinstance(out, dict) and out.get("ok") is True and 200 <= status < 300 and not skip_audit:
                 action, kind, target = _audit_fields(path, m.group(1), body, out)
                 if kind == "session":
                     target = actor
@@ -2395,6 +2508,21 @@ class Handler(BaseHTTPRequestHandler):
         state = operator_state.build(store, rundown, show_id or None, operator_state.room_state(get_room), visible)
         # What a reorder must quote to be conditional on the list the page is showing (building.order_version).
         state["orderVersion"] = building.order_version(store, show_id) if show_id and rundown is not None else None
+        # Who is here and who is editing what, for the show on screen (which the caller may view: the filter above already decided that).
+        # If these tables cannot be read the page still gets everything else, plus a flag to say so; nothing on the on-air path waits on them.
+        state["presence"], state["leases"], state["collab"] = [], [], {"available": True}
+        if show_id and rundown is not None:
+            try:
+                now = CLOCK()
+                state["leases"] = leases.live(store, show_id, now)
+                state["presence"] = leases.who(store, show_id, now)
+            except Exception:  # noqa: BLE001 - a missing or locked table: the poll carries on without it
+                log.warning("collaboration state unavailable for the poll", exc_info=True)
+                state["presence"], state["leases"], state["collab"] = [], [], {"available": False}
+                try:
+                    store.conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
         return state
 
     def _json(self, status: int, payload: dict, headers=None):

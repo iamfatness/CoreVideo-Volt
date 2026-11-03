@@ -701,7 +701,7 @@ class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
         self.assertEqual(sorted(state), sorted(["incomplete", "required", "shared", "aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped",
-                                       "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved"]))
+                                       "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved", "editing", "yours"]))
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)
@@ -1679,3 +1679,126 @@ class ScriptsScreenContract(unittest.TestCase):
         self.assertIn("not a full-text index", sec)
         self.assertIn("{ id: 'archive', label: 'Archive', icon: 'library' }", self.JS)
         self.assertIn(".replace(/%3A/gi, ':')", self.JS)                     # `archive:<id>` keeps its colon in the path
+
+
+@unittest.skipUnless(NODE, "node is needed to run the page's functions")
+class LeaseUi(unittest.TestCase):
+    """Edit leases and presence on the page (identity plan, task 7): the words, the two-press take over, the lost-lease banner that keeps
+    the draft, and the presence strip with a text list. The server enforces every rule; the page shows what it said."""
+    HTML, JS, CSS = FILES["index.html"], FILES["operator.js"], FILES["operator.css"]
+
+    def section(self):
+        return self.JS[self.JS.index("// ---- Edit leases and presence"):self.JS.index("// ---- dialogs, keys, screens")]
+
+    def test_lease_states_in_state_map_and_sprite(self):
+        (state,) = _node(["STATE"])
+        self.assertEqual(state["editing"], {"icon": "lock", "word": "Editing", "cls": "st hold"})
+        self.assertEqual(state["yours"], {"icon": "ready", "word": "You", "cls": "st ok"})
+        for kind in ("editing", "yours"):
+            self.assertIn(state[kind]["icon"], Icons.SPRITE_IDS, kind)
+        self.assertNotIn("fail", state["editing"]["cls"] + state["yours"]["cls"])        # red is only for a live path
+
+    def test_the_row_chip_says_who_is_editing_and_which_one_is_you(self):
+        me = {"user": "ann", "client": "c1"}
+        leases = [{"item": "i1", "holder": "dan", "clientId": "c9", "secondsLeft": 30},
+                  {"item": "i2", "holder": "ann", "clientId": "c1", "secondsLeft": 44},
+                  {"item": "i3", "holder": "ann", "clientId": "other-tab", "secondsLeft": 12}]
+        got = _node(["leaseView", leases, "i1", me], ["leaseView", leases, "i2", me], ["leaseView", leases, "i3", me],
+                    ["leaseView", leases, "i4", me], ["leaseView", None, "i1", me])
+        self.assertEqual(got[0], {"kind": "editing", "word": "dan editing", "holder": "dan", "secondsLeft": 30, "mine": False})
+        self.assertEqual(got[1], {"kind": "yours", "word": "You editing", "holder": "ann", "secondsLeft": 44, "mine": True})
+        self.assertEqual(got[2]["kind"], "editing")                       # two tabs of one user: the other tab's lease is not yours
+        self.assertEqual(got[2]["word"], "ann editing in another tab")
+        self.assertEqual(got[3:], [None, None])
+
+    def test_presence_strip_has_text_list(self):
+        presence = [{"user": "ann", "name": "Ann Lee", "clientId": "c1", "view": "show"},
+                    {"user": "ann", "name": "Ann Lee", "clientId": "c2", "view": "item:i1"},
+                    {"user": "dan", "name": "dan", "clientId": "c3", "view": "library"}]
+        groups, lines = _node(["presenceGroups", presence, {"user": "dan", "client": "c3"}],
+                              ["presenceLines", presence, {"user": "dan", "client": "c3"}, {"i1": "Lead"}])
+        self.assertEqual([g["user"] for g in groups], ["ann", "dan"])
+        self.assertEqual(groups[0]["initials"], "AL")
+        self.assertEqual(groups[0]["tabs"], 2)
+        self.assertTrue(groups[1]["you"])
+        self.assertEqual(lines, ["Ann Lee: viewing the rundown, working on Lead", "You: in the library"])
+        strip = self.JS[self.JS.index("function presenceStrip"):self.JS.index("function presenceStrip") + 1800]
+        self.assertIn("presence-list", strip)                          # the visible list, for keyboard and screen-reader users
+        self.assertIn("aria-hidden", strip)                            # the initials circles repeat the list, so they are hidden from it
+        self.assertNotIn("innerHTML", strip)
+        self.assertIn('id="presence"', self.HTML)
+        self.assertIn('id="sc-presence"', self.HTML)
+
+    def test_collaboration_unavailable_is_a_notice_in_words_and_never_blocks_the_page(self):
+        sec = self.section()
+        self.assertIn("Collaboration is unavailable", sec)
+        self.assertIn("take, go, hold", sec)
+
+    def test_lease_outcomes_from_the_servers_answers(self):
+        got = _node(["leaseOutcome", 200, {"ok": True, "lease": {"secondsLeft": 45}}, 0],
+                    ["leaseOutcome", 409, {"error": {"code": "leased"}, "holder": "dan", "secondsLeft": 20}, 0],
+                    ["leaseOutcome", 409, {"error": {"code": "lease_lost"}, "holder": "dan"}, 0],
+                    ["leaseOutcome", 409, {"error": {"code": "not_editable"}}, 0],
+                    ["leaseOutcome", 503, {"error": {"code": "collab_unavailable"}}, 0],
+                    ["leaseOutcome", 0, None, 0],
+                    ["leaseOutcome", 0, None, 1],
+                    ["leaseOutcome", 500, None, 1],
+                    ["leaseOutcome", 401, {"error": {"code": "unauthorized"}}, 0])
+        self.assertEqual([g["state"] for g in got], ["held", "blocked", "lost", "ended", "unavailable", "held", "unsure", "unsure", "held"])
+        self.assertEqual(got[1]["holder"], "dan")
+        self.assertEqual(got[2]["holder"], "dan")
+        self.assertEqual(got[5]["fails"], 1)                       # one failed renew is a retry: the lease may still be held
+        self.assertEqual(got[6]["fails"], 2)                       # the second in a row: the page stops saving and says so
+        self.assertEqual(got[8]["fails"], 1)
+
+    def test_a_save_is_allowed_only_while_the_lease_is_held_or_collaboration_is_off(self):
+        got = _node(*[["leaseAllowsSave", st] for st in ("held", "unavailable", "none", "blocked", "lost", "unsure", "ended")])
+        self.assertEqual(got, [True, True, True, False, False, False, False])
+
+    def test_takeover_is_two_press(self):
+        sec = self.section()
+        self.assertIn("armedAction('takeover:' + ", sec)
+        self.assertIn("'Confirm take over'", sec)
+        self.assertIn("'Take over'", sec)
+        self.assertNotRegex(sec, r"onclick: \(\) => leaseTakeover\(")      # the button never calls the takeover directly: it goes through armedAction
+
+    def test_the_lost_lease_banner_keeps_the_draft_and_offers_copy_my_text(self):
+        sec = self.section()
+        banner = sec[sec.index("function leaseBanner"):sec.index("function leaseBanner") + 2600]
+        self.assertIn("Copy my text", banner)
+        self.assertIn("role: 'alert'", banner)
+        self.assertIn("icon('alert'", banner)                          # an icon and words, not colour alone
+        self.assertNotIn("delete SC.drafts", sec)                      # losing a lease never drops what was typed
+        self.assertIn("navigator.clipboard", sec)
+
+    def test_timers_and_storage(self):
+        sec = self.section()
+        self.assertIn("LEASE_RENEW_MS = 15000", sec)
+        self.assertIn("PRESENCE_MS = 10000", sec)
+        self.assertRegex(sec, r"try \{[^}]*sessionStorage[^}]*\} catch")   # the tab's client id comes from storage inside try/catch
+        self.assertNotIn("localStorage", sec)                              # nothing about a lease is kept across sessions
+        self.assertIn("'volt.client'", sec)
+
+    def test_the_editor_saves_with_its_client_id_and_the_rename_form_sends_it_too(self):
+        save = self.JS[self.JS.index("async function scSave"):self.JS.index("function scOpenConflict")]
+        self.assertIn("clientId: LS.client", save)
+        self.assertIn("baseRev: d.base", save)                          # the revision check is unchanged
+        rename = self.JS[self.JS.index("function renameItem"):self.JS.index("function renameItem") + 400]
+        self.assertIn("clientId: LS.client", rename)
+
+    def test_the_endpoints_exist_and_never_wait_on_the_take_lock(self):
+        for pair in ("leaseAcquire: ['POST', '/api/items/{id}/lease']", "leaseRelease: ['POST', '/api/items/{id}/lease/release']",
+                     "leaseTakeover: ['POST', '/api/items/{id}/lease/takeover']", "presence:    ['POST', '/api/presence']"):
+            self.assertIn(pair, self.JS)
+        seq = re.search(r"const SEQUENCED = new Set\(\[(.*?)\]\)", self.JS).group(1)
+        for name in ("leaseAcquire", "leaseRelease", "leaseTakeover", "presence"):
+            self.assertNotIn(name, seq)
+        labels = self.JS[self.JS.index("const ERR_LABEL"):self.JS.index("const INGEST_WHY")]
+        for code in ("leased", "lease_lost", "stale_item", "not_leased", "collab_unavailable"):
+            self.assertIn(code + ": ", labels)
+
+    def test_the_styles_use_only_existing_tokens_in_both_themes(self):
+        for cls in (".presence", ".avatar", ".lease-banner"):
+            self.assertIn(cls, self.CSS)
+        for name in set(re.findall(r"var\(--([a-z0-9-]+)\)", self.CSS[self.CSS.index(".presence"):])):
+            self.assertRegex(self.CSS, r"--%s:" % re.escape(name))

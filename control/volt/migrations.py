@@ -261,6 +261,15 @@ MIGRATIONS = (
     Migration(32, "wire feed state",
               sqlite=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TEXT, last_ok_at TEXT, last_error TEXT, next_attempt_at TEXT)",),
               postgres=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TIMESTAMPTZ, last_ok_at TIMESTAMPTZ, last_error TEXT, next_attempt_at TIMESTAMPTZ)",)),
+    # Edit leases and presence (volt/leases.py): who is editing an item right now, and who is looking at which show. Both are ephemeral
+    # collaboration state: nothing on the take / go / hold / release / skip / kill path reads them. New tables, so SCHEMA makes them on a fresh database.
+    Migration(33, "edit leases and presence",
+              sqlite=("CREATE TABLE IF NOT EXISTS lease (resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, holder TEXT NOT NULL, client_id TEXT NOT NULL, acquired_at TEXT NOT NULL, renewed_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (resource_kind, resource_id))",
+                      "CREATE TABLE IF NOT EXISTS presence (user_name TEXT NOT NULL, client_id TEXT NOT NULL, show_id TEXT, view TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (user_name, client_id))",
+                      "CREATE INDEX IF NOT EXISTS presence_by_show ON presence (show_id)"),
+              postgres=("CREATE TABLE IF NOT EXISTS lease (resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, holder TEXT NOT NULL, client_id TEXT NOT NULL, acquired_at TIMESTAMPTZ NOT NULL, renewed_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (resource_kind, resource_id))",
+                      "CREATE TABLE IF NOT EXISTS presence (user_name TEXT NOT NULL, client_id TEXT NOT NULL, show_id TEXT, view TEXT NOT NULL, seen_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_name, client_id))",
+                      "CREATE INDEX IF NOT EXISTS presence_by_show ON presence (show_id)")),
 )
 
 LATEST = MIGRATIONS[-1].version
