@@ -5,8 +5,9 @@
 
 `--no-runner` leaves queued detection and indexing jobs queued, so those states can be looked at.
 Scenarios: normal, held, take_fail, record_requested, record_producing, record_finalizing,
-record_completed, publish_progress, publish_partial, library, export. The page is then at /operator.
-`library` adds assets for the Library screen (see seed_library). `export` is `library` plus assets that make each
+record_completed, publish_progress, publish_partial, library, export, find. The page is then at /operator.
+`library` adds assets for the Library screen (see seed_library). `find` is `library` plus typed fields, metadata, a second
+show with speech, a saved search and a bin (see seed_find). `export` is `library` plus assets that make each
 export refusal reachable (see seed_export) and a path map. `--token T` makes the server require a bearer token.
 Used for the screenshots in docs/mockups and by the accessibility and keyboard passes.
 """
@@ -34,7 +35,7 @@ from volt.rundown import add_item, attach, open_show
 from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
-             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export"]
+             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "find"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -142,6 +143,54 @@ def seed_library(store: Store, media_dir: Path) -> dict:
     return out
 
 
+FIND_TALK = {
+    "studio-a": "Good morning and welcome to the Morning Brief. Our guest today is Amara Okonkwo from the city council. "
+                "She will talk about the stadium vote and what it means for the budget.",
+    "studio-b": "The weather desk has a front moving in from the coast. Expect rain by noon and wind gusts over the harbour. "
+                "Okonkwo told reporters the vote would go ahead.",
+    "field-1": "Live from the Dome where the Wildcats lead at the half. The crowd is loud and the bench is on its feet.",
+}
+
+
+def seed_find(store: Store, media_dir: Path, ids: dict) -> dict:
+    """On top of seed_library: what the Library's Find and Details tabs need. Returns {name: asset id}.
+
+    Fields: producer (text, required, global), topic (choice: Sports, Politics, Weather), approved (yes or no),
+    notes (long text, only for Morning Brief). Values on some assets only, so some are Incomplete.
+    A second show (Morning Brief) with three assets that have speech; iso-4 keeps its Okonkwo transcript.
+    One saved search (mine, shared) and a bin holding two assets.
+    """
+    from volt import collections as colls
+    from volt import metadata, searchindex
+    out = {}
+    metadata.define_field(store, "producer", "Producer", "text", required=True, actor="desk")
+    metadata.define_field(store, "topic", "Topic", "enum", actor="desk")
+    metadata.add_terms(store, "topic", ["Sports", "Politics", "Weather"])
+    metadata.define_field(store, "approved", "Approved for air", "bool", actor="desk")
+    metadata.define_field(store, "notes", "Notes", "longtext", show_name="Morning Brief", actor="desk")
+    for camera, text in FIND_TALK.items():
+        a = store.mint_asset(owner="desk", show_name="Morning Brief" if camera.startswith("studio") else "Final Four Watch", camera=camera)
+        store.set_cleared(a.id, camera != "studio-b")
+        store.add_essence(a.id, "hi-res", str(media_dir / f"{camera}.mxf"), frame_rate="25", timecode_start="01:00:00:00", duration_frames=2500)
+        f = shots.facts(store, a.id)
+        for n, word in enumerate(text.split()):
+            fin = f.start + 12 * n
+            store.add_span(a.id, "transcript", f.label(fin), f.label(fin + 10), text=word, origin="transcript", frame_in=fin, frame_out=fin + 10)
+        out[camera] = a.id
+    sets = [("iso-4", "producer", ["R. Patel"]), ("iso-4", "topic", ["Sports"]), ("iso-4", "approved", [True]),
+            ("studio-a", "producer", ["M. Osei"]), ("studio-a", "topic", ["Politics"]), ("studio-a", "notes", ["Guest booked through the council press office."]),
+            ("studio-b", "topic", ["Weather"]), ("field-1", "topic", ["Sports"]), ("field-1", "producer", ["R. Patel"])]
+    ids = {**ids, **out}
+    for camera, key, values in sets:
+        metadata.set_values(store, ids[camera], key, values, "desk")
+    searchindex.rebuild_all(store)
+    colls.save_search(store, "desk", "Okonkwo, anywhere", {"q": "Okonkwo"}, True)
+    one = colls.create_bin(store, "desk", "Tomorrow's rundown", False)
+    colls.add_member(store, one["id"], ids["studio-a"], None, "desk")
+    colls.add_member(store, one["id"], ids["iso-4"], None, "desk")
+    return out
+
+
 def seed_export(store: Store, media_dir: Path, ids: dict) -> dict:
     """Extra assets for the Library's export tab, on top of seed_library. Returns {name: asset id}.
 
@@ -233,11 +282,13 @@ def seed(store: Store, scenario: str, media_dir=None):
             "record_finalizing": obs("finalizing", path=r"C:\iso\iso-3.mp4"),
             "record_completed": obs("completed", path=r"C:\iso\iso-3.mp4", finalized=True),
         }[scenario]
-    if scenario in ("library", "export"):
+    if scenario in ("library", "export", "find"):
         media = Path(media_dir or tempfile.mkdtemp())
         lib = seed_library(store, media)
         if scenario == "export":
             lib.update(seed_export(store, media, lib))
+        if scenario == "find":
+            lib.update(seed_find(store, media, lib))
         for camera, asset_id in lib.items():
             spans["asset:" + camera] = asset_id
     return FakeRoom([room_obs], senders=senders, states=[{"lowerThirdOnAir": True}]), show, spans
@@ -294,7 +345,7 @@ def serve_scenario(scenario: str, port: int, slow: float = 600.0, token=None, ru
         serve.PUBLISH = lambda st, span, out: publish(st, span)
     srv = ThreadingHTTPServer(("127.0.0.1", port), serve.Handler)
     srv.daemon_threads = True
-    if scenario == "library" and runner:
+    if scenario in ("library", "find") and runner:
         stop = threading.Event()
         threading.Thread(target=_run_jobs, args=(path, serve.OUT_DIR, stop), daemon=True).start()
         srv.stop_runner = stop.set

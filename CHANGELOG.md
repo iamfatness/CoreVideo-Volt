@@ -6,6 +6,8 @@ history below is rebuilt from the git log and grouped by feature, newest work fi
 
 ## [Unreleased]
 
+- Library: a **Find** tab (the landing view) and a **Details** tab. Find is the faceted search with saved searches and bins; Details is the asset's typed metadata as a form, with Define a field for admins. Two icons (`bin`, `tag`) and three state chips (Incomplete, Shared, Required). No server change. See [operator-ui.md](docs/specs/operator-ui.md).
+
 - Identity, first two slices (migrations 22 and 23): a read-only `viewer` role, groups that raise a member's role (effective role read on every request), `POST /api/users/{name}/role`, `/api/groups...`, `volt user role|group-add|group-member`; and an audit view: `GET /api/audit` with filters, cursor paging and CSV for admins, an Activity screen. See [access.md](docs/specs/access.md). Sign-in, leases and comments are still to do.
 
 - Identity, slice 3 (migration 26): server-side sessions behind an HttpOnly cookie. `POST /api/session/start` (bearer in, cookie and CSRF value out), `POST /api/session/end`, `POST /api/users/{name}/end-sessions`; cookie writes need an `Origin` matching `VOLT_PUBLIC_URL` and the per-session `X-Volt-Csrf`; idle and absolute limits (`VOLT_SESSION_IDLE`, `VOLT_SESSION_MAX`); the Token dialog now trades a token for a session. `/api/whoami` gains `effectiveRole`, `groups`, `via`, `displayName` and, for a session, `csrf`. Bearer tokens behave as before. See [access.md](docs/specs/access.md).

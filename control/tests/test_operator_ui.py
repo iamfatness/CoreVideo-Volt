@@ -104,6 +104,9 @@ class Endpoints(Api):
             elif tpl == "/api/cue-commands":  # a list, not a lookup: it has no id to get wrong
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"]), (200, True), tpl)
+            elif tpl in ("/api/search", "/api/searches", "/api/bins", "/api/schema"):   # lists: they have no id to get wrong
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"]), (200, True), tpl)
             elif tpl == "/api/media-ticket":
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (401, 422, 503), tpl)
@@ -651,7 +654,7 @@ class Tokens(unittest.TestCase):
 
 ICON_NAMES = ("rundown record rights publish library take hold skip stop cut wave transcript marker onair ready pending alert "
               "sliders user key search filter download link trash lock room cue export shot plus close chevron more mic eye "
-              "lower3 mark signin").split()
+              "lower3 mark signin bin tag").split()
 
 
 class Icons(unittest.TestCase):
@@ -685,7 +688,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), ["aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
+        self.assertEqual(sorted(state), ["aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "incomplete", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "required", "restoring", "running", "shared", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped"])
         for kind, spec in state.items():
             self.assertIn(spec["icon"], Icons.SPRITE_IDS, kind)
             self.assertTrue(spec["cls"].startswith("st "), kind)

@@ -251,7 +251,9 @@
     stale:     { icon: 'alert',   word: 'Stale',       cls: 'st pend' },
     canair:    { icon: 'ready',   word: 'Yes',         cls: 'st ok' },
     blocked:   { icon: 'alert',   word: 'No',          cls: 'st fail' },
-
+    incomplete: { icon: 'alert',  word: 'Incomplete',  cls: 'st pend' },
+    shared:    { icon: 'user',    word: 'Shared',      cls: 'st done' },
+    required:  { icon: 'alert',   word: 'Required',    cls: 'st pend' },
 
   };
   // A rundown item's status and a cue's status, in the state language. Next is the first ready item after the one on air.
@@ -330,8 +332,159 @@
     return out;
   }
 
+  // ---- Find: the search request, the response, and the pieces of a result row. Pure, so a test can drive them under node. ----
+  // The scopes the server takes that this page offers. A Labels scope exists on the server and appears here once something writes labels.
+  const SEARCH_SCOPES = [['all', 'All'], ['transcript', 'Speech'], ['metadata', 'Details']];
+  const FACET_BUILTIN = [['show', 'Show'], ['camera', 'Camera'], ['owner', 'Owner'], ['retention', 'Retention'], ['cleared', 'Rights'], ['created', 'Month']];
+  const HIT_KIND = { transcript: 'Speech', meta: 'Details', face: 'Face', text: 'On screen', object: 'Object', scene: 'Scene' };
+  const monthRange = (ym) => {
+    const m = /^(\d{4})-(\d{2})$/.exec(String(ym));
+    if (!m) return null;
+    const y = +m[1], mo = +m[2], p = (n) => String(n).padStart(2, '0');
+    return { from: y + '-' + p(mo) + '-01', to: y + '-' + p(mo) + '-' + p(new Date(Date.UTC(y, mo, 0)).getUTCDate()) };
+  };
+  // One filter clause from the values ticked in one facet. A month is a range; true and false together constrain nothing.
+  function facetClause(field, values) {
+    if (!Array.isArray(values) || !values.length) return null;
+    if (field === 'created') { const r = monthRange(values[0]); return r ? { field, op: 'range', from: r.from, to: r.to } : null; }
+    if (values.length === 1) return { field, op: 'eq', value: values[0] };
+    if (typeof values[0] === 'boolean') return null;
+    return { field, op: 'in', value: values.slice(0, 50) };
+  }
+  // ui: { q, scope, sort, sel: {facet: [values]}, incomplete, extra: [clauses kept as they came], includeProposed, limit, after }.
+  // Unreviewed faces are never asked for unless includeProposed is set, and nothing on this page sets it.
+  function buildSearchRequest(ui) {
+    const u = ui || {}, req = {};
+    const q = typeof u.q === 'string' ? u.q.trim().slice(0, 500) : '';
+    if (q) req.q = q;
+    if (u.scope && u.scope !== 'all') req.scope = u.scope;
+    const all = [];
+    for (const field of Object.keys(u.sel || {}).sort()) { const c = facetClause(field, u.sel[field]); if (c) all.push(c); }
+    if (u.incomplete) all.push({ field: 'incomplete', op: 'eq', value: true });
+    for (const c of Array.isArray(u.extra) ? u.extra : []) all.push(c);
+    if (all.length) req.filter = { all };
+    const sort = u.sort === 'recent' || u.sort === 'show' ? u.sort : (u.sort === 'relevance' && q ? 'relevance' : null);
+    if (sort) req.sort = sort;
+    if (u.includeProposed === true) req.include = 'proposed';
+    if (Number.isInteger(u.limit) && u.limit >= 1 && u.limit <= 100) req.limit = u.limit;
+    if (typeof u.after === 'string' && u.after) req.after = u.after;
+    return req;
+  }
+  // What a saved search stores: the question, not the page.
+  const savedQueryOf = (req) => { const o = Object.assign({}, req); delete o.after; delete o.limit; delete o.facets; return o; };
+  // The request as GET parameters: every value a string, the filter as JSON.
+  function searchParams(req, facets) {
+    const p = {};
+    for (const k of ['q', 'scope', 'sort', 'include', 'after']) if (typeof req[k] === 'string') p[k] = req[k];
+    if (req.filter) p.filter = JSON.stringify(req.filter);
+    if (req.limit) p.limit = String(req.limit);
+    if (Array.isArray(facets) && facets.length) p.facets = facets.join(',');
+    return p;
+  }
+  // The other way: a saved request back into the page's own controls. A clause the controls cannot show is kept in `extra` untouched.
+  function uiFromRequest(req) {
+    const r = req || {}, ui = { q: typeof r.q === 'string' ? r.q : '', scope: typeof r.scope === 'string' ? r.scope : 'all', sort: typeof r.sort === 'string' ? r.sort : 'auto',
+      sel: {}, incomplete: false, extra: [] };
+    const all = r.filter && Array.isArray(r.filter.all) ? r.filter.all : [];
+    for (const c of all) {
+      if (!c || typeof c !== 'object') continue;
+      if (c.field === 'incomplete' && c.op === 'eq' && c.value === true) { ui.incomplete = true; continue; }
+      const text = FACET_BUILTIN.some((f) => f[0] === c.field && f[0] !== 'created' && f[0] !== 'cleared') || /^meta\./.test(c.field || '');
+      if (text && c.op === 'eq' && typeof c.value !== 'object' && !ui.sel[c.field]) { ui.sel[c.field] = [c.value]; continue; }
+      if (text && c.op === 'in' && Array.isArray(c.value) && !ui.sel[c.field]) { ui.sel[c.field] = c.value.slice(); continue; }
+      ui.extra.push(c);
+    }
+    return ui;
+  }
+  // The response, defensively: a missing list is an empty one, and nothing here is trusted to be the right type.
+  function parseSearchResponse(json) {
+    const out = { ok: false, assets: [], total: 0, facets: {}, next: null, degraded: false };
+    if (!json || typeof json !== 'object' || json.ok !== true) return out;
+    out.ok = true;
+    out.total = Number.isInteger(json.total) ? json.total : 0;
+    out.next = typeof json.next === 'string' ? json.next : null;
+    out.degraded = json.degraded === true;
+    for (const a of Array.isArray(json.assets) ? json.assets : []) {
+      if (!a || typeof a.assetId !== 'string') continue;
+      out.assets.push(Object.assign({}, a, {
+        hits: (Array.isArray(a.hits) ? a.hits : []).filter((h) => h && typeof h === 'object').map((h) => Object.assign({}, h, { snippet: typeof h.snippet === 'string' ? h.snippet : '' })),
+        metadata: a.metadata && typeof a.metadata === 'object' ? a.metadata : {}, missing: Array.isArray(a.missing) ? a.missing : [],
+      }));
+    }
+    const f = json.facets && typeof json.facets === 'object' ? json.facets : {};
+    for (const name of Object.keys(f)) {
+      const v = f[name];
+      out.facets[name] = { values: v && Array.isArray(v.values) ? v.values.filter((x) => x && Number.isInteger(x.count)) : [], other: v && Number.isInteger(v.other) ? v.other : 0 };
+    }
+    return out;
+  }
+  // The words of the query that should be marked in a snippet: bare words and quoted phrases, not -excluded ones.
+  function queryTerms(q) {
+    const out = [];
+    for (const m of String(q || '').matchAll(/(-?)(?:"([^"]+)"|(\S+))/g)) {
+      if (m[1]) continue;
+      const t = (m[2] || m[3] || '').replace(/^["*]+|["*]+$/g, '').trim().toLowerCase();
+      if (t && !out.includes(t)) out.push(t);
+    }
+    return out.slice(0, 20);
+  }
+  // A snippet cut into pieces, each marked hit or not. The page sets every piece as a text node: nothing here is ever markup.
+  function splitHighlight(text, q) {
+    const s = String(text == null ? '' : text), terms = queryTerms(q);
+    if (!terms.length || !s) return [{ text: s, hit: false }];
+    const re = new RegExp(terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    const out = [];
+    let at = 0;
+    for (const m of s.matchAll(re)) {
+      if (!m[0]) continue;
+      if (m.index > at) out.push({ text: s.slice(at, m.index), hit: false });
+      out.push({ text: m[0], hit: true });
+      at = m.index + m[0].length;
+    }
+    if (at < s.length) out.push({ text: s.slice(at), hit: false });
+    return out.length ? out : [{ text: s, hit: false }];
+  }
+  // The value of a facet as a person reads it.
+  function facetValueText(name, value) {
+    if (typeof value === 'boolean') return name === 'cleared' ? (value ? 'Cleared' : 'Not cleared') : (value ? 'Yes' : 'No');
+    if (name === 'created') {
+      const m = /^(\d{4})-(\d{2})$/.exec(String(value));
+      return m ? ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][+m[2] - 1] + ' ' + m[1] : String(value);
+    }
+    return String(value);
+  }
+  // Keys of the Find tab. `/` is the only one handled outside the results list; never inside a field, never off the Library screen.
+  function findKeyAction(key, state) {
+    const s = state || {};
+    if (s.inField || s.screen !== 'library') return null;
+    return key === '/' ? 'focus' : null;
+  }
+  // A field's draft (what is typed) as the list of values the server takes, or the refusal it would give. The server checks it again.
+  function metaValues(field, draft) {
+    const bad = (reason) => ({ ok: false, code: 'type_mismatch', reason });
+    const d = draft == null ? '' : draft;
+    const items = Array.isArray(d) ? d : (field.multi && field.type === 'text' ? String(d).split('\n') : [d]);
+    const vals = [];
+    for (const raw of items) {
+      if (field.type === 'bool') { if (raw === true || raw === 'true') vals.push(true); else if (raw === false || raw === 'false') vals.push(false); continue; }
+      const t = typeof raw === 'string' ? (field.type === 'longtext' ? raw : raw.trim()) : raw;
+      if (t === '' || t == null) continue;
+      if (field.type === 'number') {
+        const n = Number(t);
+        if (typeof t === 'string' && !/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) return bad(field.label + ' must be a number.');
+        if (!Number.isFinite(n)) return bad(field.label + ' must be a number.');
+        vals.push(n);
+      } else if (field.type === 'date') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return bad(field.label + ' must be a date written YYYY-MM-DD.');
+        vals.push(t);
+      } else vals.push(String(t));
+    }
+    return { ok: true, values: vals };
+  }
+
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession, providerLinks };
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, authHeaders, beginSession, endSession, adoptSession, providerLinks,
+      SEARCH_SCOPES, FACET_BUILTIN, buildSearchRequest, savedQueryOf, searchParams, uiFromRequest, parseSearchResponse, queryTerms, splitHighlight, facetValueText, findKeyAction, metaValues, monthRange };
     return;
   }
   // ---- endpoints: the only paths this page calls. A test checks each exists on the server.
@@ -381,6 +534,22 @@
     cueCommands: ['GET',  '/api/cue-commands'],
     audit:       ['GET',  '/api/audit'],
     ingest:      ['POST', '/api/ingest'],
+    search:      ['GET',  '/api/search'],
+    searches:    ['GET',  '/api/searches'],
+    searchSave:  ['POST', '/api/searches'],
+    searchDelete: ['POST', '/api/searches/{id}/delete'],
+    bins:        ['GET',  '/api/bins'],
+    bin:         ['GET',  '/api/bins/{id}'],
+    binCreate:   ['POST', '/api/bins'],
+    binAdd:      ['POST', '/api/bins/{id}/add'],
+    binRemove:   ['POST', '/api/bins/{id}/remove'],
+    binDelete:   ['POST', '/api/bins/{id}/delete'],
+    schema:      ['GET',  '/api/schema'],
+    fieldDefine: ['POST', '/api/schema/fields'],
+    fieldRetire: ['POST', '/api/schema/fields/{id}/retire'],
+    fieldTerms:  ['POST', '/api/schema/fields/{id}/terms'],
+    metaGet:     ['GET',  '/api/assets/{id}/metadata'],
+    metaSet:     ['POST', '/api/assets/{id}/metadata'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -407,6 +576,8 @@
     id_conflict: 'Id already used', bad_command: 'Unknown command', cue_fired: 'Cue already fired',
     path_not_allowed: 'Path not allowed', ingest_disabled: 'Ingest is switched off', disk_low: 'Disk too full',
     taking: 'Taking',
+    type_mismatch: 'Wrong kind of value', not_in_vocabulary: 'Not in the list', required_field: 'Required field', unknown_field: 'Field does not apply',
+    field_exists: 'Field exists', type_locked: 'Type is locked', bin_full: 'Bin is full',
   };
   // What each ingest refusal means for the operator, in words. The server's own reason is shown beside it.
   const INGEST_WHY = {
@@ -578,15 +749,17 @@
 
   // Show who the token belongs to on the Token button. Best effort: an older server has no /api/whoami.
   let whoamiFor = null;
+  const WHO = { name: '', role: '' };   // who the server says this is; a hint for what to show, never what is allowed
   async function showWhoami() {
     const token = getToken();
-    if (!token && !SESS.csrf) { whoamiFor = null; $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
+    if (!token && !SESS.csrf) { whoamiFor = null; WHO.name = ''; WHO.role = '';$('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
     const key = token || 'session:' + SESS.csrf;
     if (whoamiFor === key) return;
     whoamiFor = key;
     try {
       const res = await fetch('/api/whoami', { headers: authHeaders('GET', token, ''), cache: 'no-store' });
       const who = res.ok ? await res.json() : null;
+      WHO.name = who && typeof who.name === 'string' ? who.name : ''; WHO.role = who && typeof who.role === 'string' ? who.role : '';
       $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
       // The pill names the person and their access level; it stays hidden when the server does not say.
       const pill = $('who');
@@ -855,6 +1028,532 @@
     if (S.screen === 'library') renderLibrary();
     if (S.screen === 'library') renderWordsTab();
     if (S.screen === 'activity') renderActivity();
+  }
+
+  // ---- Library: Find and Details --------------------------------------------------------------------------------------------
+  // Find asks the server one question (GET /api/search) and lists assets, each with up to three hits. Details is one asset's typed
+  // metadata as a form built from GET /api/schema. Nothing is shown before the server has said it, every write is read back, and
+  // a refusal is shown beside what was refused with its code. Saved searches and bins belong to whoever made them: the server
+  // decides who may see or change one, and this page only hides a button the server would refuse.
+  const FIND_PAGE = 25, FACET_SHOW = 6, META_FACETS_MAX = 4;
+  const SORT_CHOICES = [['auto', 'Best match, or newest without a search'], ['recent', 'Newest first'], ['show', 'By show']];
+  const SINGLE_FACETS = new Set(['created', 'cleared']);   // a month is one range; Cleared and Not cleared together would constrain nothing
+  const F = {
+    q: '', scope: 'all', sort: 'auto', sel: {}, incomplete: false, extra: [], formKey: 0,
+    res: null, load: 'idle', err: null, tok: 0, expanded: {}, ran: false, seek: null, fields: null,
+    saved: { list: [], load: 'idle', err: null, name: '', shared: false, armDel: null },
+    bins: { list: [], load: 'idle', err: null, cur: null, members: [], mload: 'idle', name: '', shared: false, armDel: null },
+  };
+  const metaFacetFields = () => (F.fields || []).filter((f) => !f.retired && (f.type === 'enum' || f.type === 'bool')).slice(0, META_FACETS_MAX);
+  const findFacetNames = () => FACET_BUILTIN.map((f) => f[0]).concat(metaFacetFields().map((f) => 'meta.' + f.key));
+  function facetLabel(name) {
+    const b = FACET_BUILTIN.find((f) => f[0] === name);
+    if (b) return b[1];
+    const f = (F.fields || []).find((x) => 'meta.' + x.key === name);
+    return f ? f.label : name;
+  }
+  const findUi = () => ({ q: F.q, scope: F.scope, sort: F.sort, sel: F.sel, incomplete: F.incomplete, extra: F.extra });
+  const filterCount = () => Object.values(F.sel).filter((v) => v.length).length + (F.incomplete ? 1 : 0) + F.extra.length;
+  const netFail = () => ({ code: 'network', reason: 'The server did not answer.' });
+
+  function findFocus() {
+    if (W.tab !== 'find') setTab('find', false);
+    setTimeout(() => { const n = $('find-q'); if (n) { n.focus(); n.select(); } }, 0);
+  }
+
+  async function findFields() {
+    try {
+      const { status, data } = await call('schema');
+      if (status === 200 && data && data.ok && Array.isArray(data.fields)) F.fields = data.fields;
+      else if (F.fields == null) F.fields = [];
+    } catch (e) { if (F.fields == null) F.fields = []; }
+  }
+
+  async function findRun(more) {
+    const tok = ++F.tok;
+    if (!more) { F.load = 'loading'; F.err = null; }
+    render();
+    try {
+      const req = buildSearchRequest(Object.assign(findUi(), { limit: FIND_PAGE, after: more && F.res ? F.res.next : null }));
+      const { status, data } = await call('search', null, null, searchParams(req, findFacetNames()));
+      if (tok !== F.tok) return;
+      if (status === 401) { setConn('token'); openToken(); }
+      const r = parseSearchResponse(data);
+      if (!r.ok) throw Object.assign(new Error(codeOf(data, status).reason), { code: codeOf(data, status).code });
+      r.q = req.q || '';
+      F.res = more && F.res ? Object.assign(r, { assets: F.res.assets.concat(r.assets) }) : r;
+      F.load = 'ready'; F.err = null;
+    } catch (e) {
+      if (tok !== F.tok) return;
+      F.load = 'error'; F.err = e.code ? { code: e.code, reason: e.message } : netFail();
+    }
+    render();
+  }
+
+  async function findSaved() {
+    const s = F.saved;
+    s.load = 'loading';
+    try {
+      const { status, data } = await call('searches');
+      if (status === 200 && data && data.ok) { s.list = Array.isArray(data.searches) ? data.searches : []; s.err = null; s.load = 'ready'; }
+      else { s.err = codeOf(data, status).code + ': ' + codeOf(data, status).reason; s.load = 'error'; }
+    } catch (e) { s.err = netFail().reason; s.load = 'error'; }
+    render();
+  }
+
+  async function findBins() {
+    const b = F.bins;
+    b.load = 'loading';
+    try {
+      const { status, data } = await call('bins');
+      if (status === 200 && data && data.ok) { b.list = Array.isArray(data.bins) ? data.bins : []; b.err = null; b.load = 'ready'; if (b.cur && !b.list.some((x) => x.id === b.cur)) { b.cur = null; b.members = []; } }
+      else { b.err = codeOf(data, status).code + ': ' + codeOf(data, status).reason; b.load = 'error'; }
+    } catch (e) { b.err = netFail().reason; b.load = 'error'; }
+    render();
+  }
+
+  async function binOpen(id) {
+    const b = F.bins;
+    b.cur = id; b.members = []; b.mload = 'loading';
+    render();
+    try {
+      const { status, data } = await call('bin', id);
+      if (b.cur !== id) return;
+      if (status === 200 && data && data.ok) { b.members = Array.isArray(data.members) ? data.members : []; b.mload = 'ready'; }
+      else { b.mload = 'error'; b.members = []; setFlash({ kind: 'bad', title: 'The bin could not be read.', code: codeOf(data, status).code, reason: codeOf(data, status).reason }); }
+    } catch (e) { b.mload = 'error'; }
+    render();
+  }
+
+  // One write: the page shows what the server returned or refused, then reads the lists again. `key` is the busy key of the button.
+  async function findAct(kind, id, body, o) {
+    if (S.pending.has(o.key)) return null;
+    S.pending.add(o.key);
+    render();
+    let out = null;
+    try {
+      const { status, data } = await call(kind, id, body);
+      if (status === 401) { setConn('token'); openToken(); }
+      if (data && data.ok) {
+        out = data;
+        if (o.after) await o.after(data);
+        const reason = o.ok ? o.ok(data) : '';
+        setFlash({ kind: 'good', title: o.okTitle || 'Done', reason });
+        announce((o.okTitle || 'Done') + ' ' + reason);
+      } else {
+        const e = codeOf(data, status);
+        if (o.fail) o.fail(e);
+        setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason });
+        announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason);
+      }
+    } catch (err) {
+      setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'The request may or may not have landed. Read the list again before trying twice.' });
+      setConn('lost');
+    } finally {
+      S.pending.delete(o.key);
+      render();
+    }
+    return out;
+  }
+
+  // Open an asset from a result. A speech hit also seeks the player to it once the proxy is ready.
+  function findOpen(assetId, hit) {
+    const frame = hit && hit.kind === 'transcript' && Number.isInteger(hit.frameIn) ? hit.frameIn : null;
+    if (assetId !== L.assetId) setAsset(assetId);
+    F.seek = frame == null ? null : { asset: assetId, frame };
+    setTab('shots', false);
+  }
+  function applySeek() {
+    const k = F.seek;
+    if (!k || k.asset !== L.assetId || !L.live || W.tab !== 'shots' || !videoReady()) return;
+    F.seek = null;
+    if (seekTo(k.frame)) { L.cur = null; announce('Moved to the hit.'); }
+  }
+
+  function toggleFacet(name, value) {
+    const have = F.sel[name] || [];
+    const on = have.some((v) => v === value);
+    F.sel[name] = SINGLE_FACETS.has(name) || /^meta\./.test(name) && typeof value === 'boolean' ? (on ? [] : [value]) : (on ? have.filter((v) => v !== value) : have.concat([value]));
+    if (!F.sel[name].length) delete F.sel[name];
+    findRun(false);
+  }
+  function clearFilters() { F.sel = {}; F.incomplete = false; F.extra = []; findRun(false); }
+
+  function findApply(query) {
+    const ui = uiFromRequest(query);
+    F.q = ui.q; F.scope = SEARCH_SCOPES.some((s) => s[0] === ui.scope) ? ui.scope : 'all';
+    F.sort = SORT_CHOICES.some((s) => s[0] === ui.sort) ? ui.sort : 'auto';
+    F.sel = ui.sel; F.incomplete = ui.incomplete; F.extra = ui.extra; F.formKey++;
+    findRun(false);
+  }
+
+  function findSave() {
+    const s = F.saved, name = s.name.trim();
+    if (!name) { setFlash({ kind: 'bad', title: 'Name the search first.', code: 'bad_input', reason: 'A saved search needs a name of 1 to 100 characters.' }); render(); return; }
+    findAct('searchSave', null, { name, query: savedQueryOf(buildSearchRequest(findUi())), shared: s.shared }, {
+      key: 'find:save', okTitle: 'Search saved.', ok: (d) => '“' + d.search.name + '” is in your list' + (d.search.shared ? ' and shared with every operator.' : '.'),
+      after: async () => { s.name = ''; await findSaved(); } });
+  }
+  function findDeleteSearch(item) {
+    const s = F.saved;
+    if (s.armDel !== item.id) { s.armDel = item.id; render(); return; }
+    s.armDel = null;
+    findAct('searchDelete', item.id, {}, { key: 'find:delsearch:' + item.id, okTitle: 'Saved search deleted.', ok: () => '', after: findSaved });
+  }
+  function binCreate() {
+    const b = F.bins, name = b.name.trim();
+    if (!name) { setFlash({ kind: 'bad', title: 'Name the bin first.', code: 'bad_input', reason: 'A bin needs a name of 1 to 100 characters.' }); render(); return; }
+    findAct('binCreate', null, { name, shared: b.shared }, { key: 'find:bincreate', okTitle: 'Bin made.', ok: (d) => '“' + d.bin.name + '” is empty. Choose it, then add assets from the results.',
+      after: async (d) => { b.name = ''; await findBins(); await binOpen(d.bin.id); } });
+  }
+  function binDelete(item) {
+    const b = F.bins;
+    if (b.armDel !== item.id) { b.armDel = item.id; render(); return; }
+    b.armDel = null;
+    findAct('binDelete', item.id, {}, { key: 'find:bindel:' + item.id, okTitle: 'Bin deleted.', ok: () => 'The assets in it are untouched.', after: async () => { if (b.cur === item.id) { b.cur = null; b.members = []; } await findBins(); } });
+  }
+  function binAddAsset(assetId) {
+    const b = F.bins, id = b.cur;
+    if (!id) return;
+    findAct('binAdd', id, { assetId }, { key: 'find:add:' + assetId, okTitle: 'Added to the bin.', ok: (d) => (d.added ? '' : 'It was already in the bin.'),
+      after: async () => { await findBins(); await binOpen(id); } });
+  }
+  function binRemoveMember(m) {
+    const b = F.bins, id = b.cur, key = 'find:rm:' + m.assetId + ':' + (m.spanId || '');
+    findAct('binRemove', id, m.spanId ? { assetId: m.assetId, spanId: m.spanId } : { assetId: m.assetId }, { key, okTitle: 'Removed from the bin.', ok: () => 'The asset itself is untouched.',
+      after: async () => { await findBins(); await binOpen(id); } });
+  }
+
+  let findWired = false;
+  function findWire() {
+    if (findWired) return;
+    findWired = true;
+    // Up and Down walk the results; Enter and Space are the buttons' own.
+    $('lib-find-results').addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const items = [...$('lib-find-results').querySelectorAll('[data-nav]')];
+      const at = items.indexOf(document.activeElement);
+      if (at < 0) return;
+      e.preventDefault();
+      items[e.key === 'ArrowDown' ? Math.min(at + 1, items.length - 1) : Math.max(at - 1, 0)].focus();
+    });
+  }
+
+  function renderFind() {
+    findWire();
+    if (!F.ran) {
+      F.ran = true;
+      findSaved(); findBins();
+      findFields().then(() => findRun(false));
+    }
+    paintFindForm();
+    paintFindState();
+    paintFindResults();
+    paintFacets();
+    paintSaved();
+    paintBins();
+  }
+
+  function paintFindForm() {
+    const busy = F.load === 'loading';
+    paint('lib-find-form', [F.formKey, F.scope, F.sort, F.incomplete, busy], () => el('form', { class: 'find-form', role: 'search', 'aria-label': 'Search the library', autocomplete: 'off',
+      onsubmit: (e) => { e.preventDefault(); findRun(false); } },
+      el('div', { class: 'form-row' },
+        el('div', { class: 'grow' }, el('label', { for: 'find-q', text: 'Search speech and details' }),
+          el('input', { id: 'find-q', type: 'text', 'data-fk': 'find-q', value: F.q, maxlength: 500, autocomplete: 'off', spellcheck: 'false', 'aria-keyshortcuts': '/',
+            placeholder: 'a name, “a phrase”, -leave out',
+            oninput: (e) => { F.q = e.target.value; },
+            onkeydown: (e) => {
+              if (e.key === 'ArrowDown') { const n = $('lib-find-results').querySelector('[data-nav]'); if (n) { e.preventDefault(); n.focus(); } }
+              if (e.key === 'Escape' && e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ''; F.q = ''; findRun(false); }
+            } })),
+        el('button', { type: 'submit', class: 'btn', 'data-fk': 'find-go', disabled: busy }, icon('search', 's'), ' Search')),
+      el('div', { class: 'bar' },
+        el('div', { class: 'scopes', role: 'group', 'aria-label': 'Where to look' }, SEARCH_SCOPES.map(([v, label]) => el('button', { type: 'button', class: 'pill', 'data-fk': 'scope:' + v,
+          'aria-pressed': String(F.scope === v), onclick: () => { F.scope = v; findRun(false); } }, label))),
+        el('div', {}, el('label', { for: 'find-sort', class: 'vh', text: 'Order' }),
+          el('select', { id: 'find-sort', 'data-fk': 'find-sort', onchange: (e) => { F.sort = e.target.value; findRun(false); } },
+            SORT_CHOICES.map(([v, label]) => el('option', { value: v, selected: F.sort === v }, label)))),
+        el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'find-incomplete', checked: F.incomplete, onchange: (e) => { F.incomplete = e.target.checked; findRun(false); } }),
+          el('span', { text: 'Only assets missing a required detail' })))));
+  }
+
+  function paintFindState() {
+    const r = F.res;
+    paint('lib-find-state', [F.load, F.err, r && [r.total, r.assets.length, r.degraded], F.extra.length], () => {
+      if (F.load === 'error') {
+        return el('div', { class: 'empty' }, el('p', { role: 'alert' }, stateChip('failed'), ' ', (F.err.code ? F.err.code + ': ' : '') + F.err.reason),
+          el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'find-retry', onclick: () => findRun(false) }, 'Try again'));
+      }
+      if (F.load === 'loading' && !r) return el('p', { class: 'note', role: 'status', text: 'Searching…' });
+      if (!r) return [];
+      const words = r.total === 1 ? '1 asset matches.' : r.total + ' assets match.';
+      return el('div', { class: 'note', role: 'status' }, words + (r.assets.length < r.total ? ' Showing ' + r.assets.length + '.' : ''),
+        r.degraded ? [' ', stateChip('stale', 'Slow text search'), ' The full-text index is not available, so a word search reads the text directly and lists at most 25.'] : null,
+        F.extra.length ? ' ' + F.extra.length + ' saved condition' + (F.extra.length > 1 ? 's' : '') + ' this screen cannot show still apply.' : null);
+    });
+  }
+
+  function metaLine(a) {
+    const byKey = new Map((F.fields || []).map((f) => [f.key, f]));
+    const parts = [];
+    for (const key of Object.keys(a.metadata || {})) {
+      const f = byKey.get(key), vals = Array.isArray(a.metadata[key]) ? a.metadata[key] : [];
+      if (!vals.length) continue;
+      parts.push((f ? f.label : key) + ': ' + vals.map((v) => (typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v))).join(', '));
+    }
+    return parts.slice(0, 5).join(' · ');
+  }
+
+  function hitNode(a, h, q) {
+    const kind = HIT_KIND[h.kind] || String(h.kind);
+    const conf = typeof h.confidence === 'number' ? ' · ' + Math.round(h.confidence * 100) + '%' : '';
+    return el('li', {}, el('button', { type: 'button', class: 'fhit', 'data-nav': '1', 'data-fk': 'hit:' + a.assetId + ':' + (h.spanId || h.labelId || h.kind),
+      'aria-label': kind + (h.tcIn ? ' at ' + h.tcIn : '') + ' in ' + (a.camera || short(a.assetId)) + ': ' + h.snippet.slice(0, 80),
+      onclick: () => findOpen(a.assetId, h) },
+      el('span', { class: 'chip kind', text: kind }), h.tcIn ? el('span', { class: 'tc mono', text: h.tcIn + conf }) : (conf ? el('span', { class: 'tc mono', text: conf.slice(3) }) : null),
+      el('span', { class: 'tx' }, splitHighlight(h.snippet, q).map((p) => (p.hit ? el('mark', { text: p.text }) : p.text)))));
+  }
+
+  function paintFindResults() {
+    const r = F.res, bin = F.bins.list.find((b) => b.id === F.bins.cur);
+    paint('lib-find-results', [r, bin && bin.name, [...S.pending].filter((k) => k.startsWith('find:add:')), F.load], () => {
+      if (!r) return F.load === 'error' ? [] : el('p', { class: 'empty', text: 'Reading the library…' });
+      if (!r.assets.length) return el('p', { class: 'empty', text: filterCount() || F.q ? 'Nothing matches. Take a word or a filter away.' : 'There is nothing in the library yet. Record or ingest something first.' });
+      return [
+        el('ul', { class: 'finds' }, r.assets.map((a) => {
+          const line = metaLine(a);
+          return el('li', { class: 'find-row' },
+            el('div', { class: 'find-head' },
+              el('button', { type: 'button', class: 'rowname', 'data-nav': '1', 'data-fk': 'asset:' + a.assetId, onclick: () => findOpen(a.assetId, null) }, (a.camera || 'Asset') + (a.show ? ' · ' + a.show : '')),
+              el('small', { class: 'mono muted', text: short(a.assetId) }),
+              stateChip(a.cleared ? 'cleared' : 'uncleared'), a.legalHold ? stateChip('hold') : null, a.archived ? stateChip('archived') : null, a.incomplete ? stateChip('incomplete') : null,
+              el('span', { class: 'spacer' }),
+              bin ? btn('Add to ' + bin.name, { key: 'find:add:' + a.assetId, cls: 'ghost small', aria: 'Add ' + (a.camera || short(a.assetId)) + ' to the bin ' + bin.name, onclick: () => binAddAsset(a.assetId) }) : null),
+            line ? el('small', { class: 'find-meta', text: line }) : null,
+            a.hits.length ? el('ul', { class: 'find-hits' }, a.hits.map((h) => hitNode(a, h, r.q))) : null);
+        })),
+        r.next ? el('div', { class: 'bar' }, btn('Show more', { key: 'find:more', cls: 'ghost', disabled: F.load === 'loading', onclick: () => findRun(true) })) : null,
+      ];
+    });
+  }
+
+  function paintFacets() {
+    const r = F.res;
+    paint('lib-find-facets', [r && r.facets, F.sel, F.incomplete, F.expanded, F.fields, F.extra.length], () => {
+      if (!r) return el('p', { class: 'empty', text: 'Filters appear with the first results.' });
+      const out = [];
+      if (filterCount()) out.push(el('div', { class: 'bar' }, btn('Clear ' + filterCount() + ' filter' + (filterCount() > 1 ? 's' : ''), { key: 'find:clear', cls: 'ghost small', onclick: clearFilters })));
+      for (const name of findFacetNames()) {
+        const f = r.facets[name];
+        const chosen = F.sel[name] || [];
+        if ((!f || !f.values.length) && !chosen.length) continue;
+        const values = f ? f.values : [];
+        const open = !!F.expanded[name];
+        const shown = values.filter((v, i) => open || i < FACET_SHOW || chosen.some((c) => c === v.value));
+        out.push(el('fieldset', { class: 'facet' }, el('legend', { text: facetLabel(name) }),
+          shown.map((v) => el('label', { class: 'chk' },
+            el('input', { type: 'checkbox', 'data-fk': 'fv:' + name + ':' + String(v.value), checked: chosen.some((c) => c === v.value), onchange: () => toggleFacet(name, v.value) }),
+            el('span', { text: facetValueText(name, v.value) }), el('span', { class: 'n', text: String(v.count) }))),
+          values.length > shown.length || open && values.length > FACET_SHOW
+            ? el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'more:' + name, 'aria-expanded': String(open),
+              onclick: () => { F.expanded[name] = !open; render(); } }, open ? 'Show fewer' : 'Show ' + (values.length - shown.length) + ' more') : null,
+          f && f.other ? el('small', { class: 'hint', text: '+' + f.other + ' more not listed' }) : null));
+      }
+      if (!out.length) out.push(el('p', { class: 'empty', text: 'Nothing to narrow by yet.' }));
+      return out;
+    });
+  }
+
+  const mineOrUnknown = (owner) => !WHO.name || owner === WHO.name || WHO.role === 'admin';
+
+  function paintSaved() {
+    const s = F.saved;
+    paint('lib-find-saved', [s.list, s.load, s.err, s.armDel, WHO.name, WHO.role, [...S.pending].filter((k) => k.startsWith('find:'))], () => [
+      s.err ? el('p', { class: 'empty', role: 'alert', text: s.err }) : null,
+      s.list.length ? el('ul', { class: 'plain side' }, s.list.map((x) => el('li', {},
+        el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'run:' + x.id, 'aria-label': 'Run the saved search ' + x.name, onclick: () => findApply(x.query) }, x.name),
+          el('small', { class: 'block muted' }, 'by ' + x.owner + ' ', x.shared ? stateChip('shared') : null)),
+        mineOrUnknown(x.owner) ? btn(s.armDel === x.id ? 'Press again to delete' : 'Delete', { key: 'find:delsearch:' + x.id, cls: 'ghost small' + (s.armDel === x.id ? ' danger' : ''),
+          aria: 'Delete the saved search ' + x.name, onclick: () => findDeleteSearch(x) }) : null)))
+        : (s.err ? null : el('p', { class: 'empty', text: s.load === 'loading' ? 'Reading…' : 'None yet. Search, then save the question under a name.' })),
+      el('form', { class: 'form-row', 'aria-label': 'Save this search', onsubmit: (e) => { e.preventDefault(); findSave(); } },
+        el('div', { class: 'grow' }, el('label', { for: 'find-save-name', text: 'Save this search as' }),
+          el('input', { id: 'find-save-name', type: 'text', 'data-fk': 'find-save-name', maxlength: 100, autocomplete: 'off', value: s.name, oninput: (e) => { s.name = e.target.value; } })),
+        el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'find-save-shared', checked: s.shared, onchange: (e) => { s.shared = e.target.checked; } }), el('span', { text: 'Share with every operator' })),
+        el('button', { type: 'submit', class: 'btn', 'data-fk': 'find-save', disabled: S.pending.has('find:save') }, 'Save')),
+    ]);
+  }
+
+  function memberName(m) {
+    const a = ((S.data && S.data.assets) || []).find((x) => x.id === m.assetId);
+    const base = a ? (a.camera || a.show || 'Asset') : 'Asset ' + short(m.assetId);
+    return m.spanId ? base + ' · ' + (m.label || (m.kind === 'shot' ? 'Shot' : 'Clip')) + (m.tcIn ? ' ' + m.tcIn + ' to ' + m.tcOut : '') : base;
+  }
+
+  function paintBins() {
+    const b = F.bins;
+    paint('lib-find-bins', [b.list, b.load, b.err, b.cur, b.members, b.mload, b.armDel, WHO.name, WHO.role, (S.data && S.data.assets || []).length, [...S.pending].filter((k) => k.startsWith('find:'))], () => [
+      b.err ? el('p', { class: 'empty', role: 'alert', text: b.err }) : null,
+      b.list.length ? el('ul', { class: 'plain side' }, b.list.map((x) => el('li', {},
+        el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'bin:' + x.id, 'aria-current': b.cur === x.id ? 'true' : null,
+          'aria-label': 'Open the bin ' + x.name + ', ' + x.count + ' item' + (x.count === 1 ? '' : 's'), onclick: () => binOpen(x.id) }, x.name),
+          el('small', { class: 'block muted' }, x.count + ' item' + (x.count === 1 ? '' : 's') + ' · by ' + x.owner + ' ', x.shared ? stateChip('shared') : null)),
+        mineOrUnknown(x.owner) ? btn(b.armDel === x.id ? 'Press again to delete' : 'Delete', { key: 'find:bindel:' + x.id, cls: 'ghost small' + (b.armDel === x.id ? ' danger' : ''),
+          aria: 'Delete the bin ' + x.name, onclick: () => binDelete(x) }) : null)))
+        : (b.err ? null : el('p', { class: 'empty', text: b.load === 'loading' ? 'Reading…' : 'No bins yet. A bin is a short list of assets to come back to.' })),
+      b.cur ? el('div', { class: 'members' }, el('h3', { class: 'sub', text: 'In ' + ((b.list.find((x) => x.id === b.cur) || {}).name || 'this bin') }),
+        b.mload === 'loading' ? el('p', { class: 'empty', role: 'status', text: 'Reading…' })
+          : b.members.length ? el('ul', { class: 'plain side' }, b.members.map((m) => el('li', {},
+            el('div', {}, el('button', { type: 'button', class: 'rowname', 'data-fk': 'open:' + m.assetId + ':' + (m.spanId || ''), onclick: () => findOpen(m.assetId, null) }, memberName(m)),
+              m.gone ? el('small', { class: 'block' }, stateChip('stale', 'Clip gone')) : null, m.assetDeleted ? el('small', { class: 'block' }, stateChip('withdrawn', 'Asset deleted')) : null),
+            btn('Remove', { key: 'find:rm:' + m.assetId + ':' + (m.spanId || ''), cls: 'ghost small', aria: 'Remove ' + memberName(m) + ' from the bin', onclick: () => binRemoveMember(m) }))))
+            : el('p', { class: 'empty', text: 'Empty. Choose Add to this bin on a result.' })) : null,
+      el('form', { class: 'form-row', 'aria-label': 'Make a bin', onsubmit: (e) => { e.preventDefault(); binCreate(); } },
+        el('div', { class: 'grow' }, el('label', { for: 'bin-name', text: 'New bin' }),
+          el('input', { id: 'bin-name', type: 'text', 'data-fk': 'bin-name', maxlength: 100, autocomplete: 'off', value: b.name, oninput: (e) => { b.name = e.target.value; } })),
+        el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'bin-shared', checked: b.shared, onchange: (e) => { b.shared = e.target.checked; } }), el('span', { text: 'Share with every operator' })),
+        el('button', { type: 'submit', class: 'btn', 'data-fk': 'bin-make', disabled: S.pending.has('find:bincreate') }, 'Make bin')),
+    ]);
+  }
+
+  // ---- Details: one asset's metadata, as a form made from the schema ------------------------------------------------------
+  const DT = { for: null, tok: 0, load: 'idle', err: null, fields: [], values: {}, missing: [], draft: {}, errors: {}, arm: null, def: { err: null, key: '', label: '', type: 'text', scope: 'all', required: false, multi: false }, term: {} };
+  const FIELD_TYPES = [['text', 'Text'], ['longtext', 'Long text'], ['number', 'Number'], ['date', 'Date'], ['bool', 'Yes or no'], ['enum', 'Choice from a list']];
+
+  function draftOf(f, vals) {
+    const v = Array.isArray(vals) ? vals : [];
+    if (f.type === 'bool') return v.length ? String(v[0]) : '';
+    if (f.type === 'enum') return f.multi ? v.slice() : (v.length ? String(v[0]) : '');
+    if (f.multi) return v.join('\n');
+    return v.length ? String(v[0]) : '';
+  }
+
+  async function detailsLoad(quiet) {
+    const id = L.assetId, tok = ++DT.tok;
+    DT.for = id;
+    if (!quiet) { DT.load = 'loading'; DT.err = null; render(); }
+    try {
+      const asset = ((S.data && S.data.assets) || []).find((a) => a.id === id) || {};
+      const [sch, meta] = await Promise.all([call('schema', null, null, asset.show ? { show: asset.show } : null), call('metaGet', id)]);
+      if (tok !== DT.tok || id !== L.assetId) return;
+      if (sch.status === 401 || meta.status === 401) { setConn('token'); openToken(); }
+      if (!(sch.data && sch.data.ok)) throw Object.assign(new Error(codeOf(sch.data, sch.status).reason), { code: codeOf(sch.data, sch.status).code });
+      if (!(meta.data && meta.data.ok)) throw Object.assign(new Error(codeOf(meta.data, meta.status).reason), { code: codeOf(meta.data, meta.status).code });
+      DT.fields = (sch.data.fields || []).filter((f) => !f.retired && (f.showName == null || f.showName === asset.show));
+      DT.values = meta.data.values || {}; DT.missing = meta.data.missing || [];
+      DT.draft = {}; DT.errors = {};
+      for (const f of DT.fields) DT.draft[f.key] = draftOf(f, DT.values[f.key]);
+      DT.load = 'ready'; DT.err = null;
+    } catch (e) {
+      if (tok !== DT.tok) return;
+      DT.load = 'error'; DT.err = e.code ? { code: e.code, reason: e.message } : netFail();
+    }
+    render();
+  }
+
+  function detailsSave(f) {
+    const r = metaValues(f, DT.draft[f.key]), id = L.assetId;
+    if (!r.ok) { DT.errors[f.key] = { code: r.code, reason: r.reason }; render(); return; }
+    delete DT.errors[f.key];
+    findAct('metaSet', id, { key: f.key, values: r.values }, {
+      key: 'd:save:' + f.key, okTitle: f.label + ' saved.', ok: (d) => (d.missing && d.missing.length ? 'Still missing: ' + d.missing.join(', ') + '.' : ''),
+      fail: (e) => { DT.errors[f.key] = e; },
+      after: (d) => { if (DT.for !== id) return; if (d.values && d.values.length) DT.values[f.key] = d.values; else delete DT.values[f.key]; DT.missing = d.missing || []; DT.draft[f.key] = draftOf(f, d.values); } });
+  }
+
+  function detailsDefine() {
+    const d = DT.def, asset = ((S.data && S.data.assets) || []).find((a) => a.id === L.assetId) || {};
+    const body = { key: d.key.trim(), label: d.label.trim(), type: d.type, required: d.required, multi: d.multi };
+    if (d.scope === 'show' && asset.show) body.show = asset.show;
+    d.err = null;
+    findAct('fieldDefine', null, body, { key: 'd:define', okTitle: 'Field defined.', ok: (r) => r.field.label + ' is on the form' + (body.show ? ' for ' + body.show + '.' : ' for every show.'),
+      fail: (e) => { d.err = e; },
+      after: async () => { d.key = ''; d.label = ''; d.required = false; d.multi = false; await findFields(); await detailsLoad(true); } });
+  }
+  function detailsRetire(f) {
+    if (DT.arm !== f.key) { DT.arm = f.key; render(); return; }
+    DT.arm = null;
+    findAct('fieldRetire', f.key, {}, { key: 'd:retire:' + f.key, okTitle: f.label + ' retired.', ok: () => 'Its stored values are kept; it leaves the form and the search.', after: async () => { await findFields(); await detailsLoad(true); } });
+  }
+  function detailsTerm(f) {
+    const text = (DT.term[f.key] || '').trim();
+    if (!text) { DT.errors[f.key] = { code: 'bad_input', reason: 'Type the term to add.' }; render(); return; }
+    findAct('fieldTerms', f.key, { terms: [text] }, { key: 'd:term:' + f.key, okTitle: 'Term added.', ok: () => '“' + text + '” is on the list for ' + f.label + '.',
+      fail: (e) => { DT.errors[f.key] = e; }, after: async () => { DT.term[f.key] = ''; delete DT.errors[f.key]; await detailsLoad(true); await findFields(); } });
+  }
+
+  const canDefine = () => WHO.role === 'admin' || WHO.role === '';
+
+  function fieldControl(f) {
+    const id = 'd-' + f.key, key = f.key, bad = DT.errors[key] ? 'd-err-' + key : null;
+    const set = (v) => { DT.draft[key] = v; };
+    const base = { id, 'data-fk': id, 'aria-describedby': bad, 'aria-invalid': bad ? 'true' : null };
+    if (f.type === 'longtext') return el('textarea', Object.assign({}, base, { rows: 4, maxlength: 10000, oninput: (e) => set(e.target.value) }), DT.draft[key]);
+    if (f.type === 'text' && f.multi) return el('textarea', Object.assign({}, base, { rows: 3, maxlength: 20000, 'aria-label': f.label + ', one value per line', oninput: (e) => set(e.target.value) }), DT.draft[key]);
+    if (f.type === 'bool') return el('select', Object.assign({}, base, { onchange: (e) => set(e.target.value) }),
+      [['', 'Not set'], ['true', 'Yes'], ['false', 'No']].map(([v, label]) => el('option', { value: v, selected: DT.draft[key] === v }, label)));
+    if (f.type === 'enum') {
+      const terms = (f.terms || []).filter((t) => !t.retired).map((t) => t.term);
+      const held = f.multi ? DT.draft[key] : (DT.draft[key] ? [DT.draft[key]] : []);
+      for (const h of held) if (!terms.includes(h)) terms.push(h);           // a value whose term was retired stays visible until it is changed
+      if (f.multi) {
+        return el('div', { class: 'terms', role: 'group', 'aria-labelledby': 'd-lbl-' + key, 'aria-describedby': bad },
+          terms.length ? terms.map((t) => el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': id + ':' + t, checked: DT.draft[key].includes(t),
+            onchange: (e) => { set(e.target.checked ? DT.draft[key].concat([t]) : DT.draft[key].filter((x) => x !== t)); } }), el('span', { text: t }))) : el('small', { class: 'hint', text: 'No terms yet. Add one below.' }));
+      }
+      return el('select', Object.assign({}, base, { onchange: (e) => set(e.target.value) }),
+        el('option', { value: '', selected: !DT.draft[key] }, 'Not set'), terms.map((t) => el('option', { value: t, selected: DT.draft[key] === t }, t)));
+    }
+    return el('input', Object.assign({}, base, { type: 'text', value: DT.draft[key], maxlength: f.type === 'date' ? 10 : 1000, inputmode: f.type === 'number' ? 'decimal' : null,
+      placeholder: f.type === 'date' ? 'YYYY-MM-DD' : null, oninput: (e) => set(e.target.value) }));
+  }
+
+  function fieldBlock(f) {
+    const key = f.key, err = DT.errors[key], grouped = f.type === 'enum' && f.multi;
+    const name = el('span', { id: 'd-lbl-' + key, text: f.label });
+    const head = el('div', { class: 'dlabel' }, grouped ? name : el('label', { for: 'd-' + key }, name),
+      f.required ? stateChip('required') : el('small', { class: 'hint', text: 'Optional' }), f.showName ? el('small', { class: 'hint', text: 'Only for ' + f.showName }) : null);
+    return el('div', { class: 'dfield' }, head, fieldControl(f),
+      f.type === 'text' && f.multi ? el('small', { class: 'hint', text: 'One value per line.' }) : null,
+      el('div', { class: 'dact' },
+        btn('Save', { key: 'd:save:' + key, cls: 'small', aria: 'Save ' + f.label, onclick: () => detailsSave(f) }),
+        err ? el('span', { class: 'dno', id: 'd-err-' + key, role: 'alert' }, icon('alert', 's'), ' ' + err.code + ': ' + err.reason) : null,
+        canDefine() ? btn(DT.arm === key ? 'Press again to retire' : 'Retire field', { key: 'd:retire:' + key, cls: 'ghost small' + (DT.arm === key ? ' danger' : ''), aria: 'Retire the field ' + f.label, onclick: () => detailsRetire(f) }) : null),
+      f.type === 'enum' ? el('div', { class: 'dterm' }, el('label', { for: 'd-term-' + key, class: 'vh', text: 'New term for ' + f.label }),
+        el('input', { id: 'd-term-' + key, type: 'text', 'data-fk': 'd-term-' + key, maxlength: 200, placeholder: 'Add a term', autocomplete: 'off', value: DT.term[key] || '', oninput: (e) => { DT.term[key] = e.target.value; } }),
+        btn('Add term', { key: 'd:term:' + key, cls: 'ghost small', aria: 'Add a term to ' + f.label, onclick: () => detailsTerm(f) })) : null);
+  }
+
+  function renderDetails() {
+    if (DT.for !== L.assetId) { detailsLoad(false); }
+    const d = L.data || {}, missing = DT.missing, byKey = new Map(DT.fields.map((f) => [f.key, f.label]));
+    paint('lib-d-head', [DT.for, DT.load, missing, d.cleared, d.legalHold], () => el('div', { class: 'asset' },
+      kv('Asset', short(L.assetId), true), assetChips(d),
+      DT.load === 'ready' && missing.length ? stateChip('incomplete') : null,
+      DT.load === 'ready' && missing.length ? el('span', { class: 'hint', text: 'Missing: ' + missing.map((k) => byKey.get(k) || k).join(', ') }) : null));
+    paint('lib-d-form', [DT.for, DT.load, DT.err, DT.fields, DT.values, DT.errors, DT.arm, WHO.role, [...S.pending].filter((k) => k.startsWith('d:'))], () => {
+      if (DT.load === 'loading' || DT.load === 'idle') return el('p', { class: 'empty', role: 'status', text: 'Reading the details of ' + short(L.assetId) + '…' });
+      if (DT.load === 'error') return el('div', { class: 'empty' }, el('p', { role: 'alert' }, stateChip('failed'), ' ', (DT.err.code ? DT.err.code + ': ' : '') + DT.err.reason),
+        el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'd-retry', onclick: () => detailsLoad(false) }, 'Try again'));
+      if (!DT.fields.length) return el('p', { class: 'empty', text: canDefine() ? 'No fields apply to this asset yet. Define one on the right.' : 'No fields apply to this asset yet. An admin defines them.' });
+      return el('div', { class: 'dform' }, DT.fields.map(fieldBlock));
+    });
+    $('lib-d-define-wrap').hidden = !canDefine();
+    if (!canDefine()) return;
+    const asset = ((S.data && S.data.assets) || []).find((a) => a.id === L.assetId) || {}, df = DT.def;
+    paint('lib-d-define', [df.err, asset.show, [...S.pending].filter((k) => k.startsWith('d:define'))], () => el('form', { class: 'dform padded', 'aria-label': 'Define a field', autocomplete: 'off',
+      onsubmit: (e) => { e.preventDefault(); detailsDefine(); } },
+      el('div', {}, el('label', { for: 'df-key', text: 'Key (lowercase, digits, _)' }), el('input', { id: 'df-key', type: 'text', 'data-fk': 'df-key', maxlength: 40, spellcheck: 'false', value: df.key, oninput: (e) => { df.key = e.target.value; } })),
+      el('div', {}, el('label', { for: 'df-label', text: 'Label' }), el('input', { id: 'df-label', type: 'text', 'data-fk': 'df-label', maxlength: 100, value: df.label, oninput: (e) => { df.label = e.target.value; } })),
+      el('div', {}, el('label', { for: 'df-type', text: 'Kind of value' }), el('select', { id: 'df-type', 'data-fk': 'df-type', onchange: (e) => { df.type = e.target.value; } },
+        FIELD_TYPES.map(([v, label]) => el('option', { value: v, selected: df.type === v }, label)))),
+      asset.show ? el('div', {}, el('label', { for: 'df-scope', text: 'Applies to' }), el('select', { id: 'df-scope', 'data-fk': 'df-scope', onchange: (e) => { df.scope = e.target.value; } },
+        [['all', 'Every show'], ['show', 'Only ' + asset.show]].map(([v, label]) => el('option', { value: v, selected: df.scope === v }, label)))) : null,
+      el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'df-required', checked: df.required, onchange: (e) => { df.required = e.target.checked; } }), el('span', { text: 'Required: an asset without it is Incomplete' })),
+      el('label', { class: 'chk' }, el('input', { type: 'checkbox', 'data-fk': 'df-multi', checked: df.multi, onchange: (e) => { df.multi = e.target.checked; } }), el('span', { text: 'Can hold several values (text and choice only)' })),
+      df.err ? el('p', { class: 'dno', role: 'alert' }, icon('alert', 's'), ' ' + df.err.code + ': ' + df.err.reason) : null,
+      el('div', {}, el('button', { type: 'submit', class: 'btn', 'data-fk': 'df-go', disabled: S.pending.has('d:define') }, 'Define field'))));
   }
 
   // ---- Activity: who did what (admin). Filters, newest first, 'Load more' by cursor, and a CSV that is fetched with the token. ----
@@ -1502,7 +2201,7 @@
     const sel = store('volt.lib.sel');
     L.sel = Array.isArray(sel) ? sel.filter((x) => x && typeof x.id === 'string' && typeof x.assetId === 'string') : [];
     const v = $('lib-video');
-    $('lib-asset').addEventListener('change', (e) => setAsset(e.target.value));
+    $('lib-asset').addEventListener('change', (e) => { if (e.target.value && W.tab === 'find') W.tab = 'shots'; setAsset(e.target.value); });
     $('lib-play').addEventListener('click', togglePlay);
     $('lib-back').addEventListener('click', () => stepFrames(-1));
     $('lib-fwd').addEventListener('click', () => stepFrames(1));
@@ -1814,6 +2513,7 @@
     if (L.pos == null && view.ok) L.pos = view.startF;
     render();
     updatePos();
+    applySeek();
   }
 
   async function onVideoError() {
@@ -2252,6 +2952,7 @@
   function libKey(e) {
     if (!L.data || W.tab === 'words') return;   // the transcript tab has its own keys (trKey)
     if (W.tab === 'export') return;             // the export tab has no keys: the player is hidden, so I, O and K have nothing to do
+    if (W.tab === 'find' || W.tab === 'details') return;   // Find and Details have no player keys either; the / key is handled before this
     const t = e.target;
     const k = e.key;
     const onControl = t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],input,textarea');
@@ -2387,6 +3088,8 @@
     paint('lib-msg', [S.flash], () => (S.flash ? flashNode(S.flash) : []));
     const assets = (S.data && S.data.assets) || [];
     if (L.assetId && !assets.some((a) => a.id === L.assetId)) { L.assetId = null; store('volt.lib.asset', null); L.load = 'idle'; L.data = null; }
+    if (W.tab == null) W.tab = L.assetId ? 'shots' : 'find';   // Find is the landing view until an asset is open
+    if (!L.assetId && W.tab !== 'find') W.tab = 'find';
     const view = libView();
     let card = null;
     if (!assets.length) card = stateCard('No recordings yet', 'film', 'There is nothing to list. Record something on the Record screen, then come back.');
@@ -2398,9 +3101,12 @@
     } else if (!view.ok) {
       card = stateCard('This asset cannot be marked', 'warn', 'It has no video file with a frame rate recorded, so a timecode cannot be placed on it. Spans need the hi-res essence and its rate.');
     }
-    paint('lib-empty', [card ? [L.assetId, L.load, L.err, assets.length] : null], () => card || []);
-    $('lib-body').hidden = !!card;
-    if (card) return;
+    L.live = !card;                               // an asset is open and markable; the tabs that need one show only then
+    const finding = W.tab === 'find';
+    paint('lib-empty', [card && !finding ? [L.assetId, L.load, L.err, assets.length] : null], () => (finding ? null : card) || []);
+    $('lib-body').hidden = finding || !!card;
+    if (finding || card) return;
+    if (W.tab === 'details') return;              // Details paints itself and needs no player
     paintHead(view);
     paintFilter(view);
     paintDetect(view);
@@ -2415,6 +3121,7 @@
     $('lib-add-clip').disabled = S.pending.has('lib:add:clip');
     $('lib-add-shot').disabled = S.pending.has('lib:add:shot');
     updatePos();
+    applySeek();                                  // a hit chosen in Find moves the player once it can seek
   }
 
   function updateMarkHint() {
@@ -2625,7 +3332,7 @@
   // that list. Own state, own functions: nothing here touches the shot list's code, and the shot list's keys
   // (libKey) stand down while this tab is showing.
   const W = {
-    tab: 'shots', for: null, tok: 0, load: 'idle', err: null, words: [], next: null, pendingFrames: 0,
+    tab: null, for: null, tok: 0, load: 'idle', err: null, words: [], next: null, pendingFrames: 0,
     nodes: [], shown: null, a: null, c: null, hin: 0, hout: 0, snap: true, name: '', drag: false, wired: false,
   };
   const WORD_PAGE = 1000, WORD_PAGES = 3, HANDLE_MAX = 10000, SENTENCE_END = /[.!?]["')\]]*$/;
@@ -2672,11 +3379,11 @@
     W.wired = true;
     $('lib-body').setAttribute('role', 'tabpanel');
     $('lib-body').setAttribute('aria-labelledby', 'lib-tab-shots');
-    const tabs = ['shots', 'words', 'export'];
-    for (const name of tabs) {
+    for (const name of LIB_TABS) {
       const b = $('lib-tab-' + name);
       b.addEventListener('click', () => setTab(name, false));
       b.addEventListener('keydown', (e) => {
+        const tabs = LIB_TABS.filter((n) => !$('lib-tab-' + n).hidden);   // arrows skip the tabs that need an asset when none is open
         const at = tabs.indexOf(name);
         const to = e.key === 'ArrowRight' ? tabs[(at + 1) % tabs.length] : e.key === 'ArrowLeft' ? tabs[(at + tabs.length - 1) % tabs.length] : e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs[tabs.length - 1] : null;
         if (!to) return;
@@ -2719,8 +3426,9 @@
     S.sigs = {};
     render();
     if (focus) $('lib-tab-' + name).focus();
-    announce(name === 'words' ? 'Mark from transcript.' : name === 'export' ? 'Export to an NLE.' : 'Shots and clips.');
+    announce(name === 'words' ? 'Mark from transcript.' : name === 'export' ? 'Export to an NLE.' : name === 'find' ? 'Find.' : name === 'details' ? 'Details.' : 'Shots and clips.');
   }
+  const LIB_TABS = ['find', 'shots', 'words', 'export', 'details'];
 
   function nearestWord(frame) {
     const words = W.words;
@@ -2814,20 +3522,25 @@
   function renderWordsTab() {
     wordsWire();
     const body = $('lib-body'), panel = $('lib-words'), tabs = $('lib-tabs');
-    const live = !body.hidden;                   // shown means an asset is loaded and markable
+    const live = !!L.live;                       // an asset is loaded and markable
     if (W.for !== L.assetId) wordsReset();
-    tabs.hidden = !live;
-    const xpanel = $('lib-export');
-    if (!live) { panel.hidden = true; xpanel.hidden = true; return; }
-    const words = W.tab === 'words', exporting = W.tab === 'export';
-    body.hidden = words || exporting;
-    panel.hidden = !words;
-    xpanel.hidden = !exporting;
-    for (const name of ['shots', 'words', 'export']) {
+    tabs.hidden = false;
+    const xpanel = $('lib-export'), finding = W.tab === 'find', details = W.tab === 'details';
+    for (const name of LIB_TABS) {
       const b = $('lib-tab-' + name), on = W.tab === name;
+      b.hidden = name !== 'find' && !live;       // Find needs no asset; the rest do
       b.setAttribute('aria-selected', String(on));
       b.tabIndex = on ? 0 : -1;
     }
+    $('lib-find').hidden = !finding;
+    $('lib-details').hidden = !(details && live);
+    if (finding) { body.hidden = true; panel.hidden = true; xpanel.hidden = true; renderFind(); return; }
+    if (!live) { panel.hidden = true; xpanel.hidden = true; return; }
+    const words = W.tab === 'words', exporting = W.tab === 'export';
+    body.hidden = words || exporting || details;
+    panel.hidden = !words;
+    xpanel.hidden = !exporting;
+    if (details) { renderDetails(); return; }
     if (exporting) { renderExport(); return; }
     if (!words) return;
     if (W.load === 'idle') { W.load = 'loading'; wordsLoad(false); }
@@ -3327,6 +4040,7 @@
     if (t && t.matches && t.matches('input,select,textarea,[contenteditable]')) return;
     if (e.key === '?') { $('keys-dlg').showModal(); return; }
     if (e.key >= '1' && e.key <= String(SCREENS.length)) { location.hash = '#' + SCREENS[+e.key - 1]; return; }
+    if (findKeyAction(e.key, { inField: false, screen: S.screen }) === 'focus') { e.preventDefault(); findFocus(); return; }   // / goes to Find; fields were turned away above
     if (S.screen === 'library') { libKey(e); return; }   // its own keys; Space is never TAKE here
     if (S.screen !== 'show' || !S.data) return;
     const k = e.key.toLowerCase();
