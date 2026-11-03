@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example atom wire</title>
+  <entry>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <title>Storm moves east</title>
+    <updated>2026-11-01T09:15:00+02:00</updated>
+    <author><name>Weather desk</name></author>
+    <summary>Short summary.</summary>
+    <content type="html">&lt;div&gt;Rain arrives by evening.&lt;br/&gt;Winds reach 60 km/h.&lt;/div&gt;</content>
+  </entry>
+  <entry>
+    <id>urn:uuid:second</id>
+    <title>Summary only</title>
+    <published>2026-11-01T10:00:00</published>
+    <summary>Only a summary here.</summary>
+  </entry>
+</feed>

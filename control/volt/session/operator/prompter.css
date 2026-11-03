@@ -1,0 +1,21 @@
+/* The prompter page. Colours come from operator.css tokens (both themes); size, speed and mirror are set from the page. */
+body.prompter{display:block;min-height:100vh;background:var(--ground);color:var(--text)}
+.pbar{position:sticky;top:0;z-index:2;display:flex;gap:var(--space-4);align-items:center;flex-wrap:wrap;padding:var(--space-2) var(--space-4);background:var(--panel);border-bottom:1px solid var(--hair)}
+.pname{margin:0;font-size:1rem;font-weight:800;letter-spacing:.14em}
+.pshow{color:var(--muted)}
+.pctl{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap}
+.plab{display:inline;margin:0}
+.pctl input[type=range]{width:8em;accent-color:var(--blue)}
+.pstatus{margin-left:auto;color:var(--muted);font-size:var(--fs-sm)}
+.pstatus.bad{color:var(--air-ink);font-weight:700}
+#p-main{outline:0;padding:var(--space-5) var(--space-4) 60vh}
+.ptext{--psize:4;margin:0 auto;max-width:28em;font-size:calc(var(--psize) * .5rem + 1rem);line-height:1.45;font-weight:600;overflow-wrap:anywhere}
+.ptext.mirror{transform:scaleX(-1)}
+.pitem{margin:0 0 3em;padding-left:.6em;border-left:6px solid transparent}
+.pitem.cur{border-left-color:var(--air)}
+.pslug{margin:0 0 .4em;font-size:.45em;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.pslug .now{color:var(--air-ink);margin-left:.8em}
+.ppara{margin:0 0 .8em}
+.pline{margin:0}
+.pins{margin:0 0 .5em;font-size:.55em;font-weight:500;color:var(--muted)}
+.pempty{color:var(--muted);text-align:center;margin-top:3em}

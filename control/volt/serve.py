@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, tickets, users
+from volt import collections as colls, searchindex, metadata, access as acl, auditview, archive, building, devices, mos_send, oidc, safety, health, logs, media, mos, nle, operator_state, retention, sessions, shots, story, templates, tickets, users, wire
 from volt.clock import set_recurrence, set_relative, set_schedule, to_utc_text
 from volt.paths import package_root
 from volt.cues import cues as cues_of
@@ -55,6 +55,10 @@ STATIC = {
     "/operator/operator.css": ("operator/operator.css", "text/css; charset=utf-8"),
     "/operator/operator.js": ("operator/operator.js", "text/javascript; charset=utf-8"),
     "/operator/theme.js": ("operator/theme.js", "text/javascript; charset=utf-8"),
+    # The prompter page: open like the operator page, because it carries its own show-scoped ticket; the feed it reads is gated.
+    "/prompter": ("operator/prompter.html", "text/html; charset=utf-8"),
+    "/operator/prompter.js": ("operator/prompter.js", "text/javascript; charset=utf-8"),
+    "/operator/prompter.css": ("operator/prompter.css", "text/css; charset=utf-8"),
 }
 # VOLT_DB is a SQLite path or a postgres:// DSN (needs psycopg). Default: local SQLite.
 DB_PATH = os.environ.get("VOLT_DB") or str(package_root().parent / "volt.db")
@@ -112,6 +116,8 @@ _AUDIT_KIND = {
     "schema": "schema",
     "searches": "search",
     "bins": "bin",
+    "wire": "wire",
+    "templates": "template",
 }
 
 CLOCK = time.time  # what "now" is for sessions; a test replaces it with a frozen clock
@@ -337,6 +343,12 @@ def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str,
         action = "search_delete" if parts[-1] == "delete" else "search_save"
         if not captured and isinstance(out.get("search"), dict):
             captured = out["search"].get("id") or ""
+    if len(parts) >= 2 and parts[1] == "wire":
+        action = "wire_" + parts[-1]
+    if len(parts) >= 2 and parts[1] == "templates":
+        action = "template_" + (parts[-1] if len(parts) > 2 else "create")
+        if not captured and isinstance(out.get("template"), dict):
+            captured = out["template"].get("id") or ""
     if len(parts) >= 2 and parts[1] == "bins":
         action = "bin_" + (parts[-1] if len(parts) > 2 else "create")
         if not captured and isinstance(out.get("bin"), dict):
@@ -927,6 +939,146 @@ def act_show_pace(store, show_id, body):
     return {"ok": True, "rundown": rundown_payload(store, show_id)}
 
 
+def _wire_errors(fn):
+    try:
+        return fn()
+    except (wire.WireRefusal, building.BuildError, story.StoryError) as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **getattr(exc, "extra", {})) from None
+
+
+def act_wire_take(store, wire_id, body):
+    """A person turns an inbox entry into a draft story in a show. {show, slug?, position?}. Nothing from a wire airs without this."""
+    _unknown_keys(body, {"show", "slug", "position"})
+    show_id = _str(body, "show", required=True, limit=128)
+    slug = _str(body, "slug", limit=200)
+    _show_gate(store, _who()[1], "show", show_id, "edit")      # the show is named in the body, so the path gate cannot see it
+    out = _wire_errors(lambda: wire.take(store, wire_id, show_id, slug, body.get("position"), _who()[0]))
+    return {"ok": True, "wire": wire_id, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+
+
+def act_wire_dismiss(store, wire_id, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "wire": wire_id, **_wire_errors(lambda: wire.dismiss(store, wire_id, _who()[0]))}
+
+
+def _template_errors(fn):
+    try:
+        return fn()
+    except (templates.TemplateError, building.BuildError, story.StoryError) as exc:
+        raise ApiError(exc.status, exc.code, exc.reason, **getattr(exc, "extra", {})) from None
+
+
+def act_template_create(store, _unused, body):
+    """Make a template: {kind, name, fromShow | fromItem | body}. Exactly one source."""
+    _unknown_keys(body, {"kind", "name", "fromShow", "fromItem", "body"})
+    kind = _str(body, "kind", required=True, limit=20)
+    name = _str(body, "name", required=True, limit=templates.MAX_NAME)
+    sources = [k for k in ("fromShow", "fromItem", "body") if body.get(k) is not None]
+    if len(sources) != 1:
+        raise ApiError(422, "bad_input", "give exactly one of fromShow, fromItem or body")
+    actor = _who()[0]
+    principal = _who()[1]
+    if sources[0] == "fromShow":
+        if kind != "show":
+            raise ApiError(422, "bad_input", "fromShow makes a show template")
+        _show_gate(store, principal, "show", str(body["fromShow"])[:128], "view")
+        tid = _template_errors(lambda: templates.from_show(store, _str(body, "fromShow", required=True, limit=128), name, actor))
+    elif sources[0] == "fromItem":
+        if kind != "story":
+            raise ApiError(422, "bad_input", "fromItem makes a story template")
+        _show_gate(store, principal, "item", str(body["fromItem"])[:128], "view")
+        tid = _template_errors(lambda: templates.from_item(store, _str(body, "fromItem", required=True, limit=128), name, actor))
+    else:
+        tid = _template_errors(lambda: templates.create(store, kind, name, body["body"], actor))
+    return {"ok": True, "template": {"id": tid, "kind": kind, "name": name.strip()}}
+
+
+def act_template_instantiate(store, template_id, body):
+    """Use a template. A story template: {show, position?} adds a draft story. A show template: {title} makes a new show."""
+    _unknown_keys(body, {"show", "position", "title"})
+    actor = _who()[0]
+    row = store.conn.execute("SELECT kind FROM story_template WHERE id = ?", (template_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "not_found", f"no such template: {template_id}")
+    if row["kind"] == "story":
+        show_id = _str(body, "show", required=True, limit=128)
+        _show_gate(store, _who()[1], "show", show_id, "edit")
+        out = _template_errors(lambda: templates.instantiate_story(store, template_id, show_id, body.get("position"), actor))
+        return {"ok": True, "template": {"id": template_id}, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+    title = _str(body, "title", required=True, limit=200)
+    out = _template_errors(lambda: templates.instantiate_show(store, template_id, title, actor))
+    return {"ok": True, "template": {"id": template_id}, **out, "show": {"id": out["show"], "title": title.strip()},
+            "rundown": rundown_payload(store, out["show"])}
+
+
+def act_template_delete(store, template_id, body):
+    _unknown_keys(body, set())
+    return {"ok": True, "template": {"id": template_id}, **_template_errors(lambda: templates.delete(store, template_id, _who()[0]))}
+
+
+def act_item_copy(store, source_id, body):
+    """Copy a story (or `archive:<id>`) into a show as a new draft. {show, position?}. Not a take: it works on a held show."""
+    _unknown_keys(body, {"show", "position"})
+    show_id = _str(body, "show", required=True, limit=128)
+    _show_gate(store, _who()[1], "show", show_id, "edit")
+    out = _build_errors(lambda: story.copy_story(store, source_id, show_id, body.get("position"), _who()[0]))
+    return {"ok": True, "source": source_id, "show": {"id": show_id}, **out, "rundown": rundown_payload(store, show_id)}
+
+
+def stories_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/stories and GET /api/templates."""
+    if path == "/api/templates":
+        if query:
+            raise ApiError(422, "bad_input", "this route takes no parameters")
+        handler._json(200, templates.listing(store))
+        return True
+    if path != "/api/stories":
+        return False
+    extra = sorted(set(query) - {"q", "status", "show", "from", "to", "limit", "cursor"})
+    if extra or any(len(v) != 1 for v in query.values()):
+        raise ApiError(422, "bad_input", "this route takes q, status, show, from, to, limit and cursor, each once")
+    one = lambda k: query.get(k, [""])[0]  # noqa: E731
+    limit = one("limit") or "50"
+    if not limit.isdigit():
+        raise ApiError(422, "bad_input", "limit must be a whole number from 1 to 200")
+    visible = _view_filter(store, getattr(handler, "principal", None))    # a restricted show's stories are not listed to people who are not on it
+    handler._json(200, _build_errors(lambda: story.search(store, q=one("q"), status=one("status"), show=one("show"), from_=one("from"), to=one("to"),
+                                                          limit=int(limit), cursor=one("cursor") or None, show_ok=visible)))
+    return True
+
+
+def wire_get(handler, store, path: str, query: dict) -> bool:
+    """GET /api/wire?state=new&limit=&cursor=: the inbox, newest first, with each feed's last success and last error."""
+    if path != "/api/wire":
+        return False
+    extra = sorted(set(query) - {"state", "limit", "cursor"})
+    if extra or any(len(v) != 1 for v in query.values()):
+        raise ApiError(422, "bad_input", "this route takes state, limit and cursor, each once")
+    limit = query.get("limit", ["50"])[0]
+    if not limit.isdigit():
+        raise ApiError(422, "bad_input", "limit must be a whole number from 1 to 200")
+    handler._json(200, _wire_errors(lambda: wire.list_inbox(store, query.get("state", ["new"])[0], int(limit), query.get("cursor", [None])[0])))
+    return True
+
+
+PROMPTER_TTL_DEFAULT, PROMPTER_TTL_MAX = 4 * 3600, 12 * 3600
+
+
+def act_prompter_ticket(store, show_id, body):
+    """Issue a link a prompter computer can open without an operator token: one show, read-only, 4 hours (at most 12).
+    The ticket rides in the URL like a media ticket, so it can reach logs; it is short-lived and reads one feed only."""
+    _unknown_keys(body, {"ttlSeconds"})
+    ttl = body.get("ttlSeconds", PROMPTER_TTL_DEFAULT)
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or not 60 <= ttl <= PROMPTER_TTL_MAX:
+        raise ApiError(422, "bad_input", f"ttlSeconds must be a whole number from 60 to {PROMPTER_TTL_MAX}")
+    _show_exists(store, show_id)
+    secret = MEDIA_KEY or TOKEN
+    if not secret:
+        raise ApiError(503, "no_media_key", "no signing key is configured (set VOLT_MEDIA_KEY or VOLT_TOKEN)")
+    token, exp = tickets.issue(secret, show_id, "prompter", ttl, int(time.time()))
+    return {"ok": True, "show": {"id": show_id}, "url": f"/prompter?show={show_id}&ticket={token}", "expiresAt": exp}
+
+
 def act_story_status(store, item_id, body):
     """Move a story between draft, ready, approved and killed, quoting `baseRev`. Never touches the item's playout status."""
     _unknown_keys(body, {"status", "baseRev", "note"})
@@ -1024,6 +1176,18 @@ def devices_get(handler, store, path: str, query: dict) -> bool:
 
 def show_building_get(handler, store, path: str, query: dict) -> bool:
     """GET /api/cue-commands, GET /api/items/{item}/cues and GET /api/items/{item}/story. Returns True when it answered."""
+    p = PROMPTER_ROUTE.match(path)
+    if p:     # the feed a prompter page polls: a bearer, or a ticket for exactly this show
+        handler._accept_prompter_ticket(p.group(1), query)
+        handler._json(200, _build_errors(lambda: story.prompter_feed(store, p.group(1))))
+        return True
+    t = re.fullmatch(rf"/api/shows/{_ID}/script", path)
+    if t:
+        if query != {"format": ["text"]}:
+            raise ApiError(422, "bad_input", "this route needs format=text and nothing else")
+        text = _build_errors(lambda: story.script_text(store, t.group(1)))
+        handler._send(200, "text/plain; charset=utf-8", text.encode("utf-8"), {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        return True
     s = re.fullmatch(rf"/api/items/{_ID}/story", path)
     if s:
         if query:
@@ -1052,6 +1216,7 @@ def show_building_get(handler, store, path: str, query: dict) -> bool:
 READ_ROUTES = re.compile(rf"^/api/assets/{_ID}/(spans|transcript|proxy)$")
 THUMB_ROUTE = re.compile(rf"^/api/spans/{_ID}/thumb$")
 MOS_ROUTE = re.compile(rf"^/api/shows/{_ID}/mos$")
+PROMPTER_ROUTE = re.compile(rf"^/api/shows/{_ID}/prompter$")
 
 def _user_error(fn):
     try:
@@ -1448,7 +1613,14 @@ ROUTES += [  # show building
     (re.compile(rf"^/api/items/{_ID}/story-status$"), act_story_status),
     (re.compile(rf"^/api/items/{_ID}/float$"), act_item_float),
     (re.compile(rf"^/api/shows/{_ID}/reading-pace$"), act_show_pace),
+    (re.compile(rf"^/api/shows/{_ID}/prompter-ticket$"), act_prompter_ticket),
+    (re.compile(rf"^/api/wire/{_ID}/take$"), act_wire_take),
+    (re.compile(rf"^/api/wire/{_ID}/dismiss$"), act_wire_dismiss),
     (re.compile(rf"^/api/shows/{_ID}/access$"), act_show_access),
+    (re.compile(r"^/api/templates$()"), act_template_create),
+    (re.compile(rf"^/api/templates/{_ID}/instantiate$"), act_template_instantiate),
+    (re.compile(rf"^/api/templates/{_ID}/delete$"), act_template_delete),
+    (re.compile(rf"^/api/items/{_ID}/copy$"), act_item_copy),
     (re.compile(rf"^/api/items/{_ID}/remove$"), act_item_remove),
     (re.compile(rf"^/api/items/{_ID}/detach$"), act_item_detach),
     (re.compile(rf"^/api/items/{_ID}/cues$"), act_cue_add),
@@ -1504,7 +1676,7 @@ ROUTE_ROLES = {
     "act_span_split": "operator", "act_span_merge": "operator", "act_span_frames": "operator",
     # rundown and cue writes
     "act_show_create": "operator", "act_item_add": "operator", "act_item_rename": "operator",
-    "act_story_script": "operator", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
+    "act_story_script": "operator", "act_prompter_ticket": "operator", "act_wire_take": "operator", "act_wire_dismiss": "operator", "act_template_create": "operator", "act_template_instantiate": "operator", "act_item_copy": "operator", "act_template_delete": "admin", "act_story_status": "operator", "act_item_float": "operator", "act_show_pace": "operator", "act_item_remove": "operator", "act_item_detach": "operator", "act_cue_add": "operator",
     "act_cue_remove": "operator", "act_ingest": "operator",
     # destructive or retention
     "act_delete": "admin", "act_unpublish": "admin", "act_span_delete": "admin", "act_detect": "admin",
@@ -1536,7 +1708,7 @@ ROUTE_SHOW_LEVEL = {
     "act_mos_resolve": "run", "act_show_access": "run",
     # build the rundown
     "act_show_slot": "edit", "act_show_recurrence": "edit", "act_reorder": "edit", "act_show_pace": "edit", "act_show_delete": "edit",
-    "act_item_add": "edit", "act_item_schedule": "edit", "act_attach": "edit", "act_item_rename": "edit", "act_story_script": "edit",
+    "act_prompter_ticket": "edit", "act_item_copy": "edit", "act_item_add": "edit", "act_item_schedule": "edit", "act_attach": "edit", "act_item_rename": "edit", "act_story_script": "edit",
     "act_story_status": "edit", "act_item_float": "edit", "act_item_remove": "edit", "act_item_detach": "edit", "act_cue_add": "edit",
     "act_cue_remove": "edit",
 }
@@ -1546,7 +1718,7 @@ SHOW_RESOLVER = {
     "act_show_slot": "show", "act_show_recurrence": "show", "act_reorder": "show", "act_show_pace": "show", "act_show_delete": "show",
     "act_item_add": "show", "act_mos_resolve": "mos",
     "act_skip": "item", "act_kill": "item", "act_item_schedule": "item", "act_attach": "item", "act_item_rename": "item",
-    "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
+    "act_prompter_ticket": "show", "act_item_copy": "item", "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
     "act_cue_add": "item", "act_cue_remove": "cue",
 }
 NOT_SHOW_SCOPED = frozenset({
@@ -1561,6 +1733,8 @@ NOT_SHOW_SCOPED = frozenset({
     "act_user_add", "act_user_disable", "act_user_enable", "act_user_rotate", "act_user_end_sessions", "act_user_identity", "act_user_role",
     "act_group_create", "act_group_members", "act_group_delete", "act_group_claims",
     "act_session_start", "act_session_end",
+    "act_template_create", "act_template_instantiate", "act_template_delete",   # the show is in the body: act_template_instantiate and _create check it themselves
+    "act_wire_take", "act_wire_dismiss",                                     # the show is in the body: act_wire_take checks it itself
 })
 
 
@@ -1709,8 +1883,28 @@ class Handler(BaseHTTPRequestHandler):
         if m and m.group(2) == "proxy":
             media_get = True
         else:
-            media_get = bool(THUMB_ROUTE.match(parsed.path))
+            media_get = bool(THUMB_ROUTE.match(parsed.path)) or bool(PROMPTER_ROUTE.match(parsed.path))
         return media_get and "ticket" in parse_qs(parsed.query, keep_blank_values=True)
+
+    def _accept_prompter_ticket(self, show_id: str, query: dict) -> None:
+        """The prompter feed takes `ticket` instead of a bearer: one show, one purpose, short-lived. Nothing else is accepted."""
+        extra = sorted(set(query) - {"ticket"})
+        if extra:
+            raise ApiError(422, "bad_input", "the prompter feed takes no parameters")
+        given = query.get("ticket")
+        if not given:
+            return
+        if len(given) != 1:
+            raise ApiError(422, "bad_input", "ticket may be given once")
+        if self._bearer_principal() is not None:
+            return
+        secret = MEDIA_KEY or TOKEN
+        try:
+            if not secret:
+                raise tickets.TicketError("ticket_invalid")
+            tickets.verify(secret, show_id, "prompter", given[0], int(time.time()))
+        except tickets.TicketError:
+            raise TicketDenied() from None
 
     def _gate_or_ticket(self) -> bool:
         """Bearer (or loopback host) as usual, except a media GET may present `ticket` instead of Authorization."""
@@ -2078,6 +2272,10 @@ class Handler(BaseHTTPRequestHandler):
         if devices_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if show_building_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if wire_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
+            return
+        if stories_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return
         if schema_get(self, STORE, parsed.path, parse_qs(parsed.query, keep_blank_values=True)):
             return

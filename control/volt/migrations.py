@@ -256,6 +256,11 @@ MIGRATIONS = (
                       "CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject)"),
               postgres=("CREATE TABLE IF NOT EXISTS show_acl (show_id TEXT NOT NULL, subject_kind TEXT NOT NULL, subject TEXT NOT NULL, level TEXT NOT NULL, PRIMARY KEY (show_id, subject_kind, subject))",
                         "CREATE INDEX IF NOT EXISTS show_acl_subject ON show_acl (subject_kind, subject)")),
+    # Wire intake (volt/wire.py): one row per configured feed with its last attempt, last success, last error and next attempt, so one bad
+    # feed shows up in the inbox without stopping the others. A new table, so SCHEMA makes it on a fresh database.
+    Migration(32, "wire feed state",
+              sqlite=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TEXT, last_ok_at TEXT, last_error TEXT, next_attempt_at TEXT)",),
+              postgres=("CREATE TABLE IF NOT EXISTS wire_feed (feed TEXT PRIMARY KEY, kind TEXT NOT NULL, last_attempt_at TIMESTAMPTZ, last_ok_at TIMESTAMPTZ, last_error TEXT, next_attempt_at TIMESTAMPTZ)",)),
 )
 
 LATEST = MIGRATIONS[-1].version

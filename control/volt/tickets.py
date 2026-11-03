@@ -12,12 +12,12 @@ class TicketError(Exception):
         self.code = code
 
 
-KINDS = ("proxy", "thumb")
+KINDS = ("proxy", "thumb", "prompter")   # a prompter ticket binds a SHOW id (not an asset) and reads one feed
 
 
 def issue(secret: str, asset_id: str, kind: str, ttl: int, now: int) -> tuple[str, int]:
     if kind not in KINDS:
-        raise TicketError("ticket_invalid", "kind must be proxy or thumb")
+        raise TicketError("ticket_invalid", "kind must be proxy, thumb or prompter")
     exp = int(now) + int(ttl)
     return _token(secret, asset_id, kind, exp), exp
 

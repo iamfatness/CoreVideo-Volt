@@ -5,7 +5,8 @@
 
 `--no-runner` leaves queued detection and indexing jobs queued, so those states can be looked at.
 Scenarios: normal, held, take_fail, record_requested, record_producing, record_finalizing,
-record_completed, publish_progress, publish_partial, library, export, find. The page is then at /operator.
+record_completed, publish_progress, publish_partial, library, export, scripts, find. The page is then at /operator.
+`scripts` gives the Scripts screen stories in each editorial state (see seed_scripts).
 `library` adds assets for the Library screen (see seed_library). `find` is `library` plus typed fields, metadata, a second
 show with speech, a saved search and a bin (see seed_find). `export` is `library` plus assets that make each
 export refusal reachable (see seed_export) and a path map. `--token T` makes the server require a bearer token.
@@ -35,7 +36,7 @@ from volt.rundown import add_item, attach, open_show
 from volt.store import Store, _id, _now
 
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
-             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "find"]
+             "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -234,6 +235,44 @@ def seed_export(store: Store, media_dir: Path, ids: dict) -> dict:
     return out
 
 
+# slug -> (script, story status, floated). The Scripts screen scenario: every editorial state once, a private note, an instruction
+# line, a story that is approved while on air, and a backup story that is floated. Items that already aired have no script here.
+SCRIPT_TEXTS = {
+    "Open / theme": ("[CAM 2 - ANCHOR]\nGood evening, and welcome to Final Four Watch.\nTonight: the upset nobody saw coming, and what it\n"
+                     "means for the bracket.\n\n[SOT 0:23 - Coach Rivera]\nWe stayed with the plan and the plan worked.", "approved", False),
+    "Game action": ("[CAM 1 - WIDE]\nThe Wildcats led by two with a minute left when Okonkwo stole the ball and went the length of the floor.\n"
+                    "// Check the final score with Dana before 6pm\n[CG: Okonkwo, 24 points]\nThe layup put the game out of reach.", "ready", False),
+    "Under review": ("Officials are still reviewing the last possession.\n// Waiting on the league for the ruling\n[unclosed", "killed", False),
+    "Player spotlight": ("[TWO-SHOT]\nOkonkwo grew up two miles from the arena. Tonight his old coach was in the stands.", "draft", True),
+}
+
+
+def seed_scripts(store: Store) -> None:
+    from volt import story
+    for slug, (text, status, floated) in SCRIPT_TEXTS.items():
+        item = store.conn.execute("SELECT id FROM item WHERE slug = ?", (slug,)).fetchone()["id"]
+        story.set_script(store, item, script=text, base_rev=1, actor="dana")      # revision 2
+        if floated:
+            story.set_floated(store, item, True, "dana")
+        if status == "killed":
+            story.set_status(store, item, "killed", base_rev=2, actor="dana")
+        elif status in ("ready", "approved"):
+            story.set_status(store, item, "ready", base_rev=2, actor="dana")
+        if status == "approved":
+            story.set_status(store, item, "approved", base_rev=2, actor="marcus")
+    # The Wire tab: two entries waiting in the inbox, one feed that reads and one that is failing.
+    from datetime import datetime, timezone
+    from volt import wire
+    now = datetime.now(timezone.utc)
+    feed = wire.Feed("regional", "rss", "https://wire.example/regional")
+    wire.upsert(store, feed, [wire.WireStory("w1", "Council approves bridge and budget", "Council voted six to three last night.\nThe vote follows two years of debate over cost.",
+                                              "Dana Reyes", "2026-11-01T14:30:00Z"),
+                              wire.WireStory("w2", "Road closures this weekend", "Main Street closes at noon. Expect delays.", "Traffic desk", None)], now)
+    wire._record(store, feed, now, True, None)
+    wire._record(store, wire.Feed("agency", "json", "https://agency.example/feed"), now, False, "TimeoutError: timed out")
+    store.conn.commit()
+
+
 def seed(store: Store, scenario: str, media_dir=None):
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
     """Fill the store for a scenario. Returns the FakeRoom to serve it with."""
@@ -264,6 +303,8 @@ def seed(store: Store, scenario: str, media_dir=None):
     store.conn.commit()
     if scenario == "held":
         hold(store, show, "Waiting on the producer for the replay cue")
+    if scenario == "scripts":
+        seed_scripts(store)
 
     # The room. Take succeeds only where its cues have evidence: a lower third on air and a sender
     # producing. take_fail never shows a sender, so stream.start fails after overlay.take fires.

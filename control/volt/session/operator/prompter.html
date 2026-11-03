@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Volt prompter</title>
+<link rel="icon" href="data:,">
+<script src="/operator/theme.js"></script>
+<link rel="stylesheet" href="/operator/operator.css">
+<link rel="stylesheet" href="/operator/prompter.css">
+</head>
+<body class="prompter">
+<header class="pbar">
+  <h1 class="pname">VOLT prompter</h1>
+  <span id="p-show" class="pshow"></span>
+  <div class="pctl" role="group" aria-label="Prompter controls">
+    <button type="button" class="btn" id="p-go" aria-pressed="false">Start scrolling</button>
+    <label class="plab" for="p-speed">Speed</label>
+    <input id="p-speed" type="range" min="1" max="20" step="1" value="6">
+    <label class="plab" for="p-size">Size</label>
+    <input id="p-size" type="range" min="2" max="9" step="1" value="4">
+    <button type="button" class="btn ghost" id="p-mirror" aria-pressed="false">Mirror</button>
+    <button type="button" class="btn ghost" id="p-jump">Jump to current</button>
+  </div>
+  <span id="p-status" class="pstatus" role="status" aria-live="polite"></span>
+</header>
+<main id="p-main" tabindex="-1" aria-label="Script">
+  <div id="p-text" class="ptext"></div>
+</main>
+<script src="/operator/prompter.js"></script>
+</body>
+</html>

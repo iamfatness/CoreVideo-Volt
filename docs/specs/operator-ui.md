@@ -141,3 +141,7 @@ Entered in the Token dialog, kept in `sessionStorage` only (gone when the tab cl
 ## State is never colour-only
 
 Every status carries a glyph and a word. Focus rings are 2 px. `prefers-reduced-motion` stops the one spinner.
+
+## Scripts screen
+
+The Scripts screen (`#scripts`; no number key, keys 1 to 6 are unchanged), in the Producer and Operator rails. Stories in rundown order with state chips (Draft, Ready, Approved, Story killed, Floated, Unsaved, and the playout state beside them), a status filter and the reading pace; a slug field and a script box with a preview of what is read and a count in a polite status region (at most one change a second); Save, the legal status moves only (Approve needs two presses; status moves are off while there is unsaved text), Float; a story panel with History, Wire, Templates and Archive tabs. A lost save race opens a modal dialog with both versions. Editing is read-only, with the reason in words, for aired, skipped and killed items and for a killed story. The Show rows gain the story chip, a floated marker and `~0:42 read` where the length comes from the script. Keys: `Ctrl+S` saves, from inside the script box only. The prompter is a separate page, `/prompter`. Behaviour and limits: [newsroom-scripts.md](newsroom-scripts.md).

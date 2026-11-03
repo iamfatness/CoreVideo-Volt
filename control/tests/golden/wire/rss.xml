@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Example wire</title>
+    <item>
+      <title>Council approves bridge &amp; budget</title>
+      <guid>wire-001</guid>
+      <link>https://wire.example/story/1</link>
+      <dc:creator>Dana Reyes</dc:creator>
+      <pubDate>Sun, 01 Nov 2026 14:30:00 GMT</pubDate>
+      <description>&lt;p&gt;Council voted six to three.&lt;/p&gt;&lt;p&gt;The vote follows two years of debate.&lt;script&gt;alert(1)&lt;/script&gt;&lt;/p&gt;</description>
+    </item>
+    <item>
+      <title>Second story, no guid</title>
+      <link>https://wire.example/story/2</link>
+      <description>Plain text body.
+// a line that looks like a private note</description>
+    </item>
+    <item>
+      <description>An item with no headline is skipped.</description>
+    </item>
+  </channel>
+</rss>
