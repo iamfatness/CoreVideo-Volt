@@ -429,6 +429,8 @@
     templateCreate: ['POST', '/api/templates'],
     templateUse: ['POST', '/api/templates/{id}/instantiate'],
     templateDelete: ['POST', '/api/templates/{id}/delete'],
+    stories:     ['GET',  '/api/stories'],
+    itemCopy:    ['POST', '/api/items/{id}/copy'],
   };
   // Actions that run one at a time on the server (the sequencing lock). Hold, release, rights
   // and publish do not wait on it, so HOLD stays pressable while a take waits on the room.
@@ -557,7 +559,7 @@
   // `query` is an object of GET parameters (library reads); `body` is the JSON of a POST.
   async function call(kind, id, body, query) {
     const [method, tpl] = EP[kind];
-    let path = tpl.replace('{id}', encodeURIComponent(id || ''));
+    let path = tpl.replace('{id}', encodeURIComponent(id || '').replace(/%3A/gi, ':'));   // a colon is legal in a path, and `archive:<id>` needs it
     if (kind === 'state' && S.show) path += '?show=' + encodeURIComponent(S.show);
     if (query) path += '?' + new URLSearchParams(query).toString();
     const headers = authHeaders(method, getToken(), SESS.csrf);
@@ -3352,7 +3354,7 @@
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
   const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
     pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
-  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }];
+  const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }, { id: 'archive', label: 'Archive', icon: 'library' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
   const SC_PLAYOUT_WORD = { aired: 'has aired', skipped: 'was skipped', killed: 'was killed from air' };
 
@@ -3741,12 +3743,53 @@
       el('p', { class: 'note', text: 'A template keeps text and cues, never media. Anything made from one starts as a draft with no approval.' })];
   }
 
+  // ---- Archive: find a story, live or from a deleted show, and copy it into this show as a draft. Search is LIKE, not full text. ----
+  const ARC = { q: '', status: '', from: '', to: '', rows: [], next: null, busy: false, err: null, loaded: false };
+  async function arcLoad(more) {
+    if (ARC.busy) return;
+    ARC.busy = true; ARC.err = null; render();
+    const q = { limit: '25' };
+    for (const [k, v] of [['q', ARC.q.trim()], ['status', ARC.status], ['from', ARC.from.trim()], ['to', ARC.to.trim()]]) if (v) q[k] = v;
+    if (more && ARC.next) q.cursor = ARC.next;
+    try {
+      const { status, data } = await call('stories', null, null, q);
+      if (status === 200 && data && data.ok) { ARC.rows = more ? ARC.rows.concat(data.rows) : data.rows; ARC.next = data.next || null; ARC.loaded = true; }
+      else ARC.err = status === 401 ? 'A token is needed to search.' : codeOf(data, status).reason || 'The server refused the search.';
+    } catch (e) { ARC.err = 'The server did not answer.'; }
+    ARC.busy = false; render();
+  }
+  function arcPanel() {
+    const field = (id, label, key, ph) => el('div', {}, el('label', { for: id, text: label }),
+      el('input', { id, type: 'text', 'data-fk': id, value: ARC[key], placeholder: ph, autocomplete: 'off', oninput: (e) => { ARC[key] = e.target.value; } }));
+    return [el('form', { class: 'sc-tplform', 'aria-label': 'Search stories', onsubmit: (e) => { e.preventDefault(); arcLoad(false); } },
+        field('arc-q', 'Words in the slug or script', 'q', 'bridge'),
+        el('div', { class: 'form-row flush' }, el('div', {}, el('label', { for: 'arc-status', text: 'Story status' }),
+          el('select', { id: 'arc-status', 'data-fk': 'arc-status', onchange: (e) => { ARC.status = e.target.value; } },
+            SC_FILTERS.map(([v, label]) => el('option', { value: v === 'all' ? '' : v, selected: (v === 'all' ? '' : v) === ARC.status }, label))))),
+        el('div', { class: 'form-row flush' }, field('arc-from', 'From', 'from', 'YYYY-MM-DD'), field('arc-to', 'To', 'to', 'YYYY-MM-DD')),
+        el('div', { class: 'bar flush' }, el('button', { type: 'submit', class: 'btn small', 'data-fk': 'arc-go', disabled: ARC.busy }, ARC.busy ? 'Searching…' : 'Search'))),
+      ARC.err ? el('p', { class: 'info', role: 'alert' }, icon('alert', 's'), ' ', ARC.err) : null,
+      ARC.rows.length ? el('ul', { class: 'list wirelist', 'aria-label': 'Stories found' }, ARC.rows.map((r) => {
+        const key = 'arc-copy:' + r.id;
+        return el('li', { class: 'wirerow' }, el('div', { class: 'wh', text: r.slug }),
+          el('div', { class: 'chips scchips' }, stateChip(storyKind(r.storyStatus)), r.archived ? stateChip('archived') : null),
+          el('div', { class: 'meta', text: (r.show || '') + (r.at ? ' · ' + fmtTime(r.at) : '') }),
+          r.snippet ? el('p', { class: 'snip', text: r.snippet }) : null,
+          el('div', { class: 'bar flush' }, btn('Copy to this show', { key, cls: 'small', disabled: !S.show, aria: 'Copy "' + r.slug + '" to this show as a draft',
+            onclick: () => act('itemCopy', r.id, { show: S.show }, { key, okTitle: 'Copied as a draft.', ok: () => 'It is at the end of the rundown, revision 1, not approved. The original is unchanged.' }) })));
+      })) : el('p', { class: 'empty', text: ARC.loaded ? 'No story matches.' : 'Reading the archive…' }),
+      ARC.next ? el('div', { class: 'bar' }, btn('Load more', { key: 'arc-more', cls: 'ghost small', disabled: ARC.busy, onclick: () => arcLoad(true) })) : null,
+      el('p', { class: 'note', text: 'Searches the slug and the words the talent reads, never a private note. It is a plain text match, fine for thousands of stories and not a full-text index. Stories of deleted shows are kept here.' })];
+  }
+
   // What each tab of the story panel loads (once, or on a timer) and paints. A tab's `sig` is what repaints it.
   const SC_PANELS = {
     history: { sig: () => { const st = scLoaded(); return [SC.sel, st && [st.rev, st.storyStatus, (st.events || []).length, (st.revisions || []).length]]; }, build: () => scHistory() },
     wire: { load: wireMaybeLoad, sig: () => [WIRE.rows, WIRE.feeds, WIRE.err, WIRE.busy, S.show, [...S.pending].filter((k) => k.startsWith('wire-'))], build: () => wirePanel() },
     templates: { load: () => { if (!TPL.loaded && !TPL.busy && !TPL.err) tplLoad(); },
       sig: () => [TPL.rows, TPL.err, TPL.busy, TPL.name, TPL.title, S.show, SC.sel, !!scLoaded(), S.armed, [...S.pending].filter((k) => k.startsWith('tpl-'))], build: () => tplPanel() },
+    archive: { load: () => { if (!ARC.loaded && !ARC.busy && !ARC.err) arcLoad(false); },
+      sig: () => [ARC.rows, ARC.next, ARC.err, ARC.busy, ARC.q, ARC.status, ARC.from, ARC.to, S.show, [...S.pending].filter((k) => k.startsWith('arc-'))], build: () => arcPanel() },
   };
 
   function renderScripts() {

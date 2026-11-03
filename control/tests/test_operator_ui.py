@@ -101,6 +101,9 @@ class Endpoints(Api):
             elif tpl == "/api/audit":   # needs a target or the admin role: refused, never a missing route
                 status, payload, _ = self.call("GET", path)
                 self.assertIn(status, (200, 401, 403, 422), tpl)
+            elif tpl == "/api/stories":      # the search: live stories, newest first
+                status, payload, _ = self.call("GET", path)
+                self.assertEqual((status, payload["ok"], payload["rows"]), (200, True, []), tpl)
             elif tpl == "/api/templates":    # the template list: empty on a fresh database
                 status, payload, _ = self.call("GET", path)
                 self.assertEqual((status, payload["ok"], payload["templates"]), (200, True, []), tpl)
@@ -1598,3 +1601,12 @@ class ScriptsScreenContract(unittest.TestCase):
         self.assertIn("{ id: 'templates', label: 'Templates', icon: 'transcript' }", self.JS)
         self.assertIn("templateUse: ['POST', '/api/templates/{id}/instantiate']", self.JS)
         self.assertIn("anything made from one starts as a draft with no approval", sec.lower())
+
+    def test_the_archive_tab_searches_copies_as_a_draft_and_says_what_it_does_not_search(self):
+        sec = self.JS[self.JS.index("// ---- Archive: find a story"):self.JS.index("// What each tab of the story panel")]
+        self.assertNotIn("innerHTML", sec)
+        self.assertIn("act('itemCopy', r.id, { show: S.show }", sec)
+        self.assertIn("never a private note", sec)
+        self.assertIn("not a full-text index", sec)
+        self.assertIn("{ id: 'archive', label: 'Archive', icon: 'library' }", self.JS)
+        self.assertIn(".replace(/%3A/gi, ':')", self.JS)                     # `archive:<id>` keeps its colon in the path

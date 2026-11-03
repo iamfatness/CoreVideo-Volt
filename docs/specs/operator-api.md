@@ -271,3 +271,29 @@ Design: `docs/superpowers/specs/2026-11-01-search-indexing-design.md`. Reads nee
 - Atomicity is per underlying function. `take_item` commits the advance, then the cues, then a rewind on failure, so a crash of the server process mid-take can leave the rundown advanced with cues unsent. The rewind-on-failure path is covered; crash-mid-take is not.
 - Two `serve` processes and the clock serialise on item status `taking`, not on a thread lock. `_SEQ` only orders requests inside one process.
 - Dispatch waits on the room with no show lock. Hold, release, attach to a *different* ready item, rights and publish do not wait. A second take or go is `409 taking`.
+
+## Newsroom scripts
+
+Stories, the prompter, the wire inbox, templates, the archive and search. Bodies reject unknown fields; errors are `{ok:false, error:{code, reason}}` with extras (such as `current`) at the top level. Full behaviour and what is unvalidated: [newsroom-scripts.md](newsroom-scripts.md).
+
+| Route | Role | Notes |
+| --- | --- | --- |
+| `GET /api/items/{item}/story` | any | Slug, script (private notes removed for a viewer), `rev`, `storyStatus`, approval record, `stats`, `revisions`, `events`. |
+| `POST /api/items/{item}/script` | operator | `{script?, slug?, baseRev}`. 409 `stale_script` (with `current`), `not_editable`, `story_killed`. |
+| `POST /api/items/{item}/story-status` | operator | `{status, baseRev, note?}`. 409 `bad_transition`, 403 `not_approver`. |
+| `POST /api/items/{item}/float` | operator | `{floated}`. 409 `not_floatable`. |
+| `POST /api/shows/{show}/reading-pace` | operator | `{wpm: 60..400 or null}`. |
+| `GET /api/shows/{show}/prompter` | any, or a prompter ticket for that show | Feed: items with read and instruction blocks, `version`, `current`, `wpm`. No notes. |
+| `POST /api/shows/{show}/prompter-ticket` | operator | `{ttlSeconds?}` (60 to 43200, default 14400). Returns `url`, `expiresAt`. 503 `no_media_key`. |
+| `GET /api/shows/{show}/script?format=text` | any | Plain read text. |
+| `GET /api/wire?state=&limit=&cursor=` | any | Inbox (`new`, `taken`, `dismissed`, `all`), feeds with last ok and last error. |
+| `POST /api/wire/{id}/take` | operator | `{show, slug?, position?}`. 409 `already_taken`. |
+| `POST /api/wire/{id}/dismiss` | operator | 409 `already_taken` once taken. |
+| `GET /api/templates` | any | List (no bodies). |
+| `POST /api/templates` | operator | `{kind: story or show, name, fromItem or fromShow or body}`. |
+| `POST /api/templates/{id}/instantiate` | operator | Story: `{show, position?}`. Show: `{title}`. |
+| `POST /api/templates/{id}/delete` | admin | |
+| `GET /api/stories?q=&status=&show=&from=&to=&limit=&cursor=` | any | Live and archived stories, newest first, `archived` on each row. |
+| `POST /api/items/{item}/copy` | operator | `{show, position?}`; `archive:<id>` copies an archived story. |
+
+`/rundown` items gain `storyStatus`, `scriptRev`, `words`, `readSeconds`, `floated` and `lengthSource`, and the top level `readWpm`; the script text is never in `/rundown`.
