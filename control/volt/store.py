@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS item (
   approved_at TEXT,
   approved_rev INTEGER,
   floated INTEGER,
-  source_wire_id TEXT
+  source_wire_id TEXT,
+  pro_clip TEXT
 );
 
 CREATE TABLE IF NOT EXISTS story_rev (

@@ -4,6 +4,17 @@ POST endpoints in `control/volt/serve.py` that give the operator UI hands. They 
 
 ## Contract
 
+### CoreVideo Pro rundown clips
+
+Both routes require operator access and the show's run permission. They take an empty JSON object and
+return the updated rundown. Local staging is opt-in, with `proClipEnabled` on the rundown and
+`proClip.status` on items that have been sent (`staging`, `ready`, or `failed`).
+
+- `POST /api/items/{item}/pro-clip/stage` renders the attached span and waits for Pro to identify it in the local bin.
+- `POST /api/items/{item}/pro-clip/preview` cues the ready cut in Pro without changing the live rundown.
+- The usual `POST /api/shows/{show}/take` requires the staged cut to remain cued and confirms its source on Program.
+  Plain Advance is refused for a staged item. A held, uncleared, or changed cut cannot be taken.
+
 - JSON in, JSON out. `Content-Type: application/json` is required on every POST. A body is optional; an empty body is `{}`. Unknown fields are refused.
 - Success: HTTP 200, `{"ok": true, ...}`, always including the changed state (`rundown` in the `/rundown` shape for show and item actions, `asset` for rights and record actions, `versions` for publish). `POST /api/ingest` is `202` with `status: queued` (the runner copies).
 - Refusal: `{"ok": false, "error": {"code": "<stable code>", "reason": "<human text>"}, ...}`. A refusal changes nothing. Clients switch on `code`; `reason` is for display.

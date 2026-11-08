@@ -27,9 +27,9 @@ from volt.paths import package_root
 from volt.cues import cues as cues_of
 from volt.migrations import SchemaTooNewError
 from volt.live import finish_recording, start_recording
-from volt import pg
+from volt import pg, pro_clip
 from volt.pg import is_dsn
-from volt.playout import HeldError, PlayoutError, StoryNotApproved, TakingError, advance, hold, hold_state, release, skip
+from volt.playout import HeldError, PlayoutError, StagedClipNeedsTake, StoryNotApproved, TakingError, advance, hold, hold_state, release, skip
 from volt import publish as publish_mod
 from volt.publish import publish_files
 from volt.record import RecordError
@@ -376,7 +376,7 @@ def rundown_payload(store: Store, show_id: str) -> dict:
     wpm = (slot["read_wpm"] if slot else None) or story.DEFAULT_WPM
     sched = {r["id"]: r for r in store.conn.execute(
         "SELECT id, scheduled_at, schedule_state, schedule_note, schedule_mode, schedule_offset_seconds, script, story_status, "
-        "script_rev, floated FROM item WHERE show_id = ?", (show_id,)).fetchall()}
+        "script_rev, floated, pro_clip FROM item WHERE show_id = ?", (show_id,)).fetchall()}
     items = [
         {"id": row.id, "slug": row.slug, "status": row.status, "urls": row.urls,
          "asRunIn": row.as_run_in, "asRunOut": row.as_run_out,
@@ -388,13 +388,15 @@ def rundown_payload(store: Store, show_id: str) -> dict:
          "scheduleNote": sched[row.id]["schedule_note"] if row.id in sched else None,
          "scheduleMode": sched[row.id]["schedule_mode"] if row.id in sched else None,
          "scheduleOffsetSeconds": sched[row.id]["schedule_offset_seconds"] if row.id in sched else None,
-         **_story_summary(sched.get(row.id), row.span_id, wpm)}
+         **_story_summary(sched.get(row.id), row.span_id, wpm),
+         **({"proClip": pro_clip.status(store, row.id)} if row.id in sched and sched[row.id]["pro_clip"] else {})}
         for row in rundown(store, show_id)
     ]
     return {"hold": None if held is None else {"reason": held.reason, "heldAt": held.held_at},
             "items": items, "slotSeconds": slot[0] if slot else None,
             "recurrence": json.loads(slot[1]) if slot and slot[1] else None, "recurrenceOf": slot[2] if slot else None,
-            "readWpm": wpm}
+            "readWpm": wpm,
+            **({"proClipEnabled": True} if current_tenant() is None and pro_clip.target() is not None else {})}
 
 
 def _story_summary(row, span_id, wpm: int) -> dict:
@@ -477,6 +479,8 @@ def _actor(headers, body: dict, principal=None) -> str:
 def _audit_fields(path: str, captured: str, body: dict, out: dict) -> tuple[str, str, str]:
     parts = [p for p in path.split("/") if p]
     action = parts[-1].replace("-", "_") if parts else path
+    if len(parts) == 5 and parts[1] == "items" and parts[3] == "pro-clip":
+        action = "pro_clip_" + action
     if len(parts) >= 3 and parts[1] == "assets" and action == "delete":
         action = "delete_asset"
     if len(parts) >= 2 and parts[1] == "record":
@@ -556,6 +560,8 @@ def _advance_errors(fn):
         raise ApiError(409, "taking", str(exc), item=exc.item_id) from None
     except StoryNotApproved as exc:
         raise ApiError(409, "story_not_approved", str(exc), item=exc.item_id) from None
+    except StagedClipNeedsTake as exc:
+        raise ApiError(409, "pro_clip_needs_take", str(exc)) from None
     except ArchivedError:
         raise ApiError(409, "archived", "the next item's media is archived; rehydrate the asset first") from None
     except NotClearedError:
@@ -677,7 +683,7 @@ def act_take(store, show_id, body):
                for r in result.results]
     state = rundown_payload(store, show_id)
     if not result.advanced:
-        bad = next(r for r in results if r["status"] != "fired")
+        bad = next(r for r, original in zip(results, result.results) if r["status"] != "fired" and not original.advisory)
         code = "cue_unsupported" if bad["status"] == "unsupported" else "cue_failed"
         raise ApiError(409, code,
                        f"cue {bad['command']} did not land ({bad['detail'] or bad['status']}); "
@@ -697,6 +703,34 @@ def act_reorder(store, show_id, body):
     version = _str(body, "version", limit=64)
     _build_errors(lambda: building.reorder(store, show_id, ids, version))
     return {"ok": True, "rundown": rundown_payload(store, show_id), "orderVersion": building.order_version(store, show_id)}
+
+
+def _pro_clip_action(store, item_id, body, action):
+    _unknown_keys(body, set())
+    if current_tenant() is not None or pro_clip.target() is None:
+        raise ApiError(503, "pro_clip_disabled", "Local CoreVideo Pro clip staging is not configured.")
+    row = store.conn.execute("SELECT show_id FROM item WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "not_found", "item not found")
+    show_id = row["show_id"]
+    try:
+        with exclusive(store, f"pro-clip:{item_id}", ttl=pro_clip.STAGE_LEASE_SECONDS):
+            action(store, get_room(), item_id)
+    except LeaseBusy:
+        raise ApiError(409, "pro_clip_busy", "Another request is working on this clip.") from None
+    except LiveError as exc:
+        raise ApiError(409, "pro_clip_failed", str(exc), rundown=rundown_payload(store, show_id)) from None
+    except KeyError:
+        raise ApiError(404, "not_found", "item not found") from None
+    return {"ok": True, "item": item_id, "rundown": rundown_payload(store, show_id)}
+
+
+def act_pro_clip_stage(store, item_id, body):
+    return _pro_clip_action(store, item_id, body, pro_clip.stage)
+
+
+def act_pro_clip_preview(store, item_id, body):
+    return _pro_clip_action(store, item_id, body, pro_clip.preview)
 
 
 def act_skip(store, item_id, body):
@@ -1990,6 +2024,8 @@ ROUTES = [
     (re.compile(rf"^/api/items/{_ID}/schedule$"), act_item_schedule),
     (re.compile(rf"^/api/items/{_ID}/kill$"), act_kill),
     (re.compile(rf"^/api/items/{_ID}/attach$"), act_attach),
+    (re.compile(rf"^/api/items/{_ID}/pro-clip/stage$"), act_pro_clip_stage),
+    (re.compile(rf"^/api/items/{_ID}/pro-clip/preview$"), act_pro_clip_preview),
     (re.compile(r"^/api/record/start$()"), act_record_start),
     (re.compile(r"^/api/record/stop$()"), act_record_stop),
     (re.compile(rf"^/api/assets/{_ID}/cleared$"), act_cleared),
@@ -2087,6 +2123,7 @@ ROUTE_ROLES = {
     "act_group_claims": "admin", "act_user_identity": "admin", "act_show_access": "admin",
     "act_device_safe_mode": "operator", "act_mos_resolve": "operator", "act_asset_archive": "operator", "act_asset_rehydrate": "operator", "act_show_recurrence": "operator", "act_item_schedule": "operator", "act_show_slot": "operator", "act_go": "operator", "act_hold": "operator", "act_release": "operator", "act_take": "operator",
     "act_reorder": "operator", "act_skip": "operator", "act_kill": "operator", "act_attach": "operator",
+    "act_pro_clip_stage": "operator", "act_pro_clip_preview": "operator",
     "act_record_start": "operator", "act_record_stop": "operator",
     # rights and publishing
     "act_cleared": "operator", "act_legal_hold": "operator", "act_restore": "operator",
@@ -2129,6 +2166,7 @@ ROUTE_ROLES = {
 ROUTE_SHOW_LEVEL = {
     # run the show
     "act_go": "run", "act_take": "run", "act_hold": "run", "act_release": "run", "act_skip": "run", "act_kill": "run",
+    "act_pro_clip_stage": "run", "act_pro_clip_preview": "run",
     "act_mos_resolve": "run", "act_show_access": "run",
     # build the rundown
     "act_show_slot": "edit", "act_show_recurrence": "edit", "act_reorder": "edit", "act_show_pace": "edit", "act_show_delete": "edit",
@@ -2144,6 +2182,7 @@ SHOW_RESOLVER = {
     "act_show_slot": "show", "act_show_recurrence": "show", "act_reorder": "show", "act_show_pace": "show", "act_show_delete": "show",
     "act_item_add": "show", "act_mos_resolve": "mos",
     "act_skip": "item", "act_kill": "item", "act_item_schedule": "item", "act_attach": "item", "act_item_rename": "item",
+    "act_pro_clip_stage": "item", "act_pro_clip_preview": "item",
     "act_prompter_ticket": "show", "act_item_copy": "item", "act_story_script": "item", "act_story_status": "item", "act_item_float": "item", "act_item_remove": "item", "act_item_detach": "item",
     "act_cue_add": "item", "act_cue_remove": "cue",
     "act_item_lease": "item", "act_item_lease_release": "item", "act_item_lease_takeover": "item",

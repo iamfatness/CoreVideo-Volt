@@ -643,6 +643,8 @@
     legalHold:   ['POST', '/api/assets/{id}/legal-hold'],
     publish:     ['POST', '/api/spans/{id}/publish'],
     attach:      ['POST', '/api/items/{id}/attach'],
+    proClipStage: ['POST', '/api/items/{id}/pro-clip/stage'],
+    proClipPreview: ['POST', '/api/items/{id}/pro-clip/preview'],
     spans:       ['GET',  '/api/assets/{id}/spans'],
     transcript:  ['GET',  '/api/assets/{id}/transcript'],
     proxy:       ['GET',  '/api/assets/{id}/proxy'],
@@ -758,6 +760,7 @@
   };
   const CUE_LABEL = {
     'overlay.take': 'Lower third', 'stream.start': 'Start stream', 'show-input.take': 'Input to program',
+    'media.rundown.take': 'CoreVideo Pro clip',
     'record.start': 'Start record', 'record.arm': 'Arm record', 'audio.snapshot': 'Audio snapshot',
     'deck.play': 'Deck: play', 'deck.stop': 'Deck: stop', 'deck.goto': 'Deck: go to clip',
     'deck.record.start': 'Deck: start record', 'deck.record.stop': 'Deck: stop record',
@@ -830,10 +833,12 @@
       scheduledAt: i.scheduledAt || null, scheduleState: i.scheduleState || null, scheduleNote: i.scheduleNote || null,
       scheduleMode: i.scheduleMode || null, scheduleOffsetSeconds: Number.isInteger(i.scheduleOffsetSeconds) ? i.scheduleOffsetSeconds : null,
       asRunIn: i.asRunInPrecise || i.asRunIn || null, asRunOut: i.asRunOutPrecise || i.asRunOut || null,
+      proClip: i.proClip || null,
       ...storyFields(i),
     }));
     return { hold, items, slotSeconds: Number.isInteger(r.slotSeconds) ? r.slotSeconds : null, readWpm: Number.isInteger(r.readWpm) ? r.readWpm : 160,
-      recurrence: r.recurrence && typeof r.recurrence === 'object' ? r.recurrence : null, recurrenceOf: r.recurrenceOf || null };
+      recurrence: r.recurrence && typeof r.recurrence === 'object' ? r.recurrence : null, recurrenceOf: r.recurrenceOf || null,
+      proClipEnabled: r.proClipEnabled === true };
   }
 
   // ---- network -------------------------------------------------------------
@@ -1088,6 +1093,7 @@
     if (taking) return 'An item is taking. Wait until it is on air.';
     if (hold) return 'Rundown is held. Release it to take.';
     if (!next) return 'End of show. Nothing left to take.';
+    if (next.proClip && next.proClip.status !== 'ready') return 'Send the next clip to Pro and wait until it is ready.';
     return null;
   }
 
@@ -1955,7 +1961,7 @@
         { write: true, key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
       el('div', { class: 'acts' },
         btn(hold ? 'RELEASE HOLD' : 'HOLD', { write: true, key: 'hold', cls: hold ? 'signal' : 'ghost', onclick: toggleHold, disabled: !S.data.show, title: 'Key H' }),
-        btn('Advance, no cues', { write: true, key: 'go', cls: 'ghost', disabled: !!block || S.seq,
+        btn('Advance, no cues', { write: true, key: 'go', cls: 'ghost', disabled: !!block || S.seq || !!(next && next.proClip),
           title: 'Moves the rundown on without sending any cues to the room',
           onclick: () => act('go', S.show, {}, { okTitle: 'Advanced.', ok: (d) => (d.over ? 'End of show.' : 'Next item is on air. No cues were sent.') }) })),
       block ? el('span', { class: 'hint', text: block }) : el('span', { class: 'hint' }, 'Hold: ', el('kbd', { text: 'H' }), ' · all keys: ', el('kbd', { text: '?' })),
@@ -1995,11 +2001,12 @@
     paint('comments', cmSig('show'), () => cmPanel('show'));
     const sItem = items.find((i) => i.id === S.selected);
     $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
-    paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem && sItem.status, [...S.pending]], () => {
+    paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem, sItem && mediaOf(sItem.id), S.data.rundown?.proClipEnabled, S.seq, [...S.pending]], () => {
       if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown row.' });
       const cs = cuesOf(sItem.id);
-      if (!cs.length) return el('p', { class: 'empty', text: 'No cues on this item. Taking it only changes the rundown.' });
-      return [cs.map((c) => el('div', { class: 'cue' },
+      const clip = proClipControls(sItem);
+      if (!cs.length) return clip || el('p', { class: 'empty', text: 'No cues on this item. Taking it only changes the rundown.' });
+      return [clip, cs.map((c) => el('div', { class: 'cue' },
         el('div', {}, el('span', { class: 'cmd', text: CUE_LABEL[c.command] || c.command }),
           el('small', { text: c.command + (c.payload ? ' · ' + c.payload : '') + (c.status !== 'fired' && (S.cueDetail[c.id] || (c.failure && c.failure.detail)) ? ' · last take: ' + (S.cueDetail[c.id] || c.failure.detail) : '') })),
         cueChip(c.status !== 'fired' && S.cueLast[c.id] && S.cueLast[c.id] !== 'fired' ? S.cueLast[c.id] : (c.status !== 'fired' && c.failure ? c.failure.status : c.status)),
@@ -2010,6 +2017,27 @@
 
     paint('room', [S.data.room, S.data.mos, [...S.pending]], () => [roomPanel(S.data.room), mosPanel(S.data.mos)]);
     renderBuild(sItem);
+  }
+
+  function proClipControls(item) {
+    if (!S.data.rundown?.proClipEnabled || item.status !== 'ready' || !mediaOf(item.id).tcIn) return null;
+    const stage = 'pro-clip-stage:' + item.id;
+    const preview = 'pro-clip-preview:' + item.id;
+    const busy = S.pending.has(stage) || S.pending.has(preview);
+    const ready = item.proClip && item.proClip.status === 'ready';
+    return el('div', { class: 'body' },
+      el('div', { class: 'acts' },
+        btn(S.pending.has(stage) ? 'Sending…' : 'Send to Pro', {
+          write: true, key: stage, cls: 'ghost small', disabled: busy || S.seq,
+          onclick: () => act('proClipStage', item.id, {}, { key: stage, okTitle: 'Clip ready in Pro.' }),
+        }),
+        btn('Preview in Pro', {
+          write: true, key: preview, cls: 'ghost small', disabled: !ready || busy || S.seq,
+          onclick: () => act('proClipPreview', item.id, {}, {
+            key: preview, okTitle: 'Clip cued to Preview.', ok: () => 'Check Pro’s Preview, then use Take when this item is next.',
+          }),
+        })),
+      item.proClip && item.proClip.detail ? el('p', { class: 'note', text: item.proClip.detail }) : null);
   }
 
   // ---- show building: new show, add / rename / remove an item, attach a clip, add / remove a cue ---------------
@@ -2222,6 +2250,9 @@
           // The story: its editorial chip once there is text or a status to show, and a marker when it is a backup.
           it.words > 0 || it.storyStatus !== 'draft' ? el('span', { class: 'sched' }, ' ', stateChip(storyKind(it.storyStatus))) : null,
           it.floated ? el('span', { class: 'sched' }, ' ', stateChip('floated')) : null,
+          it.proClip ? el('span', { class: 'sched' }, ' ', stateChip(
+            it.proClip.status === 'ready' ? 'ready' : it.proClip.status === 'staging' ? 'pending' : 'failed',
+            it.proClip.status === 'ready' ? 'Ready in Pro' : it.proClip.status === 'staging' ? 'Sending to Pro' : 'Pro clip unavailable')) : null,
           // Who has the item open for editing (an edit lease): icon, word and name, from the server's state.
           (() => { const lv = it.status === 'ready' ? leaseView(S.data && S.data.leases, it.id, leaseMe()) : null; return lv ? el('span', { class: 'sched' }, ' ', stateChip(lv.kind, lv.word)) : null; })(),
           // Open comment threads on the item: the count comes with the state poll (the thread itself is read when the row is selected).
