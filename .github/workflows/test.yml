@@ -36,7 +36,8 @@ jobs:
   # runners cannot host service containers. psycopg and psycopg_pool are installed here and nowhere else,
   # so the contract jobs above keep proving the stdlib-only SQLite path.
   postgres:
-    runs-on: ubuntu-latest
+    # Use the distro that supplies postgresql-client-16 to match the service.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
