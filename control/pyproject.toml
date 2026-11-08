@@ -32,7 +32,7 @@ all = [
 volt = "volt.cli:main"
 
 [tool.setuptools]
-packages = ["volt", "volt.session"]
+packages = ["volt", "volt.adapters", "volt.session"]
 
 [tool.setuptools.package-data]
 volt = ["schema.sql"]

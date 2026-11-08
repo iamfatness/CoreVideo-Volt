@@ -6,9 +6,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from volt import pro_clip
 from volt.cues import arm_cues
 from volt.dispatch import Result, dispatch_item
 from volt.playout import advance, commit_take, rewind
+from volt.rooms import LiveError
 from volt.store import Store, _now
 
 
@@ -39,6 +41,12 @@ def take_item(
     adv = advance(store, show_id, clock, pending=True)
     if adv.target is None:
         return TakeResult(True, None)
+    if adv.staged_clip:
+        try:
+            pro_clip.check_ready(store, room, adv.target)
+        except LiveError as exc:
+            rewind(store, adv)
+            return TakeResult(False, adv.target, [Result("", pro_clip.COMMAND, "failed", str(exc))])
     arm_cues(store, adv.target)
     results = dispatch_item(
         store, room, adv.target, owner=owner, attempts=attempts, interval=interval, sleep=sleep,
@@ -47,5 +55,13 @@ def take_item(
     if any(r.status != "fired" and not r.advisory for r in results):   # a failed deck cue is advisory: it does not rewind the take
         rewind(store, adv)
         return TakeResult(False, adv.target, results)
+    if adv.staged_clip:
+        try:
+            pro_clip.take(store, room, adv.target, attempts, interval, sleep)
+        except LiveError as exc:
+            rewind(store, adv)
+            results.append(Result("", pro_clip.COMMAND, "failed", str(exc)))
+            return TakeResult(False, adv.target, results)
+        results.append(Result("", pro_clip.COMMAND, "fired"))
     commit_take(store, adv, clock)
     return TakeResult(True, adv.target, results)

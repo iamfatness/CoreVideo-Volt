@@ -142,7 +142,7 @@ def _same_layer(a, b) -> bool:
 
 
 def _blocker(si: ShowInput, base: ProgramObservation, o: ProgramObservation,
-             transition_status: Callable[[], Optional[str]]) -> Optional[str]:
+             transition_status: Callable[[], Optional[str]], expected_scene: Optional[str] = None) -> Optional[str]:
     """The first reason this observation is not proof, or None if it is."""
     if not o.available:
         return "program observation unavailable" + (f" ({o.error})" if o.error else "")
@@ -152,6 +152,8 @@ def _blocker(si: ShowInput, base: ProgramObservation, o: ProgramObservation,
         return f"scene attribution not live ({o.attribution})"
     if o.delivery_sequence is None or o.delivery_sequence <= base.delivery_sequence:
         return "delivery sequence not advanced since before the take"
+    if expected_scene is not None and o.scene_id != expected_scene:
+        return f"scene {expected_scene!r} not on program"
     if not any(_matches(si.source, s) for s in o.sources):
         return f"source {si.source!r} not on program"
     # Seen live (CoreVideo Pro, 2026-10-11): mid-transition Program carries the old scene's layers renamed
@@ -173,7 +175,8 @@ def _blocker(si: ShowInput, base: ProgramObservation, o: ProgramObservation,
 
 
 def show_input_take(room, payload: str, attempts: int, interval: float, sleep,
-                    actions: Optional[list] = None) -> None:
+                    actions: Optional[list] = None, *, take_command=("transport.take", ()),
+                    expected_scene: Optional[str] = None) -> None:
     """Run the configured actions, take, and return only once Program shows the source.
 
     Raises LiveError with the specific reason otherwise. A rollback after one good
@@ -187,7 +190,8 @@ def show_input_take(room, payload: str, attempts: int, interval: float, sleep,
         raise LiveError("show-input.take: no usable program observation before the take; nothing sent")
     for action, args in steps:
         room.invoke(action, args)
-    room.invoke("transport.take", [])
+    action, args = take_command
+    room.invoke(action, list(args))
 
     def status() -> Optional[str]:
         return (room.state().get("takeTransition") or {}).get("status")
@@ -196,7 +200,7 @@ def show_input_take(room, payload: str, attempts: int, interval: float, sleep,
     streak, last_seq = 0, None
     for _ in range(attempts):
         o = room.program_observed()
-        blocker = _blocker(si, base, o, status)
+        blocker = _blocker(si, base, o, status, expected_scene)
         if blocker is not None:
             streak, reason = 0, blocker
         elif streak and o.delivery_sequence <= last_seq:

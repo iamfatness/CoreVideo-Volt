@@ -138,13 +138,24 @@ class CoreVideoProRoom:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            with exc:
+                if method == "POST" and exc.code in (400, 409, 422):
+                    try:
+                        result = json.loads(exc.read())
+                    except (OSError, ValueError):
+                        result = None
+                    if isinstance(result, dict) and result.get("ok") is False:
+                        return result
+            raise LiveError(f"core refused the request (HTTP {exc.code})") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise LiveError(f"core unreachable: {exc}") from exc
 
-    def invoke(self, action: str, args: list) -> None:
+    def invoke(self, action: str, args: list) -> dict:
         result = self._request("POST", "/invoke", {"action": action, "args": args})
         if not result.get("ok"):
             raise LiveError(f"{action} refused: {result.get('error')}")
+        return result
 
     def state(self) -> dict:
         return self._request("GET", "/state")

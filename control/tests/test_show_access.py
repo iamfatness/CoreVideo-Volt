@@ -356,7 +356,8 @@ class Routes(Api):
             if name == "act_comment_delete":       # the author (or an admin) deletes; the show only has to be viewable
                 self.assertEqual(level, "view", name)
                 continue
-            self.assertEqual(level, "run" if name in run | {"act_mos_resolve", "act_show_access"} else "edit", name)
+            self.assertEqual(level, "run" if name in run | {"act_mos_resolve", "act_show_access",
+                                                            "act_pro_clip_stage", "act_pro_clip_preview"} else "edit", name)
 
     def test_the_resolvers_are_the_kind_the_path_names(self):
         for pattern, fn in serve.ROUTES:

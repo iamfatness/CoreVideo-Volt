@@ -302,6 +302,7 @@ MIGRATIONS = (
     Migration(36, "essence by asset index",
               sqlite=("CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role)",),
               postgres=("CREATE INDEX IF NOT EXISTS essence_by_asset ON essence (asset_id, role)",)),
+    Migration(37, "CoreVideo Pro staged clip", columns=(("item", "pro_clip", "TEXT"),)),
 )
 
 LATEST = MIGRATIONS[-1].version

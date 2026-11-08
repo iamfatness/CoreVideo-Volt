@@ -4,6 +4,27 @@ For the person who installs and runs Volt. Developer docs are in [architecture](
 [start-here](start-here.md); what is still missing before more MAM work is in
 [foundation](specs/foundation.md). [product-readiness](product-readiness.md) is a dated audit (2026-10-16), not the current gap list.
 
+## Send a rundown clip to CoreVideo Pro
+
+Run Volt and a Windows Pro build with the Volt Rundown controls on the same machine, under the same Windows
+account. Use the local Pro control API (`VOLT_ROOM_URL=http://127.0.0.1:8011`) and set
+`VOLT_PRO_CLIP_TARGET` to JSON with the ID of a dedicated off-air clip scene. If the scene has multiple
+eligible video routes, also supply its `route` ID.
+For example, in PowerShell:
+
+```powershell
+$env:VOLT_PRO_CLIP_TARGET = '{"scene":"speaker-slides","route":"speaker-slides-1"}'
+```
+
+Use the actual IDs of a scene reserved for clip playout. Pro's `scene.list` control action lists scene IDs.
+The example assumes the named route exists. Keep the clip scene off Program when cueing the next clip.
+Select a ready rundown item with a cleared, finalized clip, click **Send to Pro**, wait for **Ready in Pro**,
+then click **Preview in Pro**. Check the Preview monitor and press **Take** in Volt when the item is next.
+Pro requires a decoded frame on Preview before accepting the Take, and Volt confirms the clip on Program.
+The MP4 is staged under `%LOCALAPPDATA%\CoreVideoPro\media\Volt Rundown`. Resending the same cut reuses
+its file. Changed trims require another send. Pro's normal media bin controls manage the local copies.
+Upgrade all Volt processes together before enabling staging so each process enforces the same Take rules.
+
 ## What runs
 
 | Process | Command | Needs | What it does |

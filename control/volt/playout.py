@@ -17,6 +17,10 @@ class HeldError(PlayoutError):
     """The rundown is held. A machine-readable subtype so callers need not parse the message."""
 
 
+class StagedClipNeedsTake(PlayoutError):
+    """Advance cannot account for a staged clip going to air."""
+
+
 class StoryNotApproved(PlayoutError):
     """VOLT_REQUIRE_APPROVAL=1 and the item's story is not approved at its current revision. Callers use `.item_id`; nothing was written."""
 
@@ -101,6 +105,7 @@ class Advance:
     target: Optional[str]
     previous: Optional[str]
     passed: list[str] = field(default_factory=list)
+    staged_clip: bool = False
 
 
 def go(store: Store, show_id: str, clock: Callable[[], str] = _now) -> Optional[str]:
@@ -172,8 +177,9 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
             floor = store.conn.execute("SELECT position FROM item WHERE id = ?", (current,)).fetchone()["position"]
         passed: list[str] = []
         target: Optional[str] = None
+        staged_clip = False
         for row in store.conn.execute(
-            """SELECT id, status, floated FROM item
+            """SELECT id, status, floated, pro_clip FROM item
                WHERE show_id = ? AND position > ? AND status IN ('ready', 'killed')
                ORDER BY position""",
             (show_id, floor),
@@ -184,8 +190,11 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
                 passed.append(row["id"])
             else:
                 target = row["id"]
+                staged_clip = bool(row["pro_clip"])
                 break
         if target is not None:
+            if staged_clip and not pending:
+                raise StagedClipNeedsTake("Use Preview in Pro and Take to air this staged clip.")
             take(store, target, status="taking" if pending else "on air")  # raises before changing anything if it cannot air
         now, precise = _stamp(clock, precise_clock)
         if current is not None:
@@ -198,7 +207,7 @@ def advance(store: Store, show_id: str, clock: Callable[[], str] = _now,
         if target is not None and not pending:
             store.conn.execute(
                 "UPDATE item SET as_run_in = ?, as_run_in_precise = ? WHERE id = ?", (now, precise, target))
-        return Advance(target, current, passed)
+    return Advance(target, current, passed, staged_clip)
 
 
 def skip(store: Store, item_id: str) -> None:

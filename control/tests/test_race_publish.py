@@ -190,7 +190,7 @@ class PublishRaceTests:
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         with mock.patch.object(deliverables.subprocess, "run", fake_run), \
-                mock.patch.object(deliverables, "_duration", lambda p: 1.0):
+                mock.patch.object(deliverables, "_duration", autospec=True, return_value=1.0):
             deliverables.render(store, span, "house", self.root / "out")
         self.assertEqual(len(outs), 2)
         self.assertNotEqual(outs[0], outs[1], "two renders wrote ffmpeg output to the same file")

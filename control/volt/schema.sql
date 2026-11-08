@@ -147,7 +147,8 @@ CREATE TABLE IF NOT EXISTS item (
   approved_at TIMESTAMPTZ,
   approved_rev INTEGER,
   floated BOOLEAN,
-  source_wire_id TEXT
+  source_wire_id TEXT,
+  pro_clip TEXT
 );
 
 CREATE TABLE IF NOT EXISTS story_rev (

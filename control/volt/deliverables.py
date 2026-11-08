@@ -33,10 +33,10 @@ PROFILES = {
 }
 
 
-def _probe_rate(path: str) -> Fraction:
+def _probe_rate(path: str, timeout=None) -> Fraction:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
-         "-of", "json", path], capture_output=True, text=True)
+         "-of", "json", path], capture_output=True, text=True, timeout=timeout)
     try:
         rate = json.loads(out.stdout)["streams"][0]["r_frame_rate"]
         return timecode.parse_rate(rate)
@@ -44,17 +44,17 @@ def _probe_rate(path: str) -> Fraction:
         raise DeliverableError("cannot read frame rate") from exc
 
 
-def _duration(path: Path) -> float:
+def _duration(path: Path, timeout=None) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, timeout=timeout)
     try:
         return float(json.loads(out.stdout)["format"]["duration"])
     except (ValueError, KeyError):
         return 0.0
 
 
-def render(store: Store, span, kind: str, out_dir: Path) -> str:
+def render(store: Store, span, kind: str, out_dir: Path, *, timeout=None, verify_frames=False) -> str:
     """Write one deliverable and return its file URL. Raises DeliverableError."""
     if kind not in PROFILES:
         raise DeliverableError(f"unknown kind {kind}")
@@ -66,8 +66,9 @@ def render(store: Store, span, kind: str, out_dir: Path) -> str:
         raise DeliverableError("no hi-res essence")
     if src["open"]:
         raise DeliverableError("asset is still recording; wrap it first")
+    probe_timeout = min(10, timeout) if timeout is not None else None
     try:
-        rate = timecode.parse_rate(src["frame_rate"]) if src["frame_rate"] else _probe_rate(src["location"])
+        rate = timecode.parse_rate(src["frame_rate"]) if src["frame_rate"] else _probe_rate(src["location"], probe_timeout)
         # Drop-frame is read from the stored start (`;` before the frames); a clip with no start falls back
         # to the span's own label.
         drop = timecode.is_drop(src["timecode_start"] or span["tc_in"])
@@ -96,9 +97,16 @@ def render(store: Store, span, kind: str, out_dir: Path) -> str:
     if vf:
         cmd += ["-vf", vf]
     cmd += video + ["-c:a", "aac", "-b:a", audio_rate, "-movflags", "+faststart", str(part)]
-    run = subprocess.run(cmd, capture_output=True, text=True)
-    if run.returncode != 0 or not part.exists() or _duration(part) <= 0:
+    run = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if run.returncode != 0 or not part.exists() or _duration(part, probe_timeout) <= 0:
         part.unlink(missing_ok=True)
         raise DeliverableError((run.stderr or "ffmpeg produced no output")[-300:].strip())
+    if verify_frames:
+        frames = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames",
+             "-of", "csv=p=0", str(part)], capture_output=True, text=True, timeout=probe_timeout)
+        if frames.returncode or frames.stdout.strip() != str(count):
+            part.unlink(missing_ok=True)
+            raise DeliverableError("the rendered clip does not contain the full marked frame range")
     part.replace(dest)
     return dest.resolve().as_uri()
