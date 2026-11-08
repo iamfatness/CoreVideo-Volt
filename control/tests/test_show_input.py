@@ -5,10 +5,12 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest import mock
 
+from tests import test_operator_api
 from tests.test_dispatch import _armed_item, _statuses
 from tests.test_playout import Clock
 from tests.test_rooms import _no_sleep, obs
 from tests.test_take import _show
+from volt import serve
 from volt.dispatch import dispatch_item
 from volt.playout import on_air
 from volt.rooms import CoreVideoProRoom, FakeRoom, LiveError, ProgramObservation, ProgramSource
@@ -300,6 +302,8 @@ class _Core(BaseHTTPRequestHandler):
         cls = _Core
         if self.path == "/state":
             return self._send({"takeTransition": {"status": cls.transition}})
+        if self.path != "/snapshot":
+            return self.send_error(404)
         cls.seq += 1
         if cls.taken:
             cls.polls_after_take += 1
@@ -313,6 +317,8 @@ class _Core(BaseHTTPRequestHandler):
         self._send(env)
 
     def do_POST(self):
+        if self.path != "/invoke":
+            return self.send_error(404)
         n = int(self.headers["Content-Length"])
         body = json.loads(self.rfile.read(n))
         _Core.posted.append((body["action"], body["args"]))
@@ -321,18 +327,20 @@ class _Core(BaseHTTPRequestHandler):
         self._send({"ok": True})
 
 
+def _start_core(test):
+    _Core.posted, _Core.taken, _Core.seq, _Core.lag = [], False, 100, 0
+    _Core.polls_after_take, _Core.envelope, _Core.attribution = 0, {}, "live"
+    _Core.flip, _Core.transition = True, "completed"
+    server = HTTPServer(("127.0.0.1", 0), _Core)
+    test.addCleanup(server.server_close)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    test.addCleanup(server.shutdown)
+    return CoreVideoProRoom(f"http://127.0.0.1:{server.server_port}")
+
+
 class StubServer(unittest.TestCase):
     def setUp(self):
-        _Core.posted, _Core.taken, _Core.seq, _Core.lag = [], False, 100, 0
-        _Core.polls_after_take, _Core.envelope, _Core.attribution = 0, {}, "live"
-        _Core.flip, _Core.transition = True, "completed"
-        self.srv = HTTPServer(("127.0.0.1", 0), _Core)
-        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
-        self.room = CoreVideoProRoom(f"http://127.0.0.1:{self.srv.server_port}")
-
-    def tearDown(self):
-        self.srv.shutdown()
-        self.srv.server_close()
+        self.room = _start_core(self)
 
     def test_program_observed_parses_the_snapshot(self):
         o = self.room.program_observed()
@@ -374,6 +382,34 @@ class StubServer(unittest.TestCase):
     def test_missing_program_frame_is_unavailable(self):
         _Core.envelope = {"snapshot": {}}
         _fails(self, self.room, "nothing sent")
+
+
+class ProgramTakeApi(test_operator_api.Api):
+    def setUp(self):
+        super().setUp()
+        serve.ROOM = _start_core(self)
+        serve.POLL["attempts"] = 4
+        self.enterContext(mock.patch.dict(os.environ, {"VOLT_SHOW_INPUT_ACTIONS": ""}))
+
+    def test_take_advances_when_the_core_reports_the_new_program_source(self):
+        _Core.lag = 1
+        show, (item,) = _show(self.store, [[("show-input.take", SCENE)]])
+        status, result = self.post(f"/api/shows/{show}/take")
+        self.assertEqual(status, 200, result)
+        self.assertEqual((result["advanced"], result["item"]), (True, item))
+        self.assertEqual([cue["status"] for cue in result["results"]], ["fired"])
+        self.assertEqual(on_air(self.store, show), item)
+
+    def test_take_ack_without_program_evidence_keeps_the_previous_item_on_air(self):
+        _Core.flip = False
+        show, (previous, target) = _show(self.store, [[], [("show-input.take", SCENE), ("overlay.take", "on")]])
+        path = f"/api/shows/{show}/take"
+        self.assertEqual(self.post(path)[0], 200)
+        result = self.refused(409, "cue_failed", path)
+        self.assertEqual((result["item"], result["cue"]["command"]), (target, "show-input.take"))
+        self.assertEqual(self.statuses(show), [(previous, "on air"), (target, "ready")])
+        self.assertEqual(_statuses(self.store, target), ["armed", "armed"])
+        self.assertEqual([action for action, _ in _Core.posted], ["input.assign", "scene.route.set", "transport.take"])
 
 
 if __name__ == "__main__":
