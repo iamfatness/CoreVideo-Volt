@@ -271,11 +271,11 @@
     restoring: { icon: 'pending', word: 'Restoring',   cls: 'st pend' },
     archiving: { icon: 'pending', word: 'Archiving',   cls: 'st pend' },
     recording: { icon: 'record',  word: 'Recording',   cls: 'st air' },
-    wrapped:   { icon: 'ready',   word: 'Wrapped',     cls: 'st ok' },
+    finished:  { icon: 'ready',   word: 'Finished',    cls: 'st ok' },
     fresh:     { icon: 'ready',   word: 'Fresh',       cls: 'st ok' },
     stale:     { icon: 'alert',   word: 'Stale',       cls: 'st pend' },
-    canair:    { icon: 'ready',   word: 'Yes',         cls: 'st ok' },
-    blocked:   { icon: 'alert',   word: 'No',          cls: 'st fail' },
+    canair:    { icon: 'ready',   word: 'Can air or publish', cls: 'st ok' },
+    blocked:   { icon: 'alert',   word: 'Blocked',     cls: 'st fail' },
     incomplete: { icon: 'alert',  word: 'Incomplete',  cls: 'st pend' },
     shared:    { icon: 'user',    word: 'Shared',      cls: 'st done' },
     required:  { icon: 'alert',   word: 'Required',    cls: 'st pend' },
@@ -375,7 +375,7 @@
   };
   const DEFAULT_WORKSPACE = 'operator';
   const ALL_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity', 'access', 'scripts'];
-  // The number keys reach the first six screens only; Access (an admin's screen, opened from the pill) takes no key.
+  // The number keys reach the first six screens only.
   const KEY_SCREENS = ['show', 'record', 'rights', 'publish', 'library', 'activity'];
   const screenForKey = (key) => (/^[1-9]$/.test(String(key)) ? KEY_SCREENS[+key - 1] || null : null);
   const workspaceName = (stored) => (typeof stored === 'string' && Object.prototype.hasOwnProperty.call(WORKSPACES, stored) ? stored : DEFAULT_WORKSPACE);
@@ -588,9 +588,9 @@
   // ---- per-show access: who may view, edit or run a show. The server decides; these only name things. ----
   // view reads and comments, edit builds the rundown, run is edit plus go, take, hold, release, skip and kill.
   const ACCESS_SPEC = {
-    view: { icon: 'eye',     word: 'View', cls: 'st done', does: 'read the rundown and comment' },
-    edit: { icon: 'sliders', word: 'Edit', cls: 'st next', does: 'build the rundown' },
-    run:  { icon: 'take',    word: 'Run',  cls: 'st ok',   does: 'edit, and go, take, hold, release, skip and kill' },
+    view: { icon: 'eye',     word: 'View', cls: 'st done', does: 'Read the rundown and comment.' },
+    edit: { icon: 'sliders', word: 'Edit', cls: 'st next', does: 'View and build the rundown.' },
+    run:  { icon: 'take',    word: 'Run',  cls: 'st ok',   does: 'Edit and operate playout, including GO, TAKE, Hold, Skip, and Kill.' },
   };
   function accessLevelSpec(level) {
     return Object.prototype.hasOwnProperty.call(ACCESS_SPEC, level) ? ACCESS_SPEC[level] : { icon: 'pending', word: String(level), cls: 'st', does: '' };
@@ -598,7 +598,7 @@
   function accessSummary(rows) {
     if (Array.isArray(rows) && rows.length) {
       return { kind: 'restricted', icon: 'lock', word: 'Restricted', cls: 'st hold',
-        text: 'Only the people and groups listed here, and every admin, can use this show. Removing the last row opens it again.' };
+        text: 'Show assignments control access. Admins always have Run access. Removing the last assignment opens it again.' };
     }
     return { kind: 'open', icon: 'ready', word: 'Open', cls: 'st ok',
       text: 'Everyone who can sign in can use this show at their own role. Add a person or a group to restrict it.' };
@@ -609,6 +609,19 @@
     const pool = kind === 'group' ? groups : users;
     return (Array.isArray(pool) ? pool : []).filter((x) => x && typeof x.name === 'string' && !x.disabled_at && !listed.has(x.name)).map((x) => x.name);
   }
+  function accessForUser(user, groups, rows) {
+    const memberships = groups.filter((g) => g.members?.includes(user.name));
+    const memberOf = new Set(memberships.map((g) => g.name));
+    const roles = ['viewer', 'operator', 'admin'];
+    const roleRank = Math.max(0, roles.indexOf(user.role), ...memberships.map((g) => roles.indexOf(g.role)));
+    const levels = Object.keys(ACCESS_SPEC);
+    const sources = rows.filter((r) => r.subject_kind === 'user' ? r.subject === user.name : r.subject_kind === 'group' && memberOf.has(r.subject));
+    const granted = Math.max(-1, ...sources.map((r) => levels.indexOf(r.level)));
+    const rank = roleRank === 2 ? 2 : Math.min(roleRank ? 2 : 0, rows.length ? granted : 2);
+    const role = roles[roleRank];
+    return { sources, role, roleGroups: roleRank > roles.indexOf(user.role) ? memberships.filter((g) => g.role === role).map((g) => g.name) : [],
+      level: user.disabled_at ? null : levels[rank] || null };
+  }
   // A refusal for a show the signed-in person may not use at that level. The server's reason names the level and nobody else.
   function forbiddenShow(e) {
     return { title: 'You do not have the access this needs on this show.', reason: (e && e.reason) || '',
@@ -616,7 +629,7 @@
   }
 
   if (typeof document === 'undefined') {   // loaded by a test under node: export the pure functions and stop
-    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, forbiddenShow, leaseView, leaseOutcome, leaseAllowsSave, presenceGroups, presenceLines, mentionPieces, mentionToken, mentionMatches, mentionInsert, threadsOf, notificationLine, unreadText, COMMENT_MAX,
+    if (typeof module !== 'undefined') module.exports = { parseRate, framesToTc, tcToFrames, isDropLabel, lengthTc, fmtRate, deriveShow, STATE, stateChipSpec, WORKSPACES, DEFAULT_WORKSPACE, workspaceName, railFor, defaultScreen, ruleText, scheduleChip, localToUtc, utcToLocal, parseSlot, backTimes, themeName, nextTheme, shuttleNext, itemStateKind, cueStateKind, itemSeconds, itemPlan, frontTimes, fmtOffset, fmtSigned, scriptStats, scriptBlocks, legalMoves, resolveConflict, storyKind, authHeaders, beginSession, endSession, adoptSession, providerLinks, screenForKey, accessLevelSpec, accessSummary, accessCandidates, accessForUser, forbiddenShow, leaseView, leaseOutcome, leaseAllowsSave, presenceGroups, presenceLines, mentionPieces, mentionToken, mentionMatches, mentionInsert, threadsOf, notificationLine, unreadText, COMMENT_MAX,
       SEARCH_SCOPES, FACET_BUILTIN, buildSearchRequest, savedQueryOf, searchParams, uiFromRequest, parseSearchResponse, queryTerms, splitHighlight, facetValueText, findKeyAction, metaValues, monthRange };
     return;
   }
@@ -765,14 +778,14 @@
     'deck.play': 'Deck: play', 'deck.stop': 'Deck: stop', 'deck.goto': 'Deck: go to clip',
     'deck.record.start': 'Deck: start record', 'deck.record.stop': 'Deck: stop record',
   };
-  const REC_STEPS = ['requested', 'preparing', 'producing', 'stopping', 'finalizing', 'completed'];
+  const REC_STEPS = ['Starting', 'Recording', 'Wrapping', 'Finished'];
   const REC_ALIAS = { starting: 'preparing', live: 'producing' };
 
   const SESS = { csrf: '' };   // set while a cookie session is in use; memory only, never stored
   const S = {
     data: null, show: null, screen: 'show', epoch: 0, seq: false, busy: false,
     pending: new Set(), lastOk: 0, conn: 'connecting', selected: null, armed: null,
-    flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', sigs: {},
+    flash: null, cueDetail: {}, cueLast: {}, lastTake: 0, pubFilter: '', pubState: 'all', rightsFilter: '', rightsState: 'all', sigs: {},
     cmds: null, cmdsTried: 0, ws: DEFAULT_WORKSPACE,
     // Show building drafts: what is typed but not yet sent. The server's answer replaces the screen, never the draft.
     build: { recOpen: false, rec: { freq: 'daily', at: '20:00', tz: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } })(), days: [0] }, after: '', sched: '', slot: '', title: '', slug: '', renameId: null, rename: '', pick: '', cmd: 'overlay.take', payload: '' },
@@ -913,9 +926,12 @@
   function setConn(state) {
     S.conn = state;
     const n = $('conn');
-    const text = { ok: '● Connected', lost: '✕ Connection lost. This screen may be out of date.',
-                   token: '⚠ Token needed', connecting: 'Connecting…' }[state];
-    if (n.textContent !== text) n.textContent = text;
+    const [glyph, text] = { ok: ['ready', 'Connected'], lost: ['alert', 'Connection lost'],
+      token: ['lock', 'Token needed'], connecting: ['pending', 'Connecting…'] }[state];
+    if (n.dataset.state !== state) {
+      n.dataset.state = state;
+      n.replaceChildren(icon(glyph, 's'), el('span', { text }));
+    }
     n.classList.toggle('bad', state === 'lost' || state === 'token');
   }
 
@@ -923,6 +939,7 @@
   let whoamiFor = null;
   const WHO = { name: '', role: '' };   // who the server says this is; a hint for what to show, never what is allowed
   const isViewer = () => WHO.role === 'viewer';
+  const canSeeAdminScreens = () => WHO.role === 'admin' || (!WHO.role && S.conn === 'ok' && !getToken() && !SESS.csrf);
   // The page says the role once, on the root element; operator.css hides every [data-write] control from a viewer. The server refuses a
   // viewer's write with 403 whatever the page shows: this only keeps a read-only person from being offered buttons that cannot work.
   function applyRole() {
@@ -930,25 +947,24 @@
   }
   async function showWhoami() {
     const token = getToken();
-    if (!token && !SESS.csrf) { whoamiFor = null; WHO.name = ''; WHO.role = ''; applyRole(); $('token-btn').textContent = 'Token'; $('who').hidden = true; return; }
+    if (!token && !SESS.csrf) {
+      const hadRole = !!WHO.role;
+      whoamiFor = null; WHO.name = ''; WHO.role = ''; applyRole(); $('token-btn').textContent = 'Token';
+      if (hadRole) render();
+      return;
+    }
     const key = token || 'session:' + SESS.csrf;
     if (whoamiFor === key) return;
     whoamiFor = key;
     try {
       const res = await fetch('/api/whoami', { headers: authHeaders('GET', token, ''), cache: 'no-store' });
       const who = res.ok ? await res.json() : null;
+      if (whoamiFor !== key) return;
       const was = WHO.role;
       WHO.name = who && typeof who.name === 'string' ? who.name : ''; WHO.role = who && typeof who.role === 'string' ? who.role : '';
       applyRole();
       if (WHO.role !== was) { S.sigs = {}; render(); }   // what a role may do changes what every panel shows
       $('token-btn').textContent = who && who.name ? who.name + ' (' + who.role + ')' : 'Token';
-      // The pill names the person and their access level; it stays hidden when the server does not say.
-      const pill = $('who');
-      pill.hidden = !(who && who.name);
-      if (!pill.hidden) {
-        const links = who.role === 'admin' ? [el('a', { href: '#activity', class: 'pill-link', text: 'Activity' }), el('a', { href: '#access', class: 'pill-link', text: 'Access' })] : [];
-        pill.replaceChildren(...[icon('user', 's'), el('span', { text: who.name + ' · ' + who.role }), ...links].filter(Boolean));   // a null child would be written as the text "null"
-      }
     } catch (e) { /* leave the button as it is */ }
   }
 
@@ -1073,7 +1089,7 @@
     }
     if (kind === 'publish' && data && data.versions) {
       const done = data.versions.filter((v) => v.status === 'done').length;
-      f.sub = done + ' of ' + data.versions.length + ' versions done. Publish again retries the failed ones only.';
+      f.sub = done + ' of ' + data.versions.length + ' versions finished. Retry to publish unfinished versions.';
     }
     if (o && o.hint && !f.sub) f.sub = o.hint;
     return f;
@@ -1094,6 +1110,9 @@
     if (hold) return 'Rundown is held. Release it to take.';
     if (!next) return 'End of show. Nothing left to take.';
     if (next.proClip && next.proClip.status !== 'ready') return 'Send the next clip to Pro and wait until it is ready.';
+    const mediaBlock = mediaOf(next.id).blockedBy;
+    if (mediaBlock && mediaBlock !== 'ok') return mediaBlock === 'no media'
+      ? 'Attach media to the next item.' : 'Next item media is ' + mediaBlock + '.';
     return null;
   }
 
@@ -1230,6 +1249,7 @@
   const F = {
     q: '', scope: 'all', sort: 'auto', sel: {}, incomplete: false, extra: [], formKey: 0,
     res: null, load: 'idle', err: null, tok: 0, expanded: {}, ran: false, seek: null, fields: null,
+    returnTo: null,
     saved: { list: [], load: 'idle', err: null, name: '', shared: false, armDel: null },
     bins: { list: [], load: 'idle', err: null, cur: null, members: [], mload: 'idle', name: '', shared: false, armDel: null },
   };
@@ -1348,9 +1368,16 @@
   // Open an asset from a result. A speech hit also seeks the player to it once the proxy is ready.
   function findOpen(assetId, hit) {
     const frame = hit && hit.kind === 'transcript' && Number.isInteger(hit.frameIn) ? hit.frameIn : null;
-    if (assetId !== L.assetId) setAsset(assetId);
+    if (W.tab === 'find') F.returnTo = {
+      key: document.activeElement?.getAttribute('data-fk'),
+      scroll: window.scrollY,
+    };
     F.seek = frame == null ? null : { asset: assetId, frame };
+    if (assetId !== L.assetId) setAsset(assetId);
+    else if (L.load === 'idle' || L.load === 'error') libLoad(false);
     setTab('shots', false);
+    $('lib-asset-title').focus();
+    window.scrollTo(0, 0);
   }
   function applySeek() {
     const k = F.seek;
@@ -1458,7 +1485,7 @@
             } })),
         el('button', { type: 'submit', class: 'btn', 'data-fk': 'find-go', disabled: busy }, icon('search', 's'), ' Search')),
       el('div', { class: 'bar' },
-        el('div', { class: 'scopes', role: 'group', 'aria-label': 'Where to look' }, SEARCH_SCOPES.map(([v, label]) => el('button', { type: 'button', class: 'pill', 'data-fk': 'scope:' + v,
+        el('div', { class: 'queue-filters', role: 'group', 'aria-label': 'Where to look' }, SEARCH_SCOPES.map(([v, label]) => el('button', { type: 'button', class: 'pill', 'data-fk': 'scope:' + v,
           'aria-pressed': String(F.scope === v), onclick: () => { F.scope = v; findRun(false); } }, label))),
         el('div', {}, el('label', { for: 'find-sort', class: 'vh', text: 'Order' }),
           el('select', { id: 'find-sort', 'data-fk': 'find-sort', onchange: (e) => { F.sort = e.target.value; findRun(false); } },
@@ -1745,121 +1772,439 @@
       el('div', {}, el('button', { type: 'submit', class: 'btn', 'data-fk': 'df-go', disabled: S.pending.has('d:define') }, 'Define field'))));
   }
 
-  // ---- Activity: who did what (admin). Filters, newest first, 'Load more' by cursor, and a CSV that is fetched with the token. ----
-  const ACT = { rows: [], next: null, loaded: false, busy: false, err: null, f: { actor: '', action: '', kind: '' } };
+  // ---- Activity: who did what (admin) ---------------------------------------
+  const ACT_FILTERS = ['actor', 'action', 'kind', 'from', 'to'];
+  const ACT_FILTER_LABELS = { actor: 'Actor', action: 'Event', kind: 'Target type', from: 'From', to: 'Through' };
+  const ACT_EVENTS = {
+    go: 'Advanced rundown', take: 'Took item', hold: 'Held show', release: 'Released hold',
+    cleared: 'Changed asset clearance', legal_hold: 'Changed legal hold',
+    item_rename: 'Renamed rundown item', rename: 'Renamed rundown item', skip: 'Skipped item',
+    record_start: 'Started recording', record_stop: 'Stopped recording', script: 'Saved script',
+    story_status: 'Changed story status', float: 'Changed float status',
+    comment_add: 'Added comment', comment_delete: 'Deleted comment', comment_resolve: 'Changed comment resolution',
+    lease_acquire: 'Acquired edit lease', lease_release: 'Released edit lease', lease_takeover: 'Took over edit lease',
+    group_create: 'Created group', show_access: 'Changed show access', login: 'Signed in', logout: 'Signed out',
+    login_failed: 'Sign-in failed', metadata: 'Updated metadata', publish: 'Queued publish', delete_asset: 'Deleted asset',
+  };
+  const actLabel = (value) => {
+    const words = String(value || '').replace(/[_-]+/g, ' ');
+    return words ? words[0].toUpperCase() + words.slice(1) : 'Unknown';
+  };
+  const actEvent = (value) => Object.hasOwn(ACT_EVENTS, value) ? ACT_EVENTS[value] : actLabel(value);
+  const actDay = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const actFresh = (credential) => ({ credential, rows: [], next: null, attempted: false, busy: null,
+    err: null, forbidden: false, filters: {}, query: {}, actors: [], actions: [], kinds: [], exporting: false, exportError: null });
+  let ACT = actFresh(null);
+
+  function actDate(value, end) {
+    // Date inputs are local calendar days. The API compares UTC strings, including older whole-second timestamps.
+    const d = new Date(value + (end ? 'T23:59:59' : 'T00:00:00'));
+    return end ? d.toISOString().replace('.000Z', 'Z') : d.toISOString();
+  }
+
+  function actApply() {
+    if (ACT.busy) return;
+    const filters = Object.fromEntries(ACT_FILTERS.map((name) => [name, $('act-' + name).value.trim()]));
+    const { from, to } = filters;
+    $('act-to').setCustomValidity(from && to && from > to ? 'Choose an end date on or after the start date.' : '');
+    if (!$('act-filters').reportValidity()) return;
+    const query = {};
+    for (const [name, value] of Object.entries(filters)) {
+      $('act-' + name).value = value;
+      if (value) query[name] = value;
+    }
+    for (const [name, choices, label] of [['action', ACT.actions, actEvent], ['kind', ACT.kinds, actLabel]]) {
+      const value = filters[name];
+      if (!value || choices.includes(value)) continue;
+      const matches = choices.filter((choice) => label(choice).toLowerCase() === value.toLowerCase());
+      if (matches.length === 1) query[name] = matches[0];
+    }
+    if (from) query.from = actDate(from, false);
+    if (to) query.to = actDate(to, true);
+    Object.assign(ACT, { filters, query, rows: [], next: null, exportError: null });
+    actLoad(false);
+  }
+
   async function actLoad(more) {
     if (ACT.busy) return;
-    ACT.busy = true; ACT.err = null; render();
-    const q = { limit: '100' };
-    for (const k of ['actor', 'action', 'kind']) if (ACT.f[k].trim()) q[k] = ACT.f[k].trim();
-    if (more && ACT.next) q.before = ACT.next;
+    const state = ACT;
+    const previousCount = state.rows.length;
+    const q = { ...state.query, limit: '100' };
+    if (more && state.next) q.before = state.next;
+    Object.assign(state, { busy: more ? 'older' : 'first', attempted: true, err: null });
+    render();
     try {
       const { status, data } = await call('audit', null, null, q);
-      if (status === 200 && data && data.ok) { ACT.rows = more ? ACT.rows.concat(data.rows) : data.rows; ACT.next = data.next || null; ACT.loaded = true; }
-      else ACT.err = status === 403 ? 'The activity log needs the admin role.' : (data && data.error ? data.error.reason : 'The server did not answer.');
-    } catch (e) { ACT.err = 'The server did not answer.'; }
-    ACT.busy = false; S.sigs['act-rows'] = null; S.sigs['act-head'] = null; render();
+      if (status === 200 && data?.ok && Array.isArray(data.rows)) {
+        state.rows = more ? state.rows.concat(data.rows) : data.rows;
+        state.next = data.next || null;
+        const choices = (old, key) => [...new Set([...old, ...data.rows.map((r) => r[key]).filter(Boolean)])].sort();
+        state.actors = choices(state.actors, 'actor');
+        state.actions = choices(state.actions, 'action');
+        state.kinds = choices(state.kinds, 'target_kind');
+      } else {
+        state.forbidden = status === 403;
+        if (state.forbidden) Object.assign(state, { rows: [], next: null, actors: [], actions: [], kinds: [] });
+        state.err = state.forbidden ? 'An admin account is required to view the activity log.'
+          : data?.error?.reason || 'The server did not return the activity log.';
+      }
+    } catch (e) {
+      state.err = 'The server did not answer. Try again.';
+    }
+    state.busy = null;
+    if (state === ACT) {
+      const paging = document.activeElement === $('act-more');
+      render();
+      if (paging && state.err) ($('act-message').querySelector('button') || $('h-act')).focus();
+      else if (paging) ($('act-rows').querySelector('tbody')?.rows[previousCount] || $('h-act')).focus();
+    }
   }
+
   async function actCsv() {
-    const q = new URLSearchParams({ format: 'csv', limit: '500' });
-    for (const k of ['actor', 'action', 'kind']) if (ACT.f[k].trim()) q.set(k, ACT.f[k].trim());
-    const token = getToken();
-    const res = await fetch('/api/audit?' + q.toString(), { headers: token ? { Authorization: 'Bearer ' + token } : {}, cache: 'no-store' });
-    if (!res.ok) { setFlash({ kind: 'bad', title: 'Could not export.', code: 'export_failed', reason: 'The server refused the CSV (' + res.status + ').' }); render(); return; }
-    const url = URL.createObjectURL(await res.blob());
-    const a = el('a', { href: url, download: 'volt-activity.csv' });
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (ACT.exporting || ACT.busy || ACT.forbidden) return;
+    const state = ACT;
+    state.exporting = true; state.exportError = null;
+    $('act-export-status').textContent = 'Preparing CSV.';
+    render();
+    const query = new URLSearchParams({ ...state.query, format: 'csv', limit: '500' });
+    try {
+      const res = await fetch('/api/audit?' + query, { headers: authHeaders('GET', getToken(), SESS.csrf), cache: 'no-store' });
+      if (!res.ok) throw new Error('The server refused the CSV (' + res.status + ').');
+      const blob = await res.blob();
+      if (state !== ACT) return;
+      const url = URL.createObjectURL(blob);
+      const link = el('a', { href: url, download: 'volt-activity.csv' });
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('act-export-status').textContent = 'CSV downloaded.';
+    } catch (e) {
+      if (state === ACT) {
+        state.exportError = 'Could not download the CSV. ' + (e instanceof TypeError ? 'Check your connection and try again.' : e.message);
+        $('act-export-status').textContent = '';
+      }
+    } finally {
+      state.exporting = false;
+      if (state === ACT) render();
+    }
   }
+
+  function actInit() {
+    const form = $('act-filters');
+    const panel = $('act-filter-panel');
+    const narrow = window.matchMedia('(max-width: 600px)');
+    const fitFilters = () => { panel.open = !narrow.matches || form.contains(document.activeElement); };
+    fitFilters();
+    narrow.addEventListener('change', fitFilters);
+    const clearDateError = () => $('act-to').setCustomValidity('');
+    form.addEventListener('submit', (e) => { e.preventDefault(); actApply(); });
+    form.addEventListener('input', clearDateError);
+    $('act-clear').addEventListener('click', () => {
+      if (ACT.busy) return;
+      form.reset(); clearDateError(); actApply();
+    });
+    $('act-more').addEventListener('click', () => { if (ACT.next) actLoad(true); });
+    $('act-csv').addEventListener('click', actCsv);
+  }
+
+  function actDetail(value) {
+    let detail;
+    try { detail = JSON.parse(value); } catch (e) { return el('p', { text: value }); }
+    if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return el('p', { text: value });
+    return el('dl', {}, Object.entries(detail).map(([key, entry]) => el('div', {},
+      el('dt', { text: actLabel(key) }),
+      el('dd', { text: typeof entry === 'string' ? entry : entry === null ? 'None' : JSON.stringify(entry) }))));
+  }
+
   function renderActivity() {
-    if (!ACT.loaded && !ACT.busy && !ACT.err) { actLoad(false); return; }
-    paint('act-head', [ACT.busy, ACT.f.actor, ACT.f.action, ACT.f.kind], () => el('div', { class: 'panel' },
-      el('h2', { id: 'h-act' }, icon('wave', 's'), 'Activity'),
-      el('form', { class: 'form-row', 'aria-labelledby': 'h-act', onsubmit: (e) => { e.preventDefault(); actLoad(false); } },
-        [['actor', 'Who'], ['action', 'Action'], ['kind', 'Kind of thing']].map(([k, label]) => el('div', {}, el('label', { for: 'act-' + k, text: label }),
-          el('input', { id: 'act-' + k, type: 'text', 'data-fk': 'act-' + k, value: ACT.f[k], autocomplete: 'off', oninput: (e) => { ACT.f[k] = e.target.value; } }))),
-        btn('Show', { key: 'act-go', cls: 'ghost', onclick: () => actLoad(false) }),
-        btn('Download CSV', { key: 'act-csv', cls: 'ghost', onclick: actCsv }))));
-    paint('act-rows', [ACT.rows, ACT.next, ACT.busy, ACT.err], () => {
-      if (ACT.err) return el('div', { class: 'panel' }, el('p', { class: 'empty', text: ACT.err }));
-      if (!ACT.rows.length) return el('div', { class: 'panel' }, el('p', { class: 'empty', text: ACT.busy ? 'Reading the log…' : 'Nothing matches.' }));
-      return el('div', { class: 'panel' }, el('div', { class: 'tblwrap' }, el('table', {},
-        el('caption', { class: 'vh', text: 'Who did what, newest first' }),
-        el('thead', {}, el('tr', {}, ['When', 'Who', 'Action', 'Thing', 'Detail'].map((h) => el('th', { scope: 'col', text: h })))),
-        el('tbody', {}, ACT.rows.map((r) => el('tr', {}, el('td', { class: 'mono', text: r.at }), el('td', { text: r.actor }),
-          el('td', {}, icon('wave', 's'), ' ' + r.action), el('td', { class: 'mono', text: r.target_kind + ' ' + short(r.target_id) }),
-          el('td', { text: r.detail || '' })))))),
-        ACT.next ? el('div', { class: 'bar' }, btn(ACT.busy ? 'Loading…' : 'Load more', { key: 'act-more', cls: 'ghost', disabled: ACT.busy, onclick: () => actLoad(true) })) : null);
+    const credential = getToken() || SESS.csrf;
+    if (ACT.credential !== credential) {
+      ACT = actFresh(credential);
+      $('act-filters').reset();
+      $('act-to').setCustomValidity('');
+      $('act-export-status').textContent = '';
+    }
+    if (!ACT.attempted) { actLoad(false); return; }
+    const filtered = Object.entries(ACT.filters).filter(([, value]) => value);
+    $('act-filters').querySelector('[type=submit]').setAttribute('aria-disabled', String(!!ACT.busy));
+    $('act-clear').setAttribute('aria-disabled', String(!!ACT.busy));
+    const csv = $('act-csv');
+    csv.setAttribute('aria-disabled', String(!!ACT.busy || ACT.forbidden || ACT.exporting));
+    csv.querySelector('span').textContent = ACT.exporting ? 'Preparing CSV…' : 'Download CSV';
+    $('act-more').setAttribute('aria-disabled', String(!!ACT.busy));
+    $('act-more').textContent = ACT.busy === 'older' ? 'Loading older events…' : 'Load older events';
+    $('act-page').hidden = !ACT.next || !!ACT.err;
+    const count = ACT.rows.length;
+    const caption = ACT.busy === 'first' ? 'Loading events…' : ACT.err && !count ? '' : count + (count === 1 ? ' event' : ' events') + (ACT.next ? ' loaded' : '');
+    if ($('act-count').textContent !== caption) $('act-count').textContent = caption;
+    for (const [id, values, label] of [['actors', ACT.actors, (v) => v], ['actions', ACT.actions, actEvent], ['kinds', ACT.kinds, actLabel]]) {
+      paint('act-' + id, values, () => {
+        const labels = values.map(label);
+        return values.map((value, i) => {
+          const display = labels[i];
+          const ambiguous = labels.indexOf(display) !== labels.lastIndexOf(display) || (display !== value && values.includes(display));
+          return el('option', { value: ambiguous ? value : display, label: ambiguous ? display : null });
+        });
+      });
+    }
+    paint('act-applied', [filtered, ACT.query], () => filtered.length ? el('ul', { class: 'act-applied', 'aria-label': 'Applied filters' },
+      filtered.map(([name, value]) => el('li', {}, ACT_FILTER_LABELS[name] + ' · ',
+        el('strong', { text: name === 'action' ? actEvent(ACT.query.action) : name === 'kind' ? actLabel(ACT.query.kind) : value })))) : null);
+    paint('act-message', [ACT.err, ACT.forbidden, ACT.exportError, ACT.next], () => [
+      ACT.err ? el('div', { class: 'act-message' }, el('p', { role: 'alert' }, stateChip('failed', 'Activity unavailable'), ' ', ACT.err),
+        ACT.forbidden ? null : btn('Try again', { cls: 'ghost small', key: 'act-retry', onclick: () => {
+          actLoad(!!ACT.next);
+          $('h-act').focus({ preventScroll: true });
+        } })) : null,
+      ACT.exportError ? el('p', { class: 'act-message', role: 'alert', text: ACT.exportError }) : null,
+    ]);
+    paint('act-rows', [ACT.rows, ACT.busy === 'first', ACT.err && !count, !!filtered.length], () => {
+      if (!count) return ACT.busy || ACT.err ? null : el('p', { class: 'empty',
+        text: filtered.length ? 'No events match these filters. Clear or change the filters.' : 'No activity has been recorded yet.' });
+      const open = new Set([...$('act-rows').querySelectorAll('details[open]')].map((node) => node.dataset.event));
+      return el('table', { class: 'act-table', role: 'table' },
+        el('caption', { class: 'vh', text: 'Events newest first, in local time' }),
+        el('thead', { role: 'rowgroup' }, el('tr', { role: 'row' }, ['Event', 'Actor', 'Target', 'When (local)'].map((h) => el('th', { role: 'columnheader', scope: 'col', text: h })))),
+        el('tbody', { role: 'rowgroup' }, ACT.rows.map((r) => {
+          const d = new Date(r.at);
+          return el('tr', { role: 'row', tabindex: -1 },
+            el('td', { class: 'act-event', role: 'cell' },
+              el('strong', { text: actEvent(r.action), title: r.action }),
+              r.detail ? el('details', { class: 'act-detail', 'data-event': r.id, open: open.has(r.id) },
+                el('summary', { 'data-fk': 'act-detail:' + r.id, 'aria-label': 'Details for ' + actEvent(r.action) + ' by ' + r.actor, text: 'Details' }),
+                actDetail(r.detail)) : null),
+            el('td', { class: 'act-actor', role: 'cell' }, el('span', { class: 'act-mobile-label', 'aria-hidden': 'true', text: 'Actor' }), r.actor),
+            el('td', { class: 'act-target', role: 'cell' }, el('span', { text: actLabel(r.target_kind) }), el('span', { class: 'mono muted', text: r.target_id })),
+            el('td', { class: 'act-when', role: 'cell' }, el('time', { datetime: r.at, title: r.at },
+              isNaN(d) ? r.at : [el('span', { class: 'act-day', text: actDay.format(d) }), el('span', { class: 'mono muted', text: fmtTime(r.at) })])));
+        })));
     });
   }
 
-  // ---- Access: who may view, edit or run a show (admin). The list and the two pickers come from the server; a change is one POST. ----
-  const ACC = { show: null, rows: [], users: null, groups: null, loaded: null, busy: false, err: null, kind: 'user', subject: '', level: 'view' };
+  // ---- Access: show permissions (admin) --------------------------------------
+  const accFresh = (credential) => ({ credential, show: '', rows: null, users: null, groups: null,
+    view: 'assigned', load: null, error: null, message: '', saving: false, editor: null });
+  let ACC = accFresh(null);
+  const accLevels = Object.keys(ACCESS_SPEC);
+  const accKind = (kind) => kind === 'group' ? 'Group' : 'Person';
+
   async function accLoad(showId) {
-    if (ACC.busy) return;
-    ACC.busy = true; ACC.err = null; ACC.show = showId;
+    const state = ACC, request = {};
+    Object.assign(state, { show: showId, rows: null, users: null, groups: null, load: request, error: null, message: '' });
+    render();
     try {
-      const [acc, us, gs] = await Promise.all([call('showAccess', showId), call('users'), call('groups')]);
-      if (acc.status === 200 && acc.data && acc.data.ok) {
-        ACC.rows = acc.data.access || [];
-        ACC.users = us.status === 200 && us.data ? us.data.users || [] : null;
-        ACC.groups = gs.status === 200 && gs.data ? gs.data.groups || [] : null;
-        ACC.loaded = showId;
-        if (us.status === 403) ACC.err = 'Changing show access needs the admin role.';
-      } else ACC.err = acc.status === 403 ? 'Changing show access needs the admin role.' : (acc.data && acc.data.error ? acc.data.error.reason : 'The server did not answer.');
-    } catch (e) { ACC.err = 'The server did not answer.'; }
-    ACC.busy = false; S.sigs['acc-head'] = null; S.sigs['acc-rows'] = null; render();
-  }
-  function accSet(kind, subject, level) {
-    act('showAccessSet', ACC.show, { subject_kind: kind, subject, level }, { key: 'acc:' + kind + ':' + subject,
-      okTitle: level ? 'Access saved.' : 'Access removed.',
-      ok: (d) => { ACC.rows = d.access || []; S.sigs['acc-head'] = null; S.sigs['acc-rows'] = null;
-        const now = accessSummary(ACC.rows); return 'This show is now ' + now.word.toLowerCase() + '. ' + now.text; },
-      hint: 'Nothing changed.' });
-  }
-  function renderAccess() {
-    const shows = (S.data && S.data.shows) || [];
-    const want = ACC.show && shows.some((x) => x.id === ACC.show) ? ACC.show : (S.show || (shows[0] && shows[0].id) || null);
-    if (want && ACC.loaded !== want && !ACC.busy && !ACC.err) { accLoad(want); return; }
-    if (want) ACC.show = want;
-    const sum = accessSummary(ACC.rows);
-    paint('acc-head', [ACC.show, shows.map((x) => x.id + x.title), ACC.busy, ACC.err, sum.kind], () => el('div', { class: 'panel' },
-      el('h2', { id: 'h-acc' }, icon('lock', 's'), 'Who can use this show'),
-      el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'acc-show', text: 'Show' }),
-        el('select', { id: 'acc-show', 'data-fk': 'acc-show', onchange: (e) => { ACC.show = e.target.value; ACC.loaded = null; ACC.err = null; S.sigs = {}; render(); } },
-          shows.map((x) => el('option', { value: x.id, selected: x.id === ACC.show }, x.title))))),
-      ACC.err ? el('p', { class: 'empty', role: 'alert', text: ACC.err })
-        : el('p', { class: 'hint' }, el('span', { class: sum.cls }, icon(sum.icon, 's'), el('span', { text: sum.word })), ' ', sum.text)));
-    if (ACC.err) { paint('acc-rows', [ACC.err], () => []); return; }
-    const names = accessCandidates(ACC.kind, ACC.users, ACC.groups, ACC.rows);
-    if (!names.includes(ACC.subject)) ACC.subject = names[0] || '';
-    paint('acc-rows', [ACC.rows, ACC.busy, ACC.kind, ACC.subject, ACC.level, names, [...S.pending].filter((k) => k.startsWith('acc:'))], () => el('div', { class: 'panel' },
-      !ACC.rows.length ? el('p', { class: 'empty', text: 'No one is listed, so the show is open.' })
-        : el('div', { class: 'tblwrap' }, el('table', {},
-          el('caption', { class: 'vh', text: 'People and groups with access to this show' }),
-          el('thead', {}, el('tr', {}, ['Who', 'Level', 'Can'].map((h) => el('th', { scope: 'col', text: h })), el('th', { scope: 'col' }, el('span', { class: 'vh', text: 'Remove' })))),
-          el('tbody', {}, ACC.rows.map((r) => {
-            const spec = accessLevelSpec(r.level);
-            return el('tr', {}, el('td', {}, icon('user', 's'), ' ' + (r.subject_kind === 'group' ? 'Group ' : 'User ') + r.subject),
-              el('td', {}, el('span', { class: spec.cls }, icon(spec.icon, 's'), el('span', { text: spec.word }))),
-              el('td', { text: spec.does }),
-              el('td', {}, btn('Remove', { write: true, key: 'acc:' + r.subject_kind + ':' + r.subject, cls: 'ghost small', aria: 'Remove ' + r.subject + ' from this show',
-                onclick: () => accSet(r.subject_kind, r.subject, null) })));
-          })))),
-      el('form', { class: 'form-row', 'aria-label': 'Add or change access', onsubmit: (e) => { e.preventDefault(); if (ACC.subject) accSet(ACC.kind, ACC.subject, ACC.level); } },
-        el('div', {}, el('label', { for: 'acc-kind', text: 'Add' }),
-          el('select', { id: 'acc-kind', 'data-fk': 'acc-kind', onchange: (e) => { ACC.kind = e.target.value; S.sigs['acc-rows'] = null; render(); } },
-            [['user', 'A user'], ['group', 'A group']].map(([v, t]) => el('option', { value: v, selected: v === ACC.kind }, t)))),
-        el('div', {}, el('label', { for: 'acc-subject', text: ACC.kind === 'group' ? 'Group' : 'User' }),
-          el('select', { id: 'acc-subject', 'data-fk': 'acc-subject', disabled: !names.length, onchange: (e) => { ACC.subject = e.target.value; } },
-            names.length ? names.map((n) => el('option', { value: n, selected: n === ACC.subject }, n)) : [el('option', { value: '' }, 'No one left to add')])),
-        el('div', {}, el('label', { for: 'acc-level', text: 'Level' }),
-          el('select', { id: 'acc-level', 'data-fk': 'acc-level', onchange: (e) => { ACC.level = e.target.value; } },
-            ['view', 'edit', 'run'].map((v) => el('option', { value: v, selected: v === ACC.level }, accessLevelSpec(v).word)))),
-        el('button', { type: 'submit', class: 'btn', disabled: !names.length || S.pending.has('acc:' + ACC.kind + ':' + ACC.subject) }, 'Save'),
-        el('span', { class: 'hint', text: 'A person’s role still caps this: a viewer given Run can only view.' }))));
+      const [acl, people, groups] = await Promise.allSettled([call('showAccess', showId), call('users'), call('groups')]);
+      if (state !== ACC || state.load !== request) return;
+      const access = acl.value;
+      if (access?.status === 200 && access.data?.ok && Array.isArray(access.data.access)) {
+        state.rows = access.data.access;
+        state.users = Array.isArray(people.value?.data?.users) ? people.value.data.users : null;
+        state.groups = Array.isArray(groups.value?.data?.groups) ? groups.value.data.groups : null;
+      } else {
+        state.error = access?.status === 403 ? 'An admin account is required to manage show access.'
+          : access?.data?.error?.reason || 'Could not load show access. Try refreshing.';
+      }
+    } finally {
+      if (state === ACC && state.load === request) { state.load = null; render(); }
+    }
   }
 
+  function accChip(level, word) {
+    const spec = level ? accessLevelSpec(level) : { cls: 'st', icon: 'lock', word: 'No access' };
+    return el('span', { class: spec.cls }, icon(spec.icon, 's'), el('span', { text: word || spec.word }));
+  }
+
+  function accOpen(mode, row) {
+    if (!ACC.rows || ACC.saving || isViewer() || (mode === 'add' && !(ACC.users && ACC.groups))) return;
+    const opener = document.activeElement;
+    ACC.editor = { mode, row, opener, kind: row?.subject_kind || 'user', subject: row?.subject || '',
+      level: row?.level || 'view', error: '', needsRefresh: false };
+    accPaintEditor();
+    const dialog = $('acc-dialog');
+    dialog.showModal();
+    if (mode === 'remove') $('acc-cancel').focus();
+    else if (mode === 'edit') $('acc-level').focus();
+    else $('acc-kind').focus();
+  }
+
+  function accPaintEditor() {
+    const editor = ACC.editor;
+    const { mode, row, kind, subject, level } = editor;
+    const names = accessCandidates(kind, ACC.users, ACC.groups, ACC.rows);
+    const show = (S.data?.shows || []).find((s) => s.id === ACC.show)?.title || ACC.show;
+    const select = (id, label, options, value, change, disabled = false) => el('div', { class: 'acc-field' },
+      el('label', { for: id, text: label }), el('select', { id, 'data-fk': id, disabled, onchange: change },
+        options.map(([key, text]) => el('option', { value: key, selected: key === value }, text))));
+    $('h-acc-dialog').textContent = { add: 'Add access', edit: 'Change access', remove: 'Remove access' }[mode];
+    paint('acc-form-fields', [mode, row, kind, names, show, ACC.rows.length, ACC.users, ACC.groups], () => [
+      el('p', { class: 'acc-context', text: row ? accKind(kind) + ' · ' + subject + ' · ' + show : show }),
+      el('div', { class: 'acc-editor-fields' },
+        mode === 'add' ? select('acc-kind', 'Assign to', [['user', 'Person'], ['group', 'Group']], kind, (e) => {
+          editor.kind = e.target.value; editor.subject = ''; editor.error = ''; accPaintEditor();
+        }) : null,
+        mode === 'add' ? select('acc-subject', accKind(kind),
+          [['', names.length ? 'Choose ' + (kind === 'group' ? 'a group' : 'a person') : 'No available ' + (kind === 'group' ? 'groups' : 'people')],
+            ...names.map((name) => [name, name])], subject, (e) => { editor.subject = e.target.value; editor.error = ''; accPaintEditor(); }, !names.length) : null,
+        mode !== 'remove' ? select('acc-level', 'Permission', accLevels.map((v) => [v, accessLevelSpec(v).word]), level,
+          (e) => { editor.level = e.target.value; editor.error = ''; accPaintEditor(); }) : null),
+      el('p', { id: 'acc-help', class: 'hint' }),
+      mode === 'add' && !ACC.rows.length ? el('p', { class: 'acc-impact', text: 'Adding the first assignment restricts this show to the selected person or group and admins.' }) : null,
+    ]);
+    const help = $('acc-help');
+    const membership = ACC.groups?.find((g) => g.name === subject)?.members?.length;
+    help.textContent = mode === 'remove' ? (ACC.rows.length === 1
+      ? 'This is the last assignment. Removing it opens the show to everyone at their Volt role.'
+      : kind === 'group' ? 'This removes the show permission assigned to the group. Members may still have access through other assignments.'
+        : 'This removes the direct assignment. The person may still have access through a group or their admin role.')
+      : accessLevelSpec(level).does + (membership != null && kind === 'group' ? ' ' + membership + (membership === 1 ? ' member' : ' members') + ' in this group.' : '');
+    const error = $('acc-form-error');
+    error.textContent = editor.error;
+    error.hidden = !editor.error;
+    const submit = $('acc-submit');
+    submit.classList.toggle('danger', mode === 'remove');
+    submit.textContent = ACC.saving ? 'Saving…' : mode === 'remove' ? 'Remove access'
+      : mode === 'edit' ? 'Save permission' : ACC.rows.length ? 'Grant access' : 'Grant and restrict show';
+    submit.setAttribute('aria-disabled', String(ACC.saving || editor.needsRefresh || !subject || (mode === 'edit' && level === row.level)));
+    $('acc-cancel').setAttribute('aria-disabled', String(ACC.saving));
+    for (const field of $('acc-form-fields').querySelectorAll('select')) {
+      field.disabled = ACC.saving || (field.id === 'acc-subject' && !names.length);
+    }
+  }
+
+  async function accSave() {
+    const state = ACC, editor = state.editor;
+    if (!editor || state.saving || $('acc-submit').getAttribute('aria-disabled') === 'true') return;
+    const { mode, kind, subject, level } = editor;
+    state.saving = true;
+    editor.error = '';
+    accPaintEditor();
+    try {
+      const { status, data } = await call('showAccessSet', state.show, { subject_kind: kind, subject, level: mode === 'remove' ? null : level });
+      if (state !== ACC) return;
+      if (status === 401) {
+        $('acc-dialog').close();
+        setConn('token');
+        openToken();
+        return;
+      }
+      if (status !== 200 || !data?.ok || !Array.isArray(data.access)) {
+        editor.error = data?.error?.reason || 'Volt could not save the permission.';
+        return;
+      }
+      state.rows = data.access;
+      state.message = mode === 'remove' ? 'Removed access for ' + subject + '.'
+        : accessLevelSpec(level).word + ' access saved for ' + subject + '.';
+      state.saving = false;
+      $('acc-dialog').close();
+      render();
+    } catch (e) {
+      if (state === ACC) {
+        editor.needsRefresh = true;
+        editor.error = mode === 'remove' ? 'The server did not confirm removal. Cancel and refresh before trying again.'
+          : 'The server did not confirm the save. Cancel and refresh before trying again.';
+      }
+    } finally {
+      state.saving = false;
+      if (state === ACC && $('acc-dialog').open) accPaintEditor();
+    }
+  }
+
+  function accInit() {
+    const dialog = $('acc-dialog');
+    $('acc-show').addEventListener('change', (e) => accLoad(e.target.value));
+    $('acc-refresh').addEventListener('click', () => { if (ACC.show && !ACC.load) accLoad(ACC.show); });
+    $('acc-add').addEventListener('click', () => accOpen('add'));
+    for (const view of ['assigned', 'people']) $('acc-' + view).addEventListener('click', () => { ACC.view = view; render(); });
+    $('acc-form').addEventListener('submit', (e) => { e.preventDefault(); accSave(); });
+    $('acc-cancel').addEventListener('click', () => { if (!ACC.saving) dialog.close(); });
+    dialog.addEventListener('cancel', (e) => { if (ACC.saving) e.preventDefault(); });
+    dialog.addEventListener('close', () => {
+      const opener = ACC.editor?.opener;
+      ACC.editor = null;
+      if (S.screen !== 'access' || $('token-dlg').open) return;
+      const replacement = opener?.dataset.fk && $('acc-rows').querySelector('[data-fk="' + CSS.escape(opener.dataset.fk) + '"]');
+      (replacement || (opener?.isConnected ? opener : $('h-acc-list'))).focus({ preventScroll: true });
+    });
+    $('acc-level-guide').replaceChildren(...accLevels.map((level) => el('div', {},
+      el('dt', {}, accChip(level)), el('dd', { text: accessLevelSpec(level).does }))));
+  }
+
+  function renderAccess() {
+    const credential = getToken() || SESS.csrf;
+    if (ACC.credential !== credential) {
+      ACC = accFresh(credential);
+      if ($('acc-dialog').open) $('acc-dialog').close();
+    }
+    const shows = S.data.shows || [];
+    const show = shows.find((s) => s.id === ACC.show) || shows.find((s) => s.id === S.show) || shows[0];
+    if (show && show.id !== ACC.show) { accLoad(show.id); return; }
+    const rows = show ? ACC.rows : null;
+    const lookup = !!(ACC.users && ACC.groups);
+    const sum = rows ? accessSummary(rows) : null;
+    const users = ACC.users || [];
+    const pending = !!ACC.load;
+    $('acc-show').disabled = !show || ACC.saving;
+    $('acc-add').setAttribute('aria-disabled', String(!rows || !lookup || ACC.saving || isViewer()));
+    $('acc-refresh').setAttribute('aria-disabled', String(!show || pending || ACC.saving));
+    paint('acc-show', [shows.map((s) => [s.id, s.title]), show?.id], () => shows.length
+      ? shows.map((s) => el('option', { value: s.id, selected: s.id === show?.id }, s.title))
+      : el('option', { text: 'No shows available' }));
+    paint('acc-policy', [sum?.kind, pending], () => sum
+      ? [el('span', { class: sum.cls }, icon(sum.icon, 's'), sum.word), el('p', { text: sum.text })]
+      : pending ? el('span', { class: 'muted', text: 'Loading show access…' }) : null);
+    for (const [view, count] of [['assigned', rows?.length], ['people', lookup && rows ? users.length : null]]) {
+      const button = $('acc-' + view);
+      button.setAttribute('aria-pressed', String(ACC.view === view));
+      const badge = button.querySelector('.queue-count');
+      badge.hidden = count == null;
+      badge.textContent = count ?? '';
+    }
+    paint('acc-message', [ACC.error, ACC.message, lookup, !!rows], () =>
+      ACC.error ? el('p', { class: 'acc-message', role: 'alert' }, stateChip('failed', 'Access unavailable'), ' ', ACC.error)
+        : [ACC.message ? el('p', { class: 'acc-message', role: 'status' }, stateChip('done', 'Updated'), ' ', ACC.message) : null,
+          rows && !lookup ? el('p', { class: 'acc-message', role: 'alert' }, 'The people or groups list is unavailable. Refresh to load it.') : null]);
+    paint('acc-rows', [show?.id, rows, ACC.view, ACC.users, ACC.groups, pending, ACC.error], () => {
+      if (!show || !rows) return el('p', { class: 'empty', text: !show ? 'No shows are available.' : pending ? 'Loading permissions…' : 'Permissions could not be loaded.' });
+      const people = ACC.view === 'people';
+      if (people && !lookup) return null;
+      if (people && !users.length) return el('p', { class: 'empty', text: 'No people are listed in Volt.' });
+      if (!people && !rows.length) return el('p', { class: 'empty' }, 'This show is open. See ',
+        btn('People', { cls: 'ghost small', key: 'acc-see-people', onclick: () => { ACC.view = 'people'; render(); $('acc-people').focus(); } }),
+        ' for access by role.');
+      const memberCount = (name) => ACC.groups?.find((g) => g.name === name)?.members?.length;
+      const cell = (label, ...content) => el('td', { role: 'cell' }, el('span', { class: 'acc-cell-label', 'aria-hidden': 'true', text: label }), content);
+      const headings = people ? ['Person', 'Effective access', 'Access sources'] : ['Name', 'Source', 'Permission', 'Actions'];
+      const body = people ? users.map((user) => {
+        const info = accessForUser(user, ACC.groups, rows);
+        const role = info.role === 'admin' ? 'Admin role' : info.role === 'operator' ? 'Operator role' : 'Viewer role';
+        return el('tr', { role: 'row' },
+          cell('Person', el('strong', { text: user.name }), user.disabled_at ? el('small', { class: 'muted', text: 'Disabled account' }) : null),
+          cell('Effective access', accChip(info.level)),
+          cell('Access sources', el('ul', { class: 'acc-sources' },
+            info.role === 'admin' || !rows.length ? el('li', { text: role + (rows.length ? ' · all shows' : ' · open show') }) : null,
+            info.sources.map((source) => el('li', { text: (source.subject_kind === 'group' ? 'Group · ' + source.subject : 'Direct') + ' · ' + accessLevelSpec(source.level).word })),
+            info.roleGroups.length ? el('li', { class: 'muted', text: role + ' via ' + info.roleGroups.join(', ') }) : null,
+            info.role === 'viewer' && info.sources.some((source) => source.level === 'edit' || source.level === 'run')
+              ? el('li', { class: 'muted', text: 'Viewer role limits access to View' }) : null,
+            info.role !== 'admin' && rows.length && !info.sources.length ? el('li', { class: 'muted', text: 'No show assignments' }) : null)));
+      }) : [...rows].sort((a, b) => a.subject.localeCompare(b.subject)).map((r) => {
+        const key = r.subject_kind + ':' + r.subject;
+        const members = r.subject_kind === 'group' ? memberCount(r.subject) : null;
+        return el('tr', { role: 'row' },
+          cell('Name', el('strong', { text: r.subject }), members == null ? null : el('small', { class: 'muted', text: members + (members === 1 ? ' member' : ' members') })),
+          cell('Source', r.subject_kind === 'group' ? 'Group' : 'Direct'),
+          cell('Permission', accChip(r.level)),
+          cell('Actions', el('div', { class: 'acc-row-actions' },
+            btn('Change', { write: true, cls: 'ghost small', key: 'acc-change:' + key, aria: 'Change access for ' + r.subject, onclick: () => accOpen('edit', r) }),
+            btn('Remove', { write: true, cls: 'ghost small', key: 'acc-remove:' + key, aria: 'Remove access for ' + r.subject, onclick: () => accOpen('remove', r) }))));
+      });
+      return el('table', { class: 'acc-table' + (people ? ' acc-people' : ''), role: 'table' },
+        el('caption', { class: 'vh', text: (people ? 'Access by person for ' : 'Show assignments for ') + show.title }),
+        el('thead', { role: 'rowgroup' }, el('tr', { role: 'row' }, headings.map((h) => el('th', { role: 'columnheader', scope: 'col', text: h })))),
+        el('tbody', { role: 'rowgroup' }, body));
+    });
+  }
+
+  let railSignature = '';
   function renderChrome() {
     const sel = $('show-select');
     const shows = (S.data && S.data.shows) || [];
@@ -1869,18 +2214,32 @@
       sel.replaceChildren(...(shows.length ? shows.map((s) => el('option', { value: s.id, selected: s.id === S.show }, s.title + (s.held ? ' (held)' : ''))) : [el('option', { value: '' }, 'No shows')]));
       sel.value = S.show || '';
     }
-    const rail = railFor(S.ws, S.screen);
-    for (const a of document.querySelectorAll('#screens a')) {
-      const scr = a.dataset.screen;
-      a.hidden = !rail.screens.includes(scr) && scr !== rail.extra;
-      a.classList.toggle('off-rail', scr === rail.extra);
-      if (scr === S.screen) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    const admin = canSeeAdminScreens();
+    const navKey = S.ws + '/' + S.screen + '/' + admin;
+    if (railSignature !== navKey) {
+      railSignature = navKey;
+      const rail = railFor(S.ws, S.screen);
+      for (const a of document.querySelectorAll('#screens a')) {
+        const scr = a.dataset.screen;
+        a.hidden = a.hasAttribute('data-admin') ? !admin : !rail.screens.includes(scr) && scr !== rail.extra;
+        if (scr === S.screen && !a.hidden) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+      }
+      revealCurrentScreen();
     }
     const items = S.data && S.data.rundown && S.data.rundown.items ? S.data.rundown.items : [];
     const show = shows.find((x) => x.id === S.show);
     $('foot-show').textContent = show ? show.title : 'No show';
     $('foot-count').textContent = S.data ? items.length + (items.length === 1 ? ' item' : ' items') : '';
     bellPaint();
+  }
+
+  function revealCurrentScreen() {
+    const nav = $('screens'), current = nav.querySelector('[aria-current=page]');
+    if (!current || nav.scrollWidth <= nav.clientWidth) return;
+    const railBounds = nav.getBoundingClientRect(), itemBounds = current.getBoundingClientRect();
+    if (itemBounds.left < railBounds.left || itemBounds.right > railBounds.right) {
+      nav.scrollLeft += itemBounds.left < railBounds.left ? itemBounds.left - railBounds.left : itemBounds.right - railBounds.right;
+    }
   }
 
   // The workspace is remembered per browser. Storage can be missing, blocked or hold junk: any of that means Operator.
@@ -1904,6 +2263,7 @@
     for (const b of document.querySelectorAll('#workspaces button')) b.setAttribute('aria-pressed', String(b.dataset.ws === S.ws));
     // An explicit switch lands on the new workspace's first screen unless the screen already open belongs to it.
     if (go && !railFor(S.ws, S.screen).screens.includes(S.screen)) { location.hash = '#' + defaultScreen(S.ws); return; }
+    for (const panel of document.querySelectorAll('#screen-show .show-disclosure')) panel.open = S.ws !== 'operator';
     render();
   }
 
@@ -1920,17 +2280,19 @@
 
   function renderBanners() {
     const { hold } = showInfo();
-    // On the Library screen the message sits beside the work (see renderLibrary), not at the top of a long page.
-    const f = S.screen === 'library' ? null : S.flash;
+    // These screens place action feedback beside the work.
+    const f = ['library', 'publish', 'record', 'rights'].includes(S.screen) ? null : S.flash;
     const room = S.data.room || {};
-    paint('banners', [hold, f, S.conn, room.stale], () => {
+    const holdBanner = S.screen === 'show' && S.ws !== 'operator' ? hold : null;
+    paint('banners', [holdBanner, f, S.conn, room.stale, S.screen], () => {
       const out = [];
       if (S.conn === 'lost') {
         out.push(el('div', { class: 'banner bad', role: 'alert' }, el('div', { class: 'msg' },
           el('strong', { text: 'Connection lost.' }),
-          el('span', { class: 'why', text: 'The server did not answer. What you see is the last state it gave. Take is disabled until it answers.' }))));
+          el('span', { class: 'why', text: S.screen === 'show' ? 'Showing the last available state. TAKE is unavailable until Volt reconnects.'
+            : 'Showing the last available state. Volt will try to reconnect.' }))));
       }
-      if (hold) {
+      if (holdBanner) {
         out.push(el('div', { class: 'banner warn', role: 'status' }, el('div', { class: 'msg' },
           el('strong', { text: '⏸ Rundown held.' }),
           el('span', { class: 'why', text: hold.reason || 'No reason given.' }),
@@ -1946,61 +2308,116 @@
   function renderShow() {
     const { items, air, next, hold, taking } = showInfo();
     const block = takeBlock();
-    const takeCues = next ? cuesOf(next.id).length : 0;
-    const takeBusy = S.pending.has('take');
-    paint('transport', [air, next, hold, taking, block, S.seq, [...S.pending], takeCues, S.data.show], () => [
-      el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: taking ? 'Taking' : 'On air' }),
-        el('span', { class: 'val', text: taking ? '… ' + taking.slug : (air ? '● ' + air.slug : 'Nothing on air') })),
-      el('div', { class: 'nowline next' }, el('span', { class: 'lbl', text: 'Next' }),
-        el('span', { class: 'val', text: next ? '▶ ' + next.slug : 'End of show' })),
-      el('span', { class: 'spacer' }),
-      el('div', {}, btn(
-        [el('span', { class: 'tk' }, icon('take'), takeBusy ? 'TAKING…' : 'TAKE'),
-         el('small', {}, next ? next.slug + ' · ' + takeCues + (takeCues === 1 ? ' cue' : ' cues') : 'nothing to take'),
-         el('small', { class: 'k' }, 'Key ', el('kbd', { text: 'T' }))],
-        { write: true, key: 'take', cls: 'take', disabled: !!block || S.seq, onclick: () => takeNow(false) })),
-      el('div', { class: 'acts' },
-        btn(hold ? 'RELEASE HOLD' : 'HOLD', { write: true, key: 'hold', cls: hold ? 'signal' : 'ghost', onclick: toggleHold, disabled: !S.data.show, title: 'Key H' }),
-        btn('Advance, no cues', { write: true, key: 'go', cls: 'ghost', disabled: !!block || S.seq || !!(next && next.proClip),
-          title: 'Moves the rundown on without sending any cues to the room',
-          onclick: () => act('go', S.show, {}, { okTitle: 'Advanced.', ok: (d) => (d.over ? 'End of show.' : 'Next item is on air. No cues were sent.') }) })),
-      block ? el('span', { class: 'hint', text: block }) : el('span', { class: 'hint' }, 'Hold: ', el('kbd', { text: 'H' }), ' · all keys: ', el('kbd', { text: '?' })),
-    ]);
-    $('transport').classList.toggle('held', !!hold);
+    const operator = S.ws === 'operator';
+    const pendingCues = next ? cuesOf(next.id).filter((cue) => cue.status !== 'fired') : [];
+    const takeBusy = S.pending.has('take') || !!taking;
+    const disabled = !!block || S.seq;
+    const reason = block || (S.seq ? 'A sequence is running.' : null);
 
-    const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
-    S.selected = sel || null;
     const seconds = {};
     for (const it of items) seconds[it.id] = itemPlan(it, mediaOf(it.id)).seconds;
     const timing = frontTimes(items, seconds, Date.now());
     const slot = S.data.rundown ? S.data.rundown.slotSeconds : null;
     const back = backTimes(items, seconds, slot);
+    const nextTiming = next ? timing.rows[items.indexOf(next)] : null;
+    const retry = pendingCues.some((cue) => cue.failure || (S.cueLast[cue.id] && S.cueLast[cue.id] !== 'fired'));
+    const cueCount = pendingCues.length + (pendingCues.length === 1 ? ' cue' : ' cues');
+    const readOnly = document.documentElement.dataset.role === 'viewer';
+
+    paint('transport', [operator, air, next, hold, taking, reason, S.seq, [...S.pending], pendingCues.length,
+      S.data.show, retry, timing.driftSec, nextTiming, back.overSec, readOnly], () => {
+      const take = btn([el('span', { class: 'tk' }, icon('take'), takeBusy ? 'Taking…' : 'TAKE'),
+        operator ? el('kbd', { text: 'T' }) : el('small', {}, next ? next.slug + ' · ' + cueCount : 'Nothing to take')],
+        { write: true, key: 'take', cls: 'take', disabled, onclick: () => takeNow(false) });
+      const holdButton = btn(hold ? 'Release hold' : 'Hold', { write: true, key: 'hold',
+        cls: hold ? 'signal' : 'ghost', onclick: toggleHold, disabled: !S.data.show, title: 'Key H' });
+      const advanceButton = btn('Advance, no cues', { write: true, key: 'go', cls: 'ghost',
+        disabled: disabled || !!(next && next.proClip),
+        title: 'Moves the rundown on without sending any cues to the room',
+        onclick: () => act('go', S.show, {}, { okTitle: 'Advanced.', ok: (d) => (d.over ? 'End of show.' : 'Next item is on air. No cues were sent.') }) });
+      if (!operator) return [
+        el('div', { class: 'nowline air' }, el('span', { class: 'lbl', text: taking ? 'Taking' : 'On air' }),
+          el('span', { class: 'val', text: air ? air.slug : 'Nothing on air' })),
+        el('div', { class: 'nowline next' }, el('span', { class: 'lbl', text: 'Next' }),
+          el('span', { class: 'val', text: next ? next.slug : 'End of show' })),
+        el('span', { class: 'spacer' }), el('div', { class: 'take-slot' }, take),
+        el('div', { class: 'acts' }, holdButton, advanceButton),
+        reason ? el('span', { class: 'hint', text: reason }) : null,
+      ];
+
+      const nextTime = nextTiming?.startMs != null ? 'Planned ' + new Date(nextTiming.startMs).toLocaleTimeString([], { hour12: false })
+        : nextTiming?.offset != null ? 'Planned T+' + fmtOffset(nextTiming.offset) : null;
+      const status = takeBusy ? stateChip('taking') : readOnly ? stateChip('locked', 'View only')
+        : reason ? stateChip(hold ? 'locked' : 'blocked', hold ? 'Held' : 'Take unavailable')
+          : retry ? stateChip('pending', 'Retry available') : stateChip('ready', 'Take available');
+      return [
+        el('div', { class: 'console-cell console-air' },
+          stateChip('onair', 'On air'),
+          el('strong', { class: 'console-item', text: taking ? 'Awaiting confirmation' : air ? air.slug : 'Nothing on air' }),
+          !taking && air?.asRunIn ? el('span', { class: 'console-sub' }, 'Elapsed ', el('span', { id: 'show-elapsed', class: 'mono' })) : null),
+        el('div', { class: 'console-cell console-next' },
+          stateChip(taking ? 'taking' : 'next'),
+          el('strong', { class: 'console-item', text: taking ? taking.slug : next ? next.slug : S.data.show ? 'End of show' : 'No show open' }),
+          el('span', { class: 'console-sub' }, next ? cueCount : null, next?.proClip?.status === 'ready' ? ' · Clip ready in Pro' : null)),
+        el('div', { class: 'console-cell console-timing' },
+          el('span', { class: 'console-label', text: 'Timing' }),
+          el('strong', { class: 'console-item mono' + (timing.driftSec > 0 ? ' late' : ''),
+            text: timing.driftSec == null ? '—' : timing.driftSec === 0 ? 'On time' :
+              fmtOffset(Math.abs(timing.driftSec)) + (timing.driftSec > 0 ? ' behind' : ' ahead') }),
+          el('span', { class: 'console-sub', text: nextTime || 'No next start time' })),
+        el('div', { class: 'console-cell console-take' },
+          el('div', { class: 'console-status', role: 'status' }, status,
+            reason || retry ? el('span', { class: 'console-sub', text: reason || 'The last take reported a cue failure.' }) : null,
+            hold?.reason ? el('span', { class: 'console-sub', text: hold.reason }) : null),
+          take),
+        el('div', { class: 'console-controls', write: true }, holdButton, advanceButton),
+      ];
+    });
+    updateShowElapsed(air, taking);
+    $('transport').classList.toggle('held', !!hold);
+
+    const sel = S.selected && items.find((i) => i.id === S.selected) ? S.selected : (next || air || items[0] || {}).id;
+    S.selected = sel || null;
     const hasSlot = slot != null;
     const rule = S.data.rundown ? S.data.rundown.recurrence : null;
     const repeatOf = S.data.rundown ? S.data.rundown.recurrenceOf : null;
-    paint('rundown-sum', [S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec, rule, repeatOf], () => {
+    paint('rundown-sum', [operator, S.data.show && 1, items.length, timing.totalSec, timing.driftSec, slot, back.overSec, rule, repeatOf], () => {
       if (!S.data.show || !items.length) return null;
       const d = timing.driftSec, o = back.overSec;
       return [el('span', { text: 'Total ' + fmtOffset(hasSlot ? back.totalSec : timing.totalSec) + (hasSlot ? ' of ' + fmtOffset(slot) : '') + ' · ' + items.length + (items.length === 1 ? ' item' : ' items') }),
         rule ? el('span', { class: 'repeat' }, icon('cue', 's'), ruleText(rule)) : repeatOf ? el('span', { class: 'repeat' }, icon('cue', 's'), 'A repeat of another show') : null,
         o == null ? null : el('span', { class: 'over' + (o > 0 ? ' behind' : '') }, icon(o > 0 ? 'alert' : 'ready', 's'),
           o > 0 ? 'Over ' + fmtOffset(o) : o < 0 ? 'Under ' + fmtOffset(-o) : 'On slot'),
-        d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
+        operator || d == null ? null : el('span', { class: 'drift' + (d > 0 ? ' behind' : '') }, icon(d > 0 ? 'alert' : 'ready', 's'),
           'Drift ' + fmtSigned(d) + (d > 0 ? ' behind' : d < 0 ? ' ahead' : ' on time'))];
     });
-    paint('rundown', [items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back, (S.data.leases || []).map((l) => [l.item, l.holder, l.clientId]), S.data.commentCounts], () => {
+    paint('rundown', [operator, items, S.data.media, S.selected, S.armed, [...S.pending], S.seq, timing, slot, back, (S.data.leases || []).map((l) => [l.item, l.holder, l.clientId]), S.data.commentCounts], () => {
       if (!S.data.show) return el('p', { class: 'empty', text: 'No show yet. Use New show below.' });
       if (!items.length) return el('p', { class: 'empty', text: 'This show has no items.' });
       return [el('div', { class: 'rhead' + (hasSlot ? ' hb' : ''), 'aria-hidden': 'true' }, el('span', { text: '#' }), el('span', { text: 'State' }), el('span', { text: 'Item' }),
           el('span', { text: 'Length' }), el('span', { text: 'Front' }), hasSlot ? el('span', { text: 'Back' }) : null, el('span')),
-        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, air, next, timing.rows[idx], seconds[it.id], hasSlot ? back.rows[idx] : null)))];
+        el('ol', { class: 'list' }, items.map((it, idx) => rundownRow(it, idx, items, next, timing.rows[idx], seconds[it.id], hasSlot ? back.rows[idx] : null, operator)))];
     });
 
     paint('presence', [S.data.presence, S.data.collab, WHO.name, LS.client, S.show], presenceStrip);
     cmSync('show');
     paint('comments', cmSig('show'), () => cmPanel('show'));
     const sItem = items.find((i) => i.id === S.selected);
-    $('h-cues-text').textContent = sItem ? 'Cues on ' + sItem.slug : 'Cues';
+    const selectedIndex = sItem ? items.indexOf(sItem) : -1;
+    paint('show-selection', [operator, sItem, sItem && mediaOf(sItem.id), selectedIndex, items.length,
+      items[selectedIndex - 1]?.status, S.armed, S.seq, [...S.pending]], () => {
+      if (!operator) return null;
+      if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown item to see its controls.' });
+      const media = mediaOf(sItem.id);
+      return el('div', { class: 'console-selection' },
+        el('h2', { class: 'console-label', text: 'Selected item' }),
+        el('strong', { class: 'console-item', text: sItem.slug }),
+        media.tcIn ? el('span', { class: 'console-sub mono', text: media.tcIn + ' – ' + media.tcOut }) : null,
+        sItem.asRunIn ? el('span', { class: 'console-sub', text: 'As run ' + fmtTime(sItem.asRunIn) +
+          ' – ' + (sItem.asRunOut ? fmtTime(sItem.asRunOut) : 'now') }) : null,
+        sItem.status === 'ready' ? rundownActions(sItem, selectedIndex, items) : null);
+    });
+    $('h-cues-text').textContent = sItem && !operator ? 'Cues on ' + sItem.slug : 'Cues';
     paint('cues', [S.selected, S.data.cues, S.cueDetail, S.cueLast, sItem, sItem && mediaOf(sItem.id), S.data.rundown?.proClipEnabled, S.seq, [...S.pending]], () => {
       if (!sItem) return el('p', { class: 'empty', text: 'Select a rundown row.' });
       const cs = cuesOf(sItem.id);
@@ -2017,6 +2434,13 @@
 
     paint('room', [S.data.room, S.data.mos, [...S.pending]], () => [roomPanel(S.data.room), mosPanel(S.data.mos)]);
     renderBuild(sItem);
+  }
+
+  function updateShowElapsed(air, taking) {
+    const timer = $('show-elapsed');
+    if (!timer || taking || !air?.asRunIn) return;
+    const started = Date.parse(air.asRunIn);
+    timer.textContent = Number.isFinite(started) ? fmtOffset(Math.max(0, Math.floor((Date.now() - started) / 1000))) : '—';
   }
 
   function proClipControls(item) {
@@ -2219,19 +2643,14 @@
     });
   }
 
-  function rundownRow(it, idx, items, air, next, tm, secs, bk) {
+  function rundownRow(it, idx, items, next, tm, secs, bk, compact) {
     const m = mediaOf(it.id);
     const isNext = next && next.id === it.id;
     const meta = [];
-    if (m.tcIn) meta.push('clip ' + m.tcIn + ' to ' + m.tcOut);
-    if (it.asRunIn) meta.push('as-run ' + fmtTime(it.asRunIn) + ' to ' + (it.asRunOut ? fmtTime(it.asRunOut) : 'now'));
+    if (!compact && m.tcIn) meta.push('clip ' + m.tcIn + ' to ' + m.tcOut);
+    if (!compact && it.asRunIn) meta.push('as-run ' + fmtTime(it.asRunIn) + ' to ' + (it.asRunOut ? fmtTime(it.asRunOut) : 'now'));
     const blocked = (it.status === 'ready' || it.status === 'on air') && m.blockedBy && m.blockedBy !== 'ok' ? m.blockedBy : null;
-    const ready = it.status === 'ready';
     const cls = 'rrow' + (it.status === 'on air' || it.status === 'taking' ? ' is-air' : isNext ? ' is-next' : '') + (S.selected === it.id ? ' sel' : '');
-    const prev = items[idx - 1];
-    const canUp = ready && prev && prev.status !== 'on air' && prev.status !== 'aired';
-    const canDown = ready && idx < items.length - 1;
-    const killKey = 'kill:' + it.id;
     const front = tm && tm.startMs != null ? new Date(tm.startMs).toLocaleTimeString([], { hour12: false }) : tm && tm.offset != null ? 'T+' + fmtOffset(tm.offset) : '--:--';
     const schedChip = scheduleChip(it.scheduleState, !!it.scheduledAt, it.scheduleMode);
     const backText = !bk ? null : bk.backMs != null ? new Date(bk.backMs).toLocaleTimeString([], { hour12: false }) : (it.status === 'ready' ? '--:--' : '');
@@ -2241,7 +2660,7 @@
       el('button', { type: 'button', class: 'pick', 'data-fk': 'pick:' + it.id, 'aria-current': S.selected === it.id ? 'true' : null,
           onclick: () => { S.selected = it.id; render(); } },
         el('span', { class: 'title' + (it.status === 'skipped' || it.status === 'killed' ? ' struck' : ''), text: it.slug }),
-        el('span', { class: 'meta' }, meta.join(' · ') || (it.status === 'ready' ? 'not yet aired' : ''),
+        el('span', { class: 'meta' }, meta.join(' · ') || (!compact && it.status === 'ready' ? 'not yet aired' : ''),
           blocked ? el('span', { class: 'bad' }, (meta.length ? ' · ' : '') + '⚠ media ' + blocked) : null,
           schedChip ? el('span', { class: 'sched' }, ' ', stateChip(schedChip[0], schedChip[1]),
             it.scheduledAt ? ' ' + new Date(it.scheduledAt).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -2262,15 +2681,21 @@
         : el('span', { class: 'dur mono', text: tm && tm.offset == null ? '--:--' : fmtOffset(secs) }),
       el('span', { class: 'front mono', text: front }),
       backText == null ? null : el('span', { class: 'back mono', text: backText }),
-      el('span', { class: 'tools' },
-        ready ? [
-          btn('↑', { write: true, key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
-          btn('↓', { write: true, key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
-          btn('Skip', { write: true, key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
-          el('span', { class: 'sep', 'aria-hidden': 'true' }),
-          btn(S.armed === killKey ? 'Confirm kill' : 'Kill', { write: true, key: 'killb:' + it.id, cls: 'danger small' + (S.armed === killKey ? ' armed' : ''),
-            aria: (S.armed === killKey ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }),
-        ] : null));
+      !compact && it.status === 'ready' ? rundownActions(it, idx, items) : null);
+  }
+
+  function rundownActions(it, idx, items) {
+    const prev = items[idx - 1];
+    const canUp = prev && prev.status !== 'on air' && prev.status !== 'aired';
+    const canDown = idx < items.length - 1;
+    const armed = S.armed === 'kill:' + it.id;
+    return el('span', { class: 'tools', write: true },
+      btn('↑', { write: true, key: 'up:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' up', title: 'Move up', disabled: !canUp || S.seq, onclick: () => move(it.id, -1) }),
+      btn('↓', { write: true, key: 'down:' + it.id, cls: 'ghost small', aria: 'Move ' + it.slug + ' down', title: 'Move down', disabled: !canDown || S.seq, onclick: () => move(it.id, 1) }),
+      btn('Skip', { write: true, key: 'skip-b:' + it.id, cls: 'ghost small', aria: 'Skip ' + it.slug, disabled: S.seq, onclick: () => skipItem(it.id) }),
+      el('span', { class: 'sep', 'aria-hidden': 'true' }),
+      btn(armed ? 'Confirm kill' : 'Kill', { write: true, key: 'killb:' + it.id, cls: 'danger small' + (armed ? ' armed' : ''),
+        aria: (armed ? 'Confirm kill ' : 'Kill ') + it.slug, disabled: S.seq, onclick: () => killItem(it.id) }));
   }
 
   // MOS devices Volt sends running orders to (VOLT_MOS_DEVICES): connection state, the last refusal, and any show whose roCreate
@@ -2314,156 +2739,349 @@
     return S.data.assets.find((a) => a.sourceKey === 'cv:' + room.sessionId) || null;
   }
 
+  function recordingPhase(room, asset, starting, stopping) {
+    const state = REC_ALIAS[room.state] || room.state;
+    if (S.conn !== 'ok') return ['attention', 'Connection lost', 'The last recorder state may be out of date.'];
+    if (!room.configured) return ['attention', 'No room configured', 'Set VOLT_ROOM_URL on the Volt server.'];
+    if (!room.reachable) return ['attention', 'Room unreachable', room.error || 'Check the connection to the room.'];
+    if (room.stale) return ['attention', 'Room status is stale', 'Volt is waiting for a fresh recorder observation.'];
+    if (['failed', 'interrupted'].includes(state) || room.health === 'failed') {
+      return ['attention', state === 'interrupted' ? 'Recording interrupted' : 'Recording failed',
+        room.error || 'Check the recorder in CoreVideo Pro.'];
+    }
+    if (stopping) return ['wrapping', 'Wrapping', 'Waiting for the recorder to finalize and Volt to verify the file.'];
+    if (state === 'completed' && room.finalized && asset && !asset.open && asset.checksum) {
+      return ['finished', 'Finished', 'File closed and checksum verified.'];
+    }
+    if (state === 'completed' && room.finalized && asset?.open) {
+      return ['attention', 'Wrap needed', 'The room finalized the file. Stop and wrap to verify and close it in Volt.'];
+    }
+    if (['stopping', 'finalizing', 'completed'].includes(state)) {
+      return ['wrapping', 'Wrapping', room.finalized ? 'Waiting for Volt to confirm the file.' : 'Waiting for the room to finalize the file.'];
+    }
+    if (state === 'producing') {
+      if (asset && !asset.open) return ['attention', 'Recorder state disagrees', 'The room reports output, but Volt has already closed this file. Check the room.'];
+      return ['recording', 'Recording', asset ? '' : 'The room is writing. Volt has no asset for this session yet.'];
+    }
+    if (starting || ['requested', 'preparing'].includes(state)) {
+      return ['starting', 'Starting', 'Waiting for the room to confirm it is writing a file.'];
+    }
+    if (state === 'idle') return ['idle', 'Standby', 'No recording in progress.'];
+    return ['attention', 'Recorder state unknown', room.error || 'Check the room for the current recording state.'];
+  }
+
+  function recordingDuration(asset) {
+    if (!asset || asset.open || !Number.isSafeInteger(asset.durationFrames) || asset.durationFrames <= 0) return null;
+    const rate = parseRate(asset.frameRate || '');
+    return rate ? fmtOffset(Math.floor(asset.durationFrames * rate.d / rate.n)) : null;
+  }
+
+  function updateRecordElapsed(asset) {
+    const timer = $('rec-elapsed');
+    if (!timer || !asset) return;
+    const start = Date.parse(asset.createdAt);
+    timer.textContent = Number.isFinite(start) ? fmtOffset(Math.max(0, Math.floor((Date.now() - start) / 1000))) : '—';
+  }
+
   function renderRecord() {
     const room = S.data.room || {};
     const cur = currentRecording();
-    const sig = [room, cur, S.data.assets, [...S.pending], S.seq];
-    paint('record', sig, () => {
-      const st = REC_ALIAS[room.state] || room.state;
-      const idx = room.reachable ? REC_STEPS.indexOf(st) : -1;
-      const dead = room.reachable && (room.state === 'failed' || room.state === 'interrupted');
-      const steps = REC_STEPS.map((name, j) => {
-        let cls = 'step', glyph = 'pending';
-        if (idx >= 0 && (j < idx || (j === idx && name === 'completed' && room.finalized))) { cls += ' done'; glyph = 'ready'; }
-        else if (idx >= 0 && j === idx) { cls += ' now'; glyph = 'record'; }
-        return el('li', { class: cls, 'aria-current': cls.includes('now') ? 'step' : null },
-          el('span', { class: 'g', 'aria-hidden': 'true' }, icon(glyph)), name);
+    const starting = S.pending.has('recordStart');
+    const stopping = cur && S.pending.has('recordStop:' + cur.id);
+    const [phase, label, detail] = recordingPhase(room, cur, starting, stopping);
+    const observed = REC_ALIAS[room.state] || room.state;
+    const canRegister = phase === 'recording' && !cur && room.sessionId && room.artifactPath;
+    const canStart = phase === 'idle' || phase === 'finished' || canRegister ||
+      (phase === 'attention' && room.reachable && !room.stale && ['failed', 'interrupted'].includes(observed) && !cur?.open);
+    const canStop = cur?.open && S.conn === 'ok' && room.reachable && !room.stale;
+    const time = recordingDuration(cur);
+
+    paint('rec-message', [S.flash], () => S.flash ? flashNode(S.flash) : []);
+    const hadActionFocus = $('record').contains(document.activeElement) && document.activeElement.matches('.rec-controls button');
+    paint('record', [room, cur, phase, label, detail, starting, stopping, S.seq], () => {
+      const kinds = { attention: 'failed', starting: 'pending', recording: 'recording', wrapping: 'pending', finished: 'finished', idle: 'aired' };
+      const index = ['starting', 'recording', 'wrapping', 'finished'].indexOf(phase);
+      const file = cur?.file || room.artifactPath;
+      const stepList = REC_STEPS.map((name, i) => {
+        const complete = index > i || phase === 'finished';
+        const current = index === i;
+        return el('li', { class: 'rec-step' + (current ? ' current' : ''), 'aria-current': current ? 'step' : null },
+          icon(complete ? 'ready' : current && phase === 'recording' ? 'record' : 'pending', 's'), name);
       });
-      if (dead) steps.push(el('li', { class: 'step fail', 'aria-current': 'step' }, el('span', { class: 'g', 'aria-hidden': 'true' }, icon('alert')), room.state));
-      const starting = S.pending.has('recordStart');
-      const stopping = cur && S.pending.has('recordStop:' + cur.id);
-      return [
-        el('section', { write: true, class: 'panel', 'aria-labelledby': 'h-recstart' }, el('h2', { id: 'h-recstart' }, icon('record', 's'), 'Start a recording'),
-          el('div', { class: 'form-row' },
-            el('div', {}, el('label', { for: 'rec-camera', text: 'Camera or label (optional)' }),
-              el('input', { id: 'rec-camera', type: 'text', maxlength: '100', autocomplete: 'off', value: S.recCamera || '', 'data-fk': 'rec-camera',
-                oninput: (e) => { S.recCamera = e.target.value; } })),
-            btn(starting ? 'STARTING…' : 'START RECORDING', { write: true, key: 'recordStart', disabled: !room.configured || S.seq,
-              onclick: () => act('recordStart', null, S.recCamera ? { camera: S.recCamera } : {}, { key: 'recordStart', okTitle: 'Recording.', ok: (d) => 'Asset ' + short(d.asset.id) + ' minted once the room showed output.' })}),
-            el('span', { class: 'hint', text: room.configured ? 'Mints the asset only after the room shows a file being written.' : 'No room configured. Set VOLT_ROOM_URL on the server.' }))),
-        el('section', { class: 'panel', 'aria-labelledby': 'h-lifecycle' },
-          el('h2', { id: 'h-lifecycle' }, icon('wave', 's'), 'Recording lifecycle' + (cur ? ' · ' + (cur.camera || short(cur.id)) : '')),
-          el('ol', { class: 'steps', 'aria-label': 'Lifecycle steps' }, steps),
-          el('dl', { class: 'kv' },
-            el('dt', { text: 'State' }), el('dd', { text: room.reachable ? room.state + ' · ' + room.health : room.configured ? 'room unreachable' : 'no room' }),
-            el('dt', { text: 'Asset' }), el('dd', { text: cur ? cur.id : 'none yet. It is minted once output is observed.' }),
-            el('dt', { text: 'Session' }), el('dd', { text: room.sessionId || 'none' }),
-            el('dt', { text: 'File' }), el('dd', { text: cur && cur.file ? cur.file + (cur.open ? ' · open' : ' · closed') : 'none' }),
-            el('dt', { text: 'Snapshot' }), el('dd', {}, room.reachable ? stateChip(room.stale ? 'stale' : 'fresh') : 'none'),
-            el('dt', { text: 'Finalized' }), el('dd', { text: room.reachable ? (room.finalized ? 'yes' : 'no') : 'unknown' }),
-            el('dt', { text: 'Checksum' }), el('dd', { text: cur && cur.checksum ? cur.checksum : 'not wrapped' }),
-            room.error ? [el('dt', { text: 'Room error' }), el('dd', { text: room.error })] : null),
-          el('div', { write: true, class: 'bar top-rule' },
-            btn(stopping ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' WAITING FOR THE ROOM…'] : 'STOP AND WRAP',
-              { write: true, key: 'recordStop:' + (cur ? cur.id : ''), disabled: !cur || !cur.open || S.seq,
-                onclick: () => stopRecording(cur.id) }),
-            el('span', { class: 'hint', text: cur && cur.open ? 'Stops, then waits for completed and finalized from the room. Never wraps on a stop ack.' : 'Nothing open to stop.' }))),
-        el('section', { class: 'panel', 'aria-labelledby': 'h-assets' }, el('h2', { id: 'h-assets' }, icon('library', 's'), 'Recordings'),
-          assetsTable(S.data.assets.filter((a) => a.sourceKey || a.open), true)),
-      ];
+      const start = canStart || starting ? el('div', { write: true, class: 'rec-start' },
+        el('h2', { id: 'h-recstart', class: 'vh' }, icon('record', 's'), 'Start a recording'),
+        el('label', {}, 'Camera or label (optional)',
+          el('input', { id: 'rec-camera', type: 'text', maxlength: '100', autocomplete: 'off', value: S.recCamera || '', 'data-fk': 'rec-camera',
+            oninput: (e) => { S.recCamera = e.target.value; } })),
+        btn(starting ? 'Waiting for room…' : canRegister ? 'Register recording' : 'Start recording', { write: true, key: 'recordStart', disabled: S.seq,
+          onclick: () => act('recordStart', null, S.recCamera ? { camera: S.recCamera } : {}, { key: 'recordStart', okTitle: 'Recording started.', ok: () => 'The room confirmed output.' }) })) : null;
+      const stop = cur?.open ? btn(stopping ? 'Waiting for wrap…' : 'Stop and wrap',
+        { write: true, key: 'recordStop:' + cur.id, cls: 'danger', disabled: !canStop || S.seq,
+          onclick: () => stopRecording(cur.id) }) : null;
+      return el('section', { class: 'panel rec-console', 'aria-labelledby': 'h-lifecycle' },
+        el('h2', { id: 'h-lifecycle', tabindex: '-1', 'data-fk': 'rec-heading' }, icon('record', 's'), 'Room recorder'),
+        el('div', { class: 'rec-summary' },
+          el('div', { class: 'rec-source' },
+            el('div', { role: 'status' }, stateChip(kinds[phase], label)),
+            el('strong', { class: 'rec-name', text: cur?.camera || (file ? file.split(/[\\/]/).pop() : cur ? short(cur.id) : 'Room recording') }),
+            detail ? el('span', { class: 'hint', text: detail }) : null,
+            cur?.open && !canStop ? el('span', { class: 'hint', text: 'Stop and wrap is available when the room status is fresh.' }) : null),
+          el('div', { class: 'rec-time' },
+            el('span', { class: 'console-label', text: phase === 'finished' || phase === 'wrapping' ? 'File duration' : 'Elapsed' }),
+            el('strong', { class: 'mono', id: phase === 'recording' && cur?.createdAt ? 'rec-elapsed' : null, text: time || '—' }),
+            phase === 'recording' && cur?.createdAt ? el('span', { class: 'hint', text: 'Since Volt saw output' })
+              : phase === 'finished' && !time ? el('span', { class: 'hint', text: 'Duration unavailable' }) : null),
+          start || stop ? el('div', { class: 'rec-controls', write: true }, start, stop) : null),
+        el('ol', { class: 'rec-steps', 'aria-label': 'Recording stages' }, stepList));
     });
+    updateRecordElapsed(cur);
+    if (hadActionFocus && document.activeElement === document.body) $('h-lifecycle').focus({ preventScroll: true });
+
+    $('rec-details').hidden = false;
+    paint('rec-facts', [room, cur], () => el('dl', { class: 'kv' },
+      el('dt', { text: 'Recorder' }), el('dd', { text: room.reachable ? [room.state, room.health].filter(Boolean).join(' · ') : 'Unavailable' }),
+      el('dt', { text: 'Snapshot' }), el('dd', {}, room.reachable ? stateChip(room.stale ? 'stale' : 'fresh') : '—'),
+      el('dt', { text: 'Session' }), el('dd', { text: room.sessionId || '—' }),
+      el('dt', { text: 'Asset ID' }), el('dd', { text: cur?.id || '—' }),
+      el('dt', { text: 'File' }), el('dd', { text: cur?.file || room.artifactPath || '—' }),
+      el('dt', { text: 'Finalized by room' }), el('dd', { text: room.reachable ? (room.finalized ? 'Yes' : 'No') : 'Unknown' }),
+      el('dt', { text: 'Checksum' }), el('dd', { text: cur?.checksum || '—' }),
+      room.error ? [el('dt', { text: 'Room error' }), el('dd', { text: room.error })] : null));
+
+    const recordings = S.data.assets.filter((asset) => asset.open || asset.sourceKey?.startsWith('cv:')).reverse();
+    paint('rec-history', [recordings, cur?.id, phase, label], () =>
+      el('section', { class: 'panel', 'aria-labelledby': 'h-assets' },
+        el('h2', { id: 'h-assets' }, icon('library', 's'), 'Recordings'),
+        recordings.length ? el('ul', { class: 'rec-list' }, recordings.map((asset) => {
+          const current = asset.id === cur?.id;
+          const status = current && phase === 'recording' ? stateChip('recording')
+            : asset.open ? (current && phase === 'wrapping' ? stateChip('pending', 'Wrapping')
+              : stateChip('pending', current && phase === 'attention' ? label : 'File still open'))
+            : asset.checksum ? stateChip('finished') : stateChip('aired', 'File closed');
+          return el('li', { class: 'rec-row' },
+            el('div', { class: 'rec-identity' },
+              el('strong', { text: asset.camera || (asset.file ? asset.file.split(/[\\/]/).pop() : short(asset.id)) }),
+              el('span', { class: 'muted', text: [asset.show, short(asset.id)].filter(Boolean).join(' · ') })),
+            status,
+            el('span', { class: 'mono muted', text: recordingDuration(asset) || '—' }),
+            el('details', { class: 'rec-file' }, el('summary', { text: 'File details' }),
+              el('span', { class: 'mono', text: asset.file || 'No file path' }),
+              asset.checksum ? el('span', { class: 'mono', text: 'SHA-256 ' + asset.checksum }) : null));
+        })) : el('p', { class: 'empty', text: 'No recordings yet.' })));
   }
 
   function stopRecording(id) {
-    act('recordStop', null, { asset: id }, { key: 'recordStop:' + id, okTitle: 'Wrapped.', ok: (d) => 'Checksum ' + short(d.checksum) + '… Asset ' + short(id) + ' is closed.',
-      hint: 'Nothing was wrapped. Stop again to retry.' });
-  }
-
-  function assetsTable(list, withStop) {
-    if (!list.length) return el('p', { class: 'empty', text: 'No recordings yet.' });
-    return el('div', { class: 'tblwrap' }, el('table', {},
-      el('caption', { class: 'vh', text: 'Recordings' }),
-      el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'File', 'State', 'Checksum', withStop ? 'Action' : null].filter(Boolean).map((h) => el('th', { scope: 'col', text: h, write: h === 'Action' })))),
-      el('tbody', {}, list.map((a) => el('tr', {},
-        el('td', { class: 'mono', text: short(a.id) }), el('td', { text: a.camera || '—' }),
-        el('td', { class: 'mono', text: a.file || '—' }),
-        el('td', {}, stateChip(a.open ? 'recording' : 'wrapped')),
-        el('td', { class: 'mono', text: a.checksum ? short(a.checksum) + '…' : '—' }),
-        withStop ? el('td', { write: true }, a.open ? btn('Stop and wrap', { write: true, key: 'recordStop:' + a.id, cls: 'ghost small', aria: 'Stop and wrap ' + (a.camera || short(a.id)), disabled: S.seq, onclick: () => stopRecording(a.id) }) : null) : null)))));
+    act('recordStop', null, { asset: id }, { key: 'recordStop:' + id, okTitle: 'Recording wrapped.',
+      ok: (d) => 'File closed and checksum verified (' + short(d.checksum) + '…).',
+      hint: 'The file stays open in Volt. Check the room, then try Stop and wrap again.' });
   }
 
   // ---- Rights screen -------------------------------------------------------
-  function renderRights() {
-    paint('rights', [S.data.assets, S.armed, [...S.pending]], () => {
-      const list = S.data.assets;
-      return el('section', { class: 'panel', 'aria-labelledby': 'h-assets2' }, el('h2', { id: 'h-assets2' }, icon('rights', 's'), 'Assets'),
-        el('p', { class: 'note', text: 'Take, go and publish refuse anything not cleared or on legal hold. The reason shows where the operator is blocked.' }),
-        !list.length ? el('p', { class: 'empty', text: 'No assets yet.' }) :
-        el('div', { class: 'tblwrap' }, el('table', {},
-          el('caption', { class: 'vh', text: 'Assets and their rights' }),
-          el('thead', {}, el('tr', {}, ['Asset', 'Camera', 'Cleared', 'Legal hold', 'Can air or publish', 'Actions'].map((h) => el('th', { scope: 'col', text: h, write: h === 'Actions' })))),
-          el('tbody', {}, list.map((a) => {
-            const lk = 'lift:' + a.id;
-            return el('tr', {},
-              el('td', { class: 'mono', text: short(a.id) }), el('td', { text: a.camera || a.show || '—' }),
-              el('td', {}, stateChip(a.cleared ? 'cleared' : 'uncleared')),
-              el('td', {}, a.legalHold ? stateChip('hold', 'On hold') : 'No'),
-              el('td', {}, a.blockedBy ? [stateChip('blocked'), ' ' + a.blockedBy] : stateChip('canair')),
-              el('td', { write: true }, el('div', { class: 'acts' },
-                btn(a.cleared ? 'Un-clear' : 'Clear', { write: true, key: 'cleared:' + a.id, cls: 'ghost small', aria: (a.cleared ? 'Un-clear ' : 'Clear ') + short(a.id),
-                  onclick: () => act('cleared', a.id, { cleared: !a.cleared }, { okTitle: a.cleared ? 'Un-cleared.' : 'Cleared.', ok: () => 'Asset ' + short(a.id) }) }),
-                a.legalHold
-                  ? btn(S.armed === lk ? 'Confirm lift hold' : 'Lift hold', { write: true, key: 'lift-b:' + a.id, cls: 'danger small' + (S.armed === lk ? ' armed' : ''), aria: (S.armed === lk ? 'Confirm lift hold on ' : 'Lift hold on ') + short(a.id),
-                      onclick: () => armedAction(lk, () => act('legalHold', a.id, { held: false }, { key: 'lift:' + a.id, okTitle: 'Hold lifted.', ok: () => 'Asset ' + short(a.id) })) })
-                  : btn('Place hold', { write: true, key: 'hold-a:' + a.id, cls: 'ghost small', aria: 'Place hold on ' + short(a.id) + ' (legal hold)',
-                      onclick: () => act('legalHold', a.id, { held: true }, { key: 'holda:' + a.id, okTitle: 'Hold placed.', ok: () => 'Asset ' + short(a.id) + ' cannot air or publish.' }) }))));
-          })))));
+  const rightsCold = (asset) => ['archived', 'restoring'].includes(asset.tier) || asset.blockedBy === 'archived';
+  const rightsBlocked = (asset) => !asset.cleared || asset.legalHold || rightsCold(asset) || !!asset.blockedBy;
+  const RIGHTS_FILTERS = {
+    all: ['All assets', () => true],
+    ready: ['Cleared to use', (asset) => !rightsBlocked(asset)],
+    clearance: ['Needs clearance', (asset) => !asset.cleared],
+    hold: ['Legal hold', (asset) => asset.legalHold],
+    blocked: ['Blocked', rightsBlocked],
+  };
+
+  function rightsRow(asset) {
+    const { id, camera, show, cleared, legalHold, tier } = asset;
+    const name = camera || show || 'Asset ' + short(id);
+    const key = 'rights:' + id;
+    const lift = 'lift:' + id;
+    const armed = S.armed === lift;
+    const cold = rightsCold(asset);
+    const restore = (asset.jobs || []).find((job) => job.type === 'restore');
+    const restoreFailed = restore?.status === 'failed';
+    const restoreBusy = restore && ['queued', 'running'].includes(restore.status);
+    const blocked = rightsBlocked(asset);
+    const disabled = S.conn !== 'ok' || S.pending.has(key) || S.pending.has('rehydrate:' + id);
+
+    const clearance = btn(cleared ? 'Revoke clearance' : 'Clear for use', {
+      write: true, key, cls: !cleared && !legalHold ? 'small' : 'ghost small', disabled,
+      aria: (cleared ? 'Revoke clearance for ' : 'Clear for use: ') + name + ' (' + short(id) + ')',
+      onclick: () => {
+        if (S.armed === lift) S.armed = null;
+        act('cleared', id, { cleared: !cleared }, { key, okTitle: cleared ? 'Clearance revoked.' : 'Cleared for use.', ok: () => name + ' · ' + short(id) });
+      },
     });
+    const hold = btn(legalHold ? (armed ? 'Confirm lift hold' : 'Lift legal hold') : 'Place legal hold', {
+      write: true, key: 'rights-hold:' + id, cls: legalHold ? 'danger small' + (armed ? ' armed' : '') : 'ghost small', disabled,
+      aria: (legalHold ? (armed ? 'Confirm lift hold on ' : 'Lift legal hold on ') : 'Place legal hold on ') + name + ' (' + short(id) + ')',
+      onclick: () => {
+        const change = () => act('legalHold', id, { held: !legalHold }, {
+          key, okTitle: legalHold ? 'Legal hold lifted.' : 'Legal hold placed.',
+          ok: () => name + ' · ' + short(id),
+        });
+        if (legalHold) armedAction(lift, change);
+        else change();
+      },
+    });
+    const restoreButton = cold && !restoreBusy && (tier !== 'restoring' || restoreFailed) ? btn(restore?.status === 'failed' ? 'Retry restore' : 'Restore original', {
+      write: true, key: 'rehydrate:' + id, cls: !legalHold && cleared ? 'small' : 'ghost small', disabled,
+      aria: 'Restore original for ' + name + ' (' + short(id) + ')',
+      onclick: () => act('assetRehydrate', id, {}, { key: 'rehydrate:' + id, okTitle: 'Restore queued.', ok: () => name + ' · ' + short(id) }),
+    }) : null;
+    return el('li', { class: 'rights-row' },
+      el('div', { class: 'rights-cell' }, el('strong', { text: name }),
+        el('span', { class: 'muted', text: [camera && show, short(id)].filter(Boolean).join(' · ') })),
+      el('div', { class: 'rights-cell rights-availability' },
+        stateChip(blocked ? 'blocked' : 'canair'),
+        blocked ? el('ul', { class: 'rights-reasons' },
+          legalHold ? el('li', { text: 'On legal hold' }) : null,
+          !cleared ? el('li', { text: 'Clearance required' }) : null,
+          cold ? el('li', { text: restoreFailed ? ('Restore failed' + (restore.error ? ': ' + restore.error : ''))
+            : restore?.status === 'queued' ? 'Restore queued'
+            : restoreBusy || tier === 'restoring' ? 'Original being restored' : 'Original media archived' }) : null,
+          asset.blockedBy && !['legal hold', 'not cleared', 'archived'].includes(asset.blockedBy) ? el('li', { text: asset.blockedBy }) : null) : null),
+      el('div', { class: 'rights-cell' }, stateChip(cleared ? 'cleared' : 'uncleared'),
+        legalHold ? stateChip('hold', 'Legal hold') : null),
+      el('div', { class: 'rights-actions', write: true, 'data-rights-asset': id },
+        legalHold ? [hold, clearance, restoreButton] : [restoreButton && cleared ? restoreButton : null, clearance, hold, !cleared ? restoreButton : null],
+        armed ? el('span', { class: 'hint rights-confirm', role: 'status', text: 'Press again to lift the legal hold. Esc cancels.' }) : null));
+  }
+
+  function renderRights() {
+    const query = S.rightsFilter.trim().toLowerCase();
+    const matching = S.data.assets.filter((asset) => [asset.camera, asset.show, asset.id].join(' ').toLowerCase().includes(query));
+    const filters = Object.entries(RIGHTS_FILTERS);
+    const counts = filters.map(([, [, matches]]) => matching.filter(matches).length);
+    const shown = matching.filter(RIGHTS_FILTERS[S.rightsState][1]);
+    paint('rights-message', [S.flash], () => S.flash ? flashNode(S.flash) : []);
+    paint('rights-tools', [S.rightsFilter, S.rightsState, counts], () => [
+      el('div', { class: 'queue-search', role: 'search', 'aria-label': 'Find assets by rights' },
+        el('label', { for: 'rights-filter', text: 'Find an asset' }),
+        el('input', { type: 'text', id: 'rights-filter', 'data-fk': 'rights-filter', autocomplete: 'off',
+          value: S.rightsFilter, placeholder: 'Camera, show or asset ID',
+          oninput: (e) => { S.rightsFilter = e.target.value; renderRights(); } })),
+      el('div', { class: 'queue-filters', role: 'group', 'aria-label': 'Filter by rights status' },
+        filters.map(([value, [label]], index) => el('button', { type: 'button', class: 'pill', 'data-fk': 'rights-state:' + value,
+          'aria-pressed': String(S.rightsState === value), onclick: () => { S.rightsState = value; renderRights(); } },
+          label, el('span', { class: 'queue-count', text: String(counts[index]) })))),
+    ]);
+    const focused = $('rights-list').contains(document.activeElement) && document.activeElement.closest('[data-rights-asset]');
+    paint('rights-list', [shown, S.armed, [...S.pending], S.conn], () => shown.length ? [
+      el('div', { class: 'rights-table-head', 'aria-hidden': 'true' },
+        ['Asset', 'Availability', 'Rights', 'Actions'].map((name, i) => el('span', { text: name, write: i === 3 }))),
+      el('ul', { class: 'rights-rows' }, shown.map(rightsRow)),
+    ] : el('p', { class: 'empty', text: S.data.assets.length ? 'No assets match this search and filter.' : 'No assets yet. Record or ingest media to review its rights.' }));
+    if (focused && document.activeElement === document.body) {
+      const assetId = focused.dataset.rightsAsset;
+      const sameRow = $('rights-list').querySelector('[data-rights-asset="' + CSS.escape(assetId) + '"]');
+      (sameRow?.querySelector('button:not([disabled])') || $('rights-tools').querySelector('[aria-pressed="true"]'))
+        .focus({ preventScroll: true });
+    }
   }
 
   // ---- Publish screen ------------------------------------------------------
-  const KINDS = ['house', 'ott', 'social'];
+  const KINDS = [['house', 'House'], ['ott', 'OTT'], ['social', 'Social']];
+  const PUBLISH_STATES = {
+    all: ['All', null],
+    ready: ['Ready', 'ready'],
+    blocked: ['Blocked', 'blocked'],
+    retry: ['Needs retry', 'failed'],
+    running: ['Publishing', 'running'],
+    done: ['Published', 'done'],
+  };
+  const PUBLISH_BLOCKS = {
+    'not cleared': 'Asset is not cleared.',
+    'legal hold': 'Asset is on legal hold.',
+    archived: 'Restore the original media before publishing.',
+  };
 
   function publishList() {
-    const used = new Set();
-    if (S.data.rundown) {
-      for (const i of S.data.rundown.items) { const m = mediaOf(i.id); if (m.span) used.add(m.span); }
-    }
+    const used = new Set((S.data.rundown?.items || []).map((item) => mediaOf(item.id).span));
+    const assets = new Map(S.data.assets.map((asset) => [asset.id, asset]));
     const q = S.pubFilter.trim().toLowerCase();
-    const spans = S.data.spans.filter((s) => {
-      if (q) return ((s.label || '') + ' ' + (s.text || '') + ' ' + s.id + ' ' + (s.camera || '')).toLowerCase().includes(q);
-      return used.has(s.id) || s.versions.length > 0;
+    return S.data.spans.filter((span) => {
+      if (!q) return used.has(span.id) || span.versions.length > 0;
+      return [span.label, span.text, span.id, span.camera].join(' ').toLowerCase().includes(q);
+    }).map((span) => {
+      const key = 'publish:' + span.id;
+      const asset = assets.get(span.assetId);
+      const block = span.blockedBy || asset?.blockedBy;
+      const versions = KINDS.map(([kind]) => span.versions.find((version) => version.kind === kind));
+      const finished = versions.filter((version) => version?.status === 'done').length;
+      const running = S.pending.has(key) || versions.some((version) => ['running', 'busy'].includes(version?.status));
+      const retry = versions.some((version) => version?.status === 'failed');
+      const state = block ? 'blocked' : running ? 'running' : retry ? 'retry' : finished === KINDS.length ? 'done' : 'ready';
+      return { span, asset, key, block, versions, finished, running, retry, state };
     });
-    return { spans: spans.slice(0, 60), used, more: Math.max(0, spans.length - 60) };
+  }
+
+  function publishVersion(version, label, clip) {
+    const status = version?.status;
+    const chip = !status ? stateChip('not started', 'Not started')
+      : status === 'failed' ? stateChip('failed', 'Needs retry')
+      : status === 'busy' || status === 'running' ? stateChip('running', 'Rendering')
+      : status === 'done' ? stateChip('finished') : stateChip(status);
+    const url = status === 'done' ? version.url : null;
+    const output = url && (/^https?:\/\//i.test(url)
+      ? el('a', { class: 'pub-output', href: url, rel: 'noopener', 'aria-label': 'Open ' + label + ' output for ' + clip, text: 'Open output' })
+      : el('details', { class: 'pub-ref' },
+        el('summary', { 'aria-label': label + ' output reference for ' + clip, text: 'Output reference' }),
+        el('code', { text: url })));
+    return el('div', { class: 'pub-version' }, el('span', { class: 'pub-format', text: label }), chip, output);
+  }
+
+  function publishRow(entry) {
+    const { span, asset, key, block, versions, finished, running, retry, state } = entry;
+    const name = span.label || span.text || short(span.id);
+    const action = running ? 'Publishing…' : retry ? 'Retry unfinished' : state === 'done' ? 'Publish again' : 'Publish';
+    const [label, kind] = PUBLISH_STATES[state];
+    return el('li', { class: 'pub-row' },
+      el('div', { class: 'pub-clip' }, el('strong', { text: name }),
+        el('span', { class: 'muted', text: (span.kind === 'shot' ? 'Shot' : 'Clip') + (span.camera ? ' · ' + span.camera : '') }),
+        el('span', { class: 'mono muted', text: span.tcIn + ' – ' + span.tcOut })),
+      el('div', { class: 'pub-readiness' }, stateChip(kind, state === 'ready' ? 'Ready to publish' : label),
+        block ? el('span', { text: PUBLISH_BLOCKS[block] || block }) : null,
+        block === 'archived' && asset?.tier === 'restoring' ? el('span', { class: 'muted', text: 'Restore in progress' })
+          : block === 'archived' ? el('a', { href: '#library', text: 'Open Library to restore' })
+          : block ? el('a', { href: '#rights', text: 'Review rights' }) : null,
+        !block && finished > 0 ? el('span', { class: 'muted', text: finished + ' of ' + KINDS.length + ' finished' }) : null),
+      el('div', { class: 'pub-versions' }, KINDS.map(([, title], i) => publishVersion(versions[i], title, name))),
+      el('div', { class: 'pub-action', write: true },
+        block ? null : btn(action, {
+          write: true, key, cls: state === 'done' ? 'ghost small' : 'small',
+          disabled: running || S.conn !== 'ok', aria: action + ' ' + name,
+          onclick: () => act('publish', span.id, {}, { key, span: span.id, okTitle: 'Published.', ok: (d) => d.versions.length + ' versions finished.' }),
+        })));
   }
 
   function renderPublish() {
-    const info = publishList();
-    paint('publish', [info.spans, info.more, [...S.pending], S.pubFilter, [...info.used]], () => {
-      const head = el('div', { class: 'panel' }, el('div', { class: 'form-row' },
-        el('div', {}, el('label', { for: 'pub-filter', text: 'Find a clip or shot by name or words' }),
-          el('input', { id: 'pub-filter', type: 'text', value: S.pubFilter, 'data-fk': 'pub-filter', autocomplete: 'off',
-            oninput: (e) => { S.pubFilter = e.target.value; renderPublish(); } })),
-        el('span', { class: 'hint', text: S.pubFilter ? 'Showing matching clips and shots.' : 'Showing clips and shots in this rundown and those already published. To publish a passage of speech, mark it as a clip in the Library.' })));
-      const rows = info.spans.map((s) => {
-        const key = 'publish:' + s.id;
-        const running = S.pending.has(key);
-        const done = s.versions.filter((v) => v.status === 'done').length;
-        const anyFail = s.versions.some((v) => v.status === 'failed');
-        const label = anyFail ? 'PUBLISH AGAIN' : done === 3 ? 'Publish again' : 'PUBLISH';
-        return el('tr', {},
-          el('td', {}, el('strong', { text: s.label || s.text || short(s.id) }), el('div', { class: 'muted mono', text: (s.kind === 'shot' ? 'shot · ' : '') + s.tcIn + ' to ' + s.tcOut + (s.camera ? ' · ' + s.camera : '') })),
-          el('td', {}, el('div', { class: 'vers' }, KINDS.map((k) => {
-            const v = s.versions.find((x) => x.kind === k);
-            const url = v && v.url;
-            return el('div', { class: 'ver' }, el('span', { text: k }),
-              v ? stateChip(v.status) : stateChip('pending', 'Not made'),
-              url ? (/^https?:\/\//i.test(url) ? el('a', { class: 'url', href: url, rel: 'noopener', text: url }) : el('span', { class: 'url', text: url })) : el('span', { class: 'url muted', text: '' }));
-          })), el('div', { class: 'muted', text: running ? 'Rendering…' : s.versions.length ? done + ' of 3 done' : '' })),
-          el('td', { write: true },
-            s.blockedBy ? el('div', { class: 'blocked' }, stateChip('blocked', 'Blocked'), ' ' + s.blockedBy + ' ', el('a', { href: '#rights', text: 'Fix on Rights' })) : null,
-            btn(running ? [el('span', { class: 'spin', 'aria-hidden': 'true' }), ' RENDERING…'] : label,
-              { write: true, key, cls: s.blockedBy ? 'ghost' : '', disabled: !!s.blockedBy,
-                aria: (running ? 'Rendering' : label) + ' ' + (s.label || s.text || short(s.id)),
-                onclick: () => act('publish', s.id, {}, { key, span: s.id, okTitle: 'Published.', ok: (d) => d.versions.length + ' versions done.' }) })));
-      });
-      return [head, el('section', { class: 'panel', 'aria-labelledby': 'h-clips' }, el('h2', { id: 'h-clips' }, icon('publish', 's'), 'Clips'),
-        rows.length ? el('div', { class: 'tblwrap' }, el('table', {},
-          el('caption', { class: 'vh', text: 'Clips and their published versions' }),
-          el('thead', {}, el('tr', {}, ['Clip', 'Versions', 'Action'].map((h) => el('th', { scope: 'col', text: h, write: h === 'Action' })))),
-          el('tbody', {}, rows))) : el('p', { class: 'empty', text: S.pubFilter ? 'No clip or shot matches.' : 'No clips or shots in this rundown yet. Mark one in the Library, or attach one to a rundown item.' }),
-        info.more ? el('p', { class: 'note', text: info.more + ' more. Type to narrow the list.' }) : null)];
-    });
+    const entries = publishList();
+    const counts = { all: entries.length };
+    for (const entry of entries) counts[entry.state] = (counts[entry.state] || 0) + 1;
+    const filtered = S.pubState === 'all' ? entries : entries.filter((entry) => entry.state === S.pubState);
+    const shown = filtered.slice(0, 60);
+    paint('pub-message', [S.flash], () => S.flash ? flashNode(S.flash) : []);
+    paint('pub-tools', [counts, S.pubFilter, S.pubState], () => [
+      el('div', { class: 'queue-search', role: 'search', 'aria-label': 'Find publishable media' },
+        el('label', { for: 'pub-filter', text: 'Find a clip or shot' }),
+        el('input', { id: 'pub-filter', type: 'text', value: S.pubFilter, 'data-fk': 'pub-filter',
+          autocomplete: 'off', placeholder: 'Name, spoken words, camera or ID',
+          oninput: (e) => { S.pubFilter = e.target.value; renderPublish(); } })),
+      el('div', { class: 'queue-filters', role: 'group', 'aria-label': 'Filter by publish status' },
+        Object.entries(PUBLISH_STATES).map(([value, [label]]) => el('button', {
+          type: 'button', class: 'pill', 'data-fk': 'pub-state:' + value, 'aria-pressed': String(S.pubState === value),
+          onclick: () => { S.pubState = value; renderPublish(); },
+        }, label, el('span', { class: 'queue-count', text: String(counts[value] || 0) })))),
+    ]);
+    const focusedAction = $('pub-list').contains(document.activeElement) && document.activeElement.matches('.pub-action button');
+    paint('pub-list', [shown, filtered.length, S.pubFilter, S.pubState, S.conn], () => shown.length ? [
+      el('div', { class: 'pub-table-head', 'aria-hidden': 'true' },
+        ['Clip or shot', 'Readiness', 'Versions', 'Action'].map((label, index) => el('span', { write: index === 3, text: label }))),
+      el('ul', { class: 'pub-rows' }, shown.map(publishRow)),
+      filtered.length > shown.length ? el('p', { class: 'note', text: 'Showing ' + shown.length + ' of ' + filtered.length + '. Use search to narrow the list.' }) : null,
+    ] : el('p', { class: 'empty' }, S.pubFilter || S.pubState !== 'all'
+      ? 'No clips or shots match. Try another status or search.'
+      : ['No clips or shots to publish yet. Mark a clip in the ', el('a', { href: '#library', text: 'Library' }), ' or attach one to this rundown.']));
+    if (focusedAction && document.activeElement === document.body) {
+      $('pub-tools').querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    }
   }
 
   // ---- Library screen: shots, clips, player, marks, selection -------------------------------------------
@@ -2495,7 +3113,21 @@
     const sel = store('volt.lib.sel');
     L.sel = Array.isArray(sel) ? sel.filter((x) => x && typeof x.id === 'string' && typeof x.assetId === 'string') : [];
     const v = $('lib-video');
-    $('lib-asset').addEventListener('change', (e) => { if (e.target.value && W.tab === 'find') W.tab = 'shots'; setAsset(e.target.value); });
+    $('lib-asset').addEventListener('change', (e) => {
+      if (e.target.value) findOpen(e.target.value, null);
+    });
+    const ingestDialog = $('lib-ingest-dialog');
+    $('lib-ingest-open').addEventListener('click', () => {
+      paintIngest();
+      ingestDialog.showModal();
+      $('ingest-path')?.focus();
+    });
+    $('lib-back-results').addEventListener('click', () => {
+      setTab('find', false);
+      const target = F.returnTo?.key && $('lib-find').querySelector('[data-fk="' + CSS.escape(F.returnTo.key) + '"]');
+      (target || $('find-q'))?.focus({ preventScroll: true });
+      window.scrollTo(0, target ? F.returnTo.scroll : 0);
+    });
     $('lib-play').addEventListener('click', togglePlay);
     $('lib-back').addEventListener('click', () => stepFrames(-1));
     $('lib-fwd').addEventListener('click', () => stepFrames(1));
@@ -2515,11 +3147,11 @@
     v.addEventListener('error', onVideoError);
   }
 
-  function libEnter() { if (L.assetId) libLoad(L.load === 'ready'); }
+  function libEnter() { if (L.assetId && W.tab && W.tab !== 'find') libLoad(L.load === 'ready'); }
   function libLeave() { shuttleStop(); const v = $('lib-video'); if (v && !v.paused) v.pause(); }
 
   function libPoll() {
-    if (L.assetId && L.load === 'ready' && !document.hidden && ![...S.pending].some((k) => k.startsWith('lib:'))) libLoad(true);
+    if (W.tab !== 'find' && L.assetId && L.load === 'ready' && !document.hidden && ![...S.pending].some((k) => k.startsWith('lib:'))) libLoad(true);
   }
 
   // ---- data ------------------------------------------------------------------------------------------------
@@ -3288,8 +3920,7 @@
     const sig = JSON.stringify([assets.map((a) => [a.id, a.camera, a.open, a.hasProxy]), L.assetId]);
     if (sel.dataset.sig === sig) return;
     sel.dataset.sig = sig;
-    sel.replaceChildren(el('option', { value: '' }, assets.length ? 'Choose an asset' : 'No assets'),
-      ...assets.map((a) => el('option', { value: a.id, selected: a.id === L.assetId },
+    sel.replaceChildren(...assets.map((a) => el('option', { value: a.id, selected: a.id === L.assetId },
         (a.camera || a.show || 'Asset') + ' · ' + short(a.id) + (a.open ? ' · recording' : '') + (a.hasProxy ? '' : ' · no proxy'))));
     sel.value = L.assetId && assets.some((a) => a.id === L.assetId) ? L.assetId : '';
   }
@@ -3319,7 +3950,9 @@
       I.err = { code: 'network', reason: 'No answer from the server.' };
       setConn('lost');
     } finally {
-      I.busy = false; S.epoch++; render(); refresh();
+      I.busy = false; S.epoch++; render();
+      await refresh();
+      if (I.result && F.ran) findRun(false);
     }
   }
 
@@ -3345,7 +3978,7 @@
   function paintIngest() {
     const r = I.result;
     const a = r && ((S.data && S.data.assets) || []).find((x) => x.id === r.asset);
-    paint('lib-ingest', [I.busy, I.err, r, a && [a.jobs, a.cleared, a.hasProxy]], () => {
+    paint('lib-ingest', [I.busy, I.err, r, a && [a.id, a.jobs, a.cleared, a.hasProxy]], () => {
       const out = [
         el('form', { write: true, 'aria-label': 'Ingest a file', autocomplete: 'off', onsubmit: (e) => { e.preventDefault(); ingestNow(); } },
           el('div', { class: 'form-row' },
@@ -3369,38 +4002,47 @@
             r.quarantined ? ' It is held in quarantine and nothing will air from it.' : ''),
           el('ul', { class: 'jobs', 'aria-label': 'Follow-on work' }, jobs.map((j) => el('li', {},
             el('span', { class: 'jn', text: JOB_NAME[j.type] || j.type }), stateChip(j.status), j.note ? el('span', { class: 'hint', text: j.note }) : null))),
-          el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'ingest-open',
-            onclick: () => { setAsset(r.asset); } }, 'Open this asset below'))));
+          el('div', { class: 'bar flush' }, el('button', { type: 'button', class: 'btn ghost small', 'data-fk': 'ingest-open', disabled: !a,
+            onclick: () => { $('lib-ingest-dialog').close(); findOpen(r.asset, null); } }, 'Open asset'))));
       }
       return out;
     });
   }
 
   function renderLibrary() {
-    renderLibPicker();
     paintIngest();
     paint('lib-msg', [S.flash], () => (S.flash ? flashNode(S.flash) : []));
     const assets = (S.data && S.data.assets) || [];
     if (L.assetId && !assets.some((a) => a.id === L.assetId)) { L.assetId = null; store('volt.lib.asset', null); L.load = 'idle'; L.data = null; }
-    if (W.tab == null) W.tab = L.assetId ? 'shots' : 'find';   // Find is the landing view until an asset is open
+    if (W.tab == null) W.tab = 'find';
     if (!L.assetId && W.tab !== 'find') W.tab = 'find';
+    const finding = W.tab === 'find';
+    const asset = assets.find((a) => a.id === L.assetId);
+    $('lib-asset-header').hidden = finding;
+    if (!finding && asset) {
+      renderLibPicker();
+      const title = [asset.camera || 'Asset', asset.show].filter(Boolean).join(' · ');
+      if ($('lib-asset-title').textContent !== title) $('lib-asset-title').textContent = title;
+    }
     const view = libView();
     let card = null;
-    if (!assets.length) card = stateCard('No recordings yet', 'film', 'There is nothing to list. Record something on the Record screen, then come back.');
-    else if (!L.assetId) card = stateCard('No asset chosen', 'film', 'Pick an asset to list its shots. Assets with a proxy and a closed hi-res come first.');
-    else if (L.load === 'loading' || L.load === 'idle') card = stateCard('Loading', 'film', 'Reading the shots of ' + short(L.assetId) + '…');
+    if (finding) {
+      paint('lib-empty', [null], () => []);
+      $('lib-body').hidden = true;
+      return;
+    }
+    if (L.load === 'loading' || L.load === 'idle') card = stateCard('Loading', 'film', 'Reading the shots of ' + short(L.assetId) + '…');
     else if (L.load === 'error') {
-      card = stateCard('Could not read the shots', 'warn', (L.err.code ? L.err.code + ': ' : '') + L.err.reason,
+      card = stateCard('Could not open the asset', 'warn', (L.err.code ? L.err.code + ': ' : '') + L.err.reason,
         el('button', { type: 'button', class: 'btn', 'data-fk': 'lib-retry', onclick: () => libLoad(false) }, 'Try again'));
     } else if (!view.ok) {
       card = stateCard('This asset cannot be marked', 'warn', 'It has no video file with a frame rate recorded, so a timecode cannot be placed on it. Spans need the hi-res essence and its rate.');
     }
-    L.live = !card;                               // an asset is open and markable; the tabs that need one show only then
-    const finding = W.tab === 'find';
-    paint('lib-empty', [card && !finding ? [L.assetId, L.load, L.err, assets.length] : null], () => (finding ? null : card) || []);
-    $('lib-body').hidden = finding || !!card;
-    if (finding || card) return;
-    if (W.tab === 'details') return;              // Details paints itself and needs no player
+    L.live = !card;                               // an asset is open and markable
+    paint('lib-empty', [card ? [L.assetId, L.load, L.err] : null], () => card || []);
+    $('lib-body').hidden = !!card;
+    if (card) return;
+    if (W.tab !== 'shots') return;               // Other asset tabs paint their own content
     paintHead(view);
     paintFilter(view);
     paintDetect(view);
@@ -3722,7 +4364,7 @@
     if (focus) $('lib-tab-' + name).focus();
     announce(name === 'words' ? 'Mark from transcript.' : name === 'export' ? 'Export to an NLE.' : name === 'find' ? 'Find.' : name === 'details' ? 'Details.' : 'Shots and clips.');
   }
-  const LIB_TABS = ['find', 'shots', 'words', 'export', 'details'];
+  const LIB_TABS = ['shots', 'words', 'export', 'details'];
 
   function nearestWord(frame) {
     const words = W.words;
@@ -3818,12 +4460,12 @@
     const body = $('lib-body'), panel = $('lib-words'), tabs = $('lib-tabs');
     const live = !!L.live;                       // an asset is loaded and markable
     if (W.for !== L.assetId) wordsReset();
-    tabs.hidden = false;
     if (isViewer() && W.tab === 'export') W.tab = 'shots';
     const xpanel = $('lib-export'), finding = W.tab === 'find', details = W.tab === 'details';
+    tabs.hidden = finding || !live;
     for (const name of LIB_TABS) {
       const b = $('lib-tab-' + name), on = W.tab === name;
-      b.hidden = (name !== 'find' && !live) || (name === 'export' && isViewer());   // Find needs no asset; the rest do; export is an operator's
+      b.hidden = name === 'export' && isViewer();
       b.setAttribute('aria-selected', String(on));
       b.tabIndex = on ? 0 : -1;
     }
@@ -4302,7 +4944,7 @@
   // Text typed but not saved lives in SC.drafts, one per item, with the revision it started from: the server's answer replaces the screen,
   // never the draft, and a save quotes that revision so a lost race is a conflict dialog and not a silent overwrite.
   const SC_COUNT_MS = 1000, SC_PREVIEW_MS = 250, SC_MAX = 20000;
-  const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, drafts: {}, saving: false, conflict: null, filter: 'all',
+  const SC = { sel: null, story: null, loading: false, loadErr: null, loadedAt: 0, loadToken: 0, drafts: {}, saving: null, saveErrors: {}, conflict: null, filter: 'all',
     pace: null, link: null, tab: 'history', countAt: 0, countTimer: null, prevTimer: null, returnTo: null };
   const SC_TABS = [{ id: 'history', label: 'History', icon: 'script' }, { id: 'wire', label: 'Wire', icon: 'wire' }, { id: 'templates', label: 'Templates', icon: 'transcript' }, { id: 'archive', label: 'Archive', icon: 'library' }, { id: 'comments', label: 'Comments', icon: 'comment' }];
   const SC_FILTERS = [['all', 'All stories'], ['draft', 'Draft'], ['ready', 'Ready'], ['approved', 'Approved'], ['killed', 'Story killed']];
@@ -4331,14 +4973,23 @@
     if (!quiet) render();
   }
   async function scLoad(id) {
+    const token = ++SC.loadToken;
     SC.loading = true;
+    SC.loadErr = null;
     try {
       const { status, data } = await call('story', id);
-      if (SC.sel !== id) return;
+      if (SC.sel !== id || token !== SC.loadToken) return;
       if (status === 200 && data && data.ok) { SC.story = data; SC.loadErr = null; }
       else SC.loadErr = status === 401 ? 'A token is needed to read this story.' : codeOf(data, status).reason || 'The server refused to show this story.';
-    } catch (e) { if (SC.sel === id) SC.loadErr = 'The server did not answer.'; }
-    SC.loading = false; SC.loadedAt = Date.now(); render();
+    } catch (e) {
+      if (SC.sel === id && token === SC.loadToken) SC.loadErr = 'The server did not answer.';
+    } finally {
+      if (token === SC.loadToken) {
+        SC.loading = false;
+        SC.loadedAt = Date.now();
+        render();
+      }
+    }
   }
 
   // Typing: the draft starts from the loaded story and remembers its revision. Back to the saved text means no draft at all.
@@ -4348,9 +4999,10 @@
     const was = !!SC.drafts[SC.sel];
     const d = SC.drafts[SC.sel] || (SC.drafts[SC.sel] = { slug: st.slug, script: st.script, base: st.rev });
     d[field] = value;
-    if (d.slug === st.slug && d.script === st.script) delete SC.drafts[SC.sel];
+    const hadError = deleteScriptSaveError(SC.sel);
+    if (d.slug === st.slug && d.script === st.script && SC.saving !== SC.sel) delete SC.drafts[SC.sel];
     scCountSoon(); scPreviewSoon();
-    if (was !== !!SC.drafts[SC.sel]) render();
+    if (hadError || was !== !!SC.drafts[SC.sel]) render();
   }
 
   // The live count is a polite status region that changes at most once a second, however fast the typing is.
@@ -4379,13 +5031,24 @@
     SC.prevTimer = setTimeout(() => { SC.prevTimer = null; renderScPreview(); }, SC_PREVIEW_MS);
   }
 
+  function deleteScriptSaveError(id) {
+    if (!SC.saveErrors[id]) return false;
+    delete SC.saveErrors[id];
+    return true;
+  }
+
   // Save: one request quoting the revision the draft started from. 409 stale_script opens the conflict dialog with both texts.
   async function scSave() {
-    const id = SC.sel, d = scDraftOf(id), it = scItem();
-    if (!d || SC.saving || !it || scReason(it, scLoaded())) return;
+    const id = SC.sel, d = scDraftOf(id), it = scItem(), story = scLoaded();
+    if (!d || SC.saving || !it || !story || S.conn !== 'ok' || scReason(it, story)) return;
     if (!leaseAllowsSave(leaseState())) { announce('Saving is off: this tab does not hold the edit lease. Your text is still here.'); return; }
-    if (!d.slug.trim()) { setFlash({ kind: 'bad', title: 'Name the story first.', code: 'bad_input', reason: 'A story needs a slug.' }); render(); return; }
-    SC.saving = true; render();
+    if (!d.slug.trim()) {
+      SC.saveErrors[id] = 'Enter a story title, then save.';
+      render();
+      return;
+    }
+    deleteScriptSaveError(id);
+    SC.saving = id; render();
     const sent = { slug: d.slug, script: d.script };
     try {
       const { status, data } = await call('scriptSave', id, { slug: d.slug, script: d.script, baseRev: d.base, clientId: LS.client });
@@ -4394,23 +5057,33 @@
         const cur = SC.drafts[id];
         if (cur && cur.slug === sent.slug && cur.script === sent.script) delete SC.drafts[id];
         else if (cur) cur.base = data.rev;      // typed more while the request ran: that text starts from the revision just saved
-        setFlash({ kind: 'good', title: data.changed ? 'Saved.' : 'Nothing to save.', reason: 'Revision ' + data.rev + (data.stats ? ', ' + data.stats.words + ' words.' : '.') });
         announce((data.changed ? 'Saved. ' : 'Nothing changed. ') + 'Revision ' + data.rev + '.');
-        await scLoad(id);
+        const loaded = scLoaded();
+        if (SC.sel === id && loaded && loaded.rev <= data.rev) {
+          SC.story = { ...loaded, rev: data.rev, slug: sent.slug.trim(), script: sent.script,
+            storyStatus: data.storyStatus };
+          if (data.storyStatus !== 'approved') Object.assign(SC.story, { approvedBy: null, approvedAt: null, approvedRev: null });
+        }
+        if (SC.sel === id) scLoad(id);
       } else {
         const e = codeOf(data, status);
-        if (e.code === 'stale_script' && data && data.current) { SC.conflict = { id, mine: sent, theirs: data.current }; scOpenConflict(); }
+        SC.saveErrors[id] = e.code === 'stale_script' ? 'A newer revision was saved. Your edits are still here.' : e.reason || 'The server refused the save.';
+        if (e.code === 'stale_script' && data && data.current && SC.sel === id) {
+          const { slug, script } = scDraftOf(id) || sent;
+          SC.conflict = { id, mine: { slug, script }, theirs: data.current };
+          scOpenConflict();
+        }
         else if ((e.code === 'leased' || e.code === 'lease_lost') && LS.item === id) {   // someone holds the item: the editor goes read-only, the text stays
           leaseApply({ state: e.code === 'leased' ? 'blocked' : 'lost', fails: 0, holder: (data && data.holder) || '', secondsLeft: (data && data.secondsLeft) || 0 }, false);
           announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason + ' Nothing was saved.');
         }
-        else { setFlash({ kind: 'bad', title: (ERR_LABEL[e.code] || 'Refused') + '.', code: e.code, reason: e.reason }); announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason); }
+        else announce((ERR_LABEL[e.code] || 'Refused') + '. ' + e.reason);
       }
     } catch (err) {
-      setFlash({ kind: 'bad', title: 'No answer from the server.', code: 'network', reason: 'Your text is still here and unsaved. Try again when the connection is back.' });
+      SC.saveErrors[id] = 'No response from the server. Your edits are still here.';
       setConn('lost');
     }
-    SC.saving = false; render(); refresh();
+    SC.saving = null; render(); refresh();
   }
 
   function scOpenConflict() {
@@ -4437,6 +5110,7 @@
     if (!c) return;
     const r = resolveConflict(c.mine, c.theirs, choice);
     SC.conflict = null;
+    deleteScriptSaveError(c.id);
     $('sc-conflict').close();
     if (choice === 'mine') { SC.drafts[c.id] = { slug: r.slug, script: r.script, base: r.baseRev }; scSave(); }
     else { delete SC.drafts[c.id]; scLoad(c.id); setFlash({ kind: 'good', title: 'Took their version.', reason: 'Your text was dropped because you chose theirs.' }); render(); }
@@ -4514,29 +5188,41 @@
   function scEditor() {
     const it = scItem(), st = scLoaded();
     if (!it) return el('p', { class: 'empty', text: scItems().length ? 'Choose a story.' : 'This show has no items.' });
-    if (!st) return el('p', { class: 'empty', text: SC.loadErr || 'Reading the story…' });
-    const reason = scReason(it, st), d = scDraftOf(SC.sel);
+    if (!st) return SC.loadErr ? el('div', { class: 'empty', role: 'alert' }, SC.loadErr, ' ',
+      btn('Try again', { key: 'sc-retry', cls: 'ghost small', onclick: () => scLoad(it.id) }))
+      : el('p', { class: 'empty', role: 'status', text: 'Reading the story…' });
+    const reason = scReason(it, st);
     const old = $('sc-text'), top = old ? old.scrollTop : 0;
-    const newer = d && st.rev > d.base;
-    const moves = legalMoves(st.storyStatus);
     const ta = el('textarea', { id: 'sc-text', 'data-fk': 'sc-text', rows: '16', spellcheck: 'true', readonly: !!reason || !leaseAllowsEdit(), maxlength: String(SC_MAX), 'aria-keyshortcuts': 'Control+S',
-      'aria-describedby': reason ? 'sc-reason' : null,
+      'aria-describedby': reason ? 'sc-reason' : 'sc-markup',
       oninput: (e) => scEdit('script', e.target.value),
       // Ctrl+S saves from inside the editor only; the page-wide key handler never sees it.
       onkeydown: (e) => { if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); scSave(); } } }, scText());
     requestAnimationFrame(() => { const n = $('sc-text'); if (n) n.scrollTop = top; });
-    return el('div', { class: 'sc-form' },
+    return el('div', { class: 'sc-form' }, el('label', { for: 'sc-text', text: 'Script' }), ta,
+      el('p', { class: 'hint', id: 'sc-markup' }, 'Use [brackets] for instructions and // for private notes. Start each on its own line.'));
+  }
+
+  function scFields() {
+    const it = scItem(), st = scLoaded(), d = scDraftOf(SC.sel);
+    if (!it || !st) return null;
+    const reason = scReason(it, st);
+    return el('div', { class: 'sc-form sc-fields' },
       reason ? el('p', { class: 'info', id: 'sc-reason' }, icon('lock', 's'), ' ', el('strong', { text: 'Editing is off. ' }), reason) : null,
-      newer ? el('p', { class: 'info', role: 'status' }, icon('alert', 's'), ' ', el('strong', { text: 'Newer revision. ' }),
-        'Revision ' + st.rev + ' was saved while you were typing. Saving will show you both versions; nothing is overwritten.') : null,
-      el('label', { for: 'sc-slug', text: 'Slug' }),
-      el('input', { id: 'sc-slug', type: 'text', 'data-fk': 'sc-slug', value: scSlug(), maxlength: '200', autocomplete: 'off', readonly: !!reason || !leaseAllowsEdit(),
-        oninput: (e) => scEdit('slug', e.target.value) }),
-      el('label', { for: 'sc-text', text: 'Script' }), ta,
-      el('p', { class: 'hint' }, 'A line in [brackets] is an instruction for the crew: it is not read and does nothing on air. A line starting // is a private note and never leaves the editing screens.'),
-      el('div', { class: 'bar flush' },
-        btn(SC.saving ? 'Saving…' : 'Save', { write: true, key: 'sc-save', cls: 'signal', disabled: !d || !!reason || SC.saving || !leaseAllowsEdit(), title: 'Ctrl+S inside the script', onclick: scSave }),
-        el('span', { class: 'sep', 'aria-hidden': 'true' }),
+      d && st.rev > d.base ? el('p', { class: 'info', role: 'status' }, icon('alert', 's'), ' A newer revision was saved. Save to compare both versions.') : null,
+      el('div', { class: 'sc-title-line' },
+        el('div', {}, el('label', { for: 'sc-slug', text: 'Story title' }),
+          el('input', { id: 'sc-slug', type: 'text', 'data-fk': 'sc-slug', value: scSlug(), maxlength: '200', autocomplete: 'off', readonly: !!reason || !leaseAllowsEdit(),
+            oninput: (e) => scEdit('slug', e.target.value) })),
+        stateChip(storyKind(st.storyStatus), st.storyStatus === 'approved' && d ? 'Saved revision approved' : null)),
+      it.status === 'on air' ? el('p', { class: 'hint', text: 'On air. Saving updates the prompter on its next refresh and removes any approval.' }) : null);
+  }
+
+  function scActions() {
+    const it = scItem(), st = scLoaded(), d = scDraftOf(SC.sel);
+    if (!it || !st || isViewer()) return null;
+    const moves = legalMoves(st.storyStatus);
+    return el('div', { class: 'bar sc-actions', write: true },
         moves.map((to) => {
           const arm = to === 'approved' && S.armed === 'scappr:' + SC.sel;
           return btn(arm ? 'Confirm approve' : scMoveLabel(st.storyStatus, to), { write: true, key: 'sc-status:' + to, cls: (to === 'approved' ? 'signal' : 'ghost') + (arm ? ' armed' : ''),
@@ -4544,8 +5230,19 @@
         }),
         el('span', { class: 'sep', 'aria-hidden': 'true' }),
         btn(it.floated ? 'Put back in the rundown' : 'Float', { write: true, key: 'sc-float', cls: 'ghost', disabled: !it.floated && it.status !== 'ready',
-          title: !it.floated && it.status !== 'ready' ? 'Only a ready item can be floated.' : null, onclick: scFloat })),
-      it.status === 'on air' ? el('p', { class: 'hint', text: 'This item is on air. Saving changes the prompter text on its next refresh and takes the approval back; it does not touch playout.' }) : null);
+          title: !it.floated && it.status !== 'ready' ? 'Only a ready item can be floated.' : null, onclick: scFloat }),
+        d ? el('span', { class: 'hint', text: 'Save changes before updating story status.' }) : null);
+  }
+
+  function scSaveStatus() {
+    const st = scLoaded();
+    if (!st) return null;
+    const saving = SC.saving === SC.sel;
+    const error = SC.saveErrors[SC.sel];
+    const dirty = !!scDraftOf(SC.sel);
+    const kind = saving ? 'pending' : error ? 'failed' : dirty ? 'unsaved' : 'done';
+    const label = saving ? 'Saving…' : error ? 'Save failed' : dirty ? 'Unsaved changes' : 'Saved';
+    return [stateChip(kind, label), el('span', { class: 'hint', text: error || (dirty ? 'Saved revision ' : 'Revision ') + st.rev })];
   }
 
   function scPreviewNodes(text) {
@@ -4562,13 +5259,12 @@
   }
 
   function scFoot() {
-    const st = scLoaded(), d = scDraftOf(SC.sel);
+    const st = scLoaded();
     if (!st) return null;
     const cur = (st.revisions || []).find((r) => r.rev === st.rev) || {};
-    return [el('span', { class: 'mono', text: 'Revision ' + st.rev }),
-      el('span', { text: cur.actor ? 'saved by ' + cur.actor + (cur.at ? ' at ' + fmtTime(cur.at) : '') : 'as first written' }),
-      st.storyStatus === 'approved' && st.approvedBy ? el('span', { class: 'ok' }, icon('rights', 's'), 'Approved by ' + st.approvedBy + (st.approvedAt ? ' at ' + fmtTime(st.approvedAt) : '') + ', revision ' + st.approvedRev) : null,
-      d ? stateChip('unsaved') : null];
+    return [cur.actor ? el('span', { text: 'Last saved by ' + cur.actor + (cur.at ? ' at ' + fmtTime(cur.at) : '') })
+      : st.rev === 1 ? el('span', { text: 'As first written' }) : null,
+      st.storyStatus === 'approved' && st.approvedBy ? el('span', { class: 'ok' }, icon('rights', 's'), 'Approved by ' + st.approvedBy + (st.approvedAt ? ' at ' + fmtTime(st.approvedAt) : '') + ', revision ' + st.approvedRev) : null];
   }
 
   function scHistory() {
@@ -4769,15 +5465,29 @@
       btn('Set pace', { write: true, key: 'sc-pace', cls: 'ghost small', onclick: pacePress }),
       btn('Default', { write: true, key: 'sc-pace-default', cls: 'ghost small', title: 'Use 160 words a minute', onclick: () => scSetPace(null) })));
     paint('sc-prompter', [SC.link, S.show, [...S.pending].filter((k) => k === 'sc-link')], scPrompter);
-    paint('sc-filter', [SC.filter], () => el('div', { class: 'form-row' }, el('div', {}, el('label', { for: 'sc-filter-sel', text: 'Show' }),
-      el('select', { id: 'sc-filter-sel', 'data-fk': 'sc-filter-sel', onchange: (e) => { SC.filter = e.target.value; render(); } },
-        SC_FILTERS.map(([v, label]) => el('option', { value: v, selected: v === SC.filter }, label))))));
+    paint('sc-filter', [SC.filter, items.map((item) => item.storyStatus)], () =>
+      el('div', { class: 'queue-filters sc-status-filters', role: 'group', 'aria-label': 'Filter stories by status' },
+        SC_FILTERS.map(([value, label]) => {
+          const count = value === 'all' ? items.length : items.filter((item) => item.storyStatus === value).length;
+          return el('button', { type: 'button', class: 'pill', 'data-fk': 'sc-filter:' + value,
+            'aria-pressed': String(SC.filter === value), onclick: () => { SC.filter = value; render(); } },
+            label, el('span', { class: 'queue-count', text: String(count) }));
+        })));
     paint('sc-list', [items, SC.sel, SC.filter, Object.keys(SC.drafts)], scList);
     paint('sc-presence', [S.data.presence, S.data.collab, WHO.name, LS.client, S.show], presenceStrip);
     paint('sc-lease', [SC.sel, leaseState(), LS.holder, leaseState() === 'blocked' ? Math.floor(((leaseView(S.data.leases, SC.sel, leaseMe()) || {}).secondsLeft || 0) / 15) : 0, LS.copied, S.armed === 'takeover:' + SC.sel], leaseBanner);
-    paint('sc-edit', [SC.sel, !!st, leaseAllowsEdit(), st && [st.rev, st.storyStatus, st.approvedBy], it && [it.status, it.floated], SC.loadErr, SC.saving, !!scDraftOf(SC.sel),
-      scDraftOf(SC.sel) && scDraftOf(SC.sel).base < (st ? st.rev : 0), S.armed, [...S.pending].filter((k) => k.startsWith('sc-'))], scEditor);
-    paint('sc-foot', [SC.sel, st && [st.rev, st.storyStatus, st.approvedBy, st.approvedAt, (st.revisions || []).length], !!scDraftOf(SC.sel)], scFoot);
+    const reason = scReason(it, st), draft = scDraftOf(SC.sel);
+    const editSig = [SC.sel, st && st.rev, reason, leaseAllowsEdit(), SC.loadErr, !!draft];
+    paint('sc-fields', [...editSig, st?.storyStatus, it?.status, draft?.base], scFields);
+    paint('sc-edit', editSig, scEditor);
+    paint('sc-save-status', [SC.sel, st?.rev, !!draft, SC.saving, SC.saveErrors[SC.sel]], scSaveStatus);
+    const saveFocused = $('sc-save-action').contains(document.activeElement);
+    paint('sc-save-action', [SC.sel, !!st, !!draft, reason, leaseAllowsEdit(), SC.saving, S.conn], () => st
+      ? btn(SC.saving === SC.sel ? 'Saving…' : 'Save script', { write: true, key: 'sc-save',
+        disabled: !draft || !!reason || !!SC.saving || !leaseAllowsEdit() || S.conn !== 'ok', title: 'Ctrl+S inside the script', onclick: scSave }) : null);
+    if (saveFocused && document.activeElement === document.body) $('sc-text')?.focus({ preventScroll: true });
+    paint('sc-actions', [SC.sel, st?.rev, st?.storyStatus, it?.status, it?.floated, !!draft, S.armed, WHO.role, [...S.pending]], scActions);
+    paint('sc-foot', [SC.sel, st && [st.rev, st.storyStatus, st.approvedBy, st.approvedAt, (st.revisions || []).length]], scFoot);
     scCountNow();
     renderScPreview();
     scTabs();
@@ -5270,7 +5980,7 @@
       renderProviders(data && data.providers, location.pathname + location.search);
     } catch (e) { providersLoaded = false; }   // offline or an older server: try again next time the dialog opens
   }
-  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open || $('sc-conflict').open || $('notif-dlg').open; }
+  function anyDialog() { return $('token-dlg').open || $('keys-dlg').open || $('sc-conflict').open || $('notif-dlg').open || $('lib-ingest-dialog').open || $('acc-dialog').open; }
 
   function setScreen(name) {
     const was = S.screen;
@@ -5281,6 +5991,45 @@
     if (was === 'library' && S.screen !== 'library') libLeave();
     if (S.screen === 'library' && was !== 'library') libEnter();
     render();
+    if (was !== S.screen) {
+      setSessionTools(false);
+      const title = $('screen-' + S.screen).querySelector('h1');
+      title.tabIndex = -1;
+      title.focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    }
+  }
+
+  function setSessionTools(open) {
+    $('session-more').setAttribute('aria-expanded', String(open));
+  }
+
+  function sessionToolsInit() {
+    const more = $('session-more'), tools = $('session-tools');
+    more.addEventListener('click', () => setSessionTools(more.getAttribute('aria-expanded') !== 'true'));
+    window.matchMedia('(max-width: 600px)').addEventListener('change', (e) => {
+      if (e.matches && tools.contains(document.activeElement)) more.focus();
+      setSessionTools(false);
+    });
+    document.addEventListener('click', (e) => {
+      if (!more.contains(e.target) && !tools.contains(e.target)) setSessionTools(false);
+    });
+    document.addEventListener('focusin', (e) => {
+      if (!more.contains(e.target) && !tools.contains(e.target)) setSessionTools(false);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && more.getAttribute('aria-expanded') === 'true' && !anyDialog()) {
+        e.stopImmediatePropagation();
+        more.focus();
+        setSessionTools(false);
+      }
+    });
+    for (const [target, trigger] of [['token-dlg', 'token-btn'], ['keys-dlg', 'keys-btn']]) {
+      $(target).addEventListener('close', () => {
+        if ($(trigger).getClientRects().length) return;
+        if (more.getClientRects().length && !anyDialog()) more.focus();
+      });
+    }
   }
 
   function onKey(e) {
@@ -5296,7 +6045,7 @@
     // Space takes only when nothing interactive has focus, so a focused button keeps its own Space.
     // Pointer clicks drop focus (see init), so Space after clicking Hold does not press Hold again.
     if (e.key === ' ' || e.code === 'Space') {
-      if (t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],[tabindex]')) return;
+    if (t && t !== document.body && t.closest && t.closest('button,a,summary,select,[role="button"],[tabindex]:not(.screen-title):not(#main)')) return;
       e.preventDefault();
       if (!e.repeat) takeNow(true);
       return;
@@ -5351,7 +6100,10 @@
     setTheme(currentTheme());
     $('theme-btn').addEventListener('click', () => setTheme(nextTheme(currentTheme())));
     libInit();
+    actInit();
+    accInit();
     scConflictInit();
+    sessionToolsInit();
     presenceInit();
     $('keys-close').addEventListener('click', () => $('keys-dlg').close());
     document.addEventListener('keydown', onKey);
@@ -5361,10 +6113,20 @@
       if (b && e.detail > 0) setTimeout(() => { if (document.activeElement === b) b.blur(); }, 0);
     });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (S.armed) { S.armed = null; render(); } else if (document.activeElement && document.activeElement !== document.body && !anyDialog()) document.activeElement.blur(); } });
-    window.addEventListener('hashchange', () => setScreen(location.hash.slice(1)));
+    window.addEventListener('hashchange', () => {
+      if (location.hash !== '#main') setScreen(location.hash.slice(1));
+    });
+    window.addEventListener('resize', revealCurrentScreen);
     for (const b of document.querySelectorAll('#workspaces button')) b.addEventListener('click', () => setWorkspace(b.dataset.ws, true));
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { refresh(); schedule(); } });
-    const tick = () => { $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false }); };
+    const tick = () => {
+      $('clock').textContent = new Date().toLocaleTimeString([], { hour12: false });
+      if (S.screen === 'record' && S.data) updateRecordElapsed(currentRecording());
+      if (S.screen === 'show' && S.ws === 'operator') {
+        const { air, taking } = showInfo();
+        updateShowElapsed(air, taking);
+      }
+    };
     tick(); setInterval(tick, 1000);
     setConn('connecting');
     setWorkspace(storedWorkspace(), false);

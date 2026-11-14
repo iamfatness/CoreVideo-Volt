@@ -122,16 +122,16 @@ class FindMarkup(unittest.TestCase):
         i = self.JS.index(start)
         return self.JS[i:self.JS.index(end, i)]
 
-    def test_the_tabs_and_panels_are_wired_and_find_comes_first(self):
+    def test_browse_is_separate_from_asset_tabs(self):
         tabs = self.piece('id="lib-tabs"', "</div>")
-        self.assertEqual(re.findall(r'id="lib-tab-(\w+)"', tabs), ["find", "shots", "words", "export", "details"])
-        for tid, ctl, icon_name in (("lib-tab-find", "lib-find", "search"), ("lib-tab-details", "lib-details", "tag")):
-            tab = self.piece('id="%s"' % tid, "</button>")
-            self.assertIn('aria-controls="%s"' % ctl, tab)
-            self.assertIn('href="#i-%s"' % icon_name, tab)
-            self.assertIn('tabindex="-1"', tab)
-        for panel in ("lib-find", "lib-details"):
-            self.assertRegex(self.HTML, r'<div id="%s" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-%s" hidden>' % (panel, panel[4:]))
+        self.assertEqual(re.findall(r'id="lib-tab-(\w+)"', tabs), ["shots", "words", "export", "details"])
+        self.assertIn('id="lib-back-results"', self.HTML)
+        self.assertIn('id="lib-find" class="cols lib" role="region" aria-label="Browse library"', self.HTML)
+        tab = self.piece('id="lib-tab-details"', "</button>")
+        self.assertIn('aria-controls="lib-details"', tab)
+        self.assertIn('href="#i-tag"', tab)
+        self.assertIn('tabindex="-1"', tab)
+        self.assertRegex(self.HTML, r'<div id="lib-details" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-details" hidden>')
         for hid, icon_name in (("h-find", "search"), ("h-finds", "library"), ("h-facets", "filter"), ("h-saved", "search"), ("h-bins", "bin"),
                                ("h-det", "tag"), ("h-define", "plus")):
             self.assertIn('href="#i-%s"' % icon_name, self.piece('id="%s"' % hid, "</h2>"), hid)

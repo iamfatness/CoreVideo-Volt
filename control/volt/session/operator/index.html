@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Volt operator</title>
+<title>CoreVideo Volt · Show session</title>
 <link rel="icon" href="data:,">
 <script src="/operator/theme.js"></script>
 <link rel="stylesheet" href="/operator/operator.css">
@@ -71,12 +71,14 @@
     <button type="button" data-ws="operator" aria-pressed="true"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-onair"/></svg><span>Operator</span></button>
   </div>
   <div class="status">
-    <span id="who" class="pill" hidden></span>
     <span id="conn" class="conn" role="status"></span>
     <button type="button" id="bell-btn" class="btn ghost small" aria-haspopup="dialog"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-bell"/></svg><span>Notifications</span><span id="bell-count" class="bell-count" hidden></span><span id="bell-unread" class="vh" hidden> unread</span></button>
-    <button type="button" id="token-btn" class="btn ghost small">Token</button>
-    <button type="button" id="theme-btn" class="btn ghost small">Theme: Auto</button>
-    <button type="button" id="keys-btn" class="btn ghost small" aria-haspopup="dialog">Keys</button>
+    <button type="button" id="session-more" class="btn ghost small" aria-expanded="false" aria-controls="session-tools"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-more"/></svg>More</button>
+    <div id="session-tools" class="session-tools">
+      <button type="button" id="token-btn" class="btn ghost small" aria-haspopup="dialog">Token</button>
+      <button type="button" id="theme-btn" class="btn ghost small">Theme: Auto</button>
+      <button type="button" id="keys-btn" class="btn ghost small" aria-haspopup="dialog">Shortcuts</button>
+    </div>
     <time id="clock" class="clock"></time>
   </div>
 </header>
@@ -89,6 +91,8 @@
     <a href="#rights" data-screen="rights"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-rights"/></svg><span>Rights</span></a>
     <a href="#publish" data-screen="publish"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-publish"/></svg><span>Publish</span></a>
     <a href="#library" data-screen="library"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-library"/></svg><span>Library</span></a>
+    <a href="#activity" data-screen="activity" data-admin hidden><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-wave"/></svg><span>Activity</span></a>
+    <a href="#access" data-screen="access" data-admin hidden><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-lock"/></svg><span>Access</span></a>
   </nav>
   <div class="stage">
 
@@ -97,60 +101,109 @@
 
 <main id="main" tabindex="-1">
   <section id="screen-show" class="screen" aria-labelledby="h-show" hidden>
-    <h1 id="h-show" class="vh">Show</h1>
-    <div class="transport" id="transport"></div>
+    <div class="screen-heading"><h1 id="h-show" class="screen-title">Show</h1></div>
+    <div class="transport" id="transport"><p class="empty" role="status">Loading show…</p></div>
     <div id="presence" class="presence"></div>
     <div class="cols">
       <section class="panel" aria-labelledby="h-rundown"><h2 id="h-rundown"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-rundown"/></svg>Rundown</h2><div id="rundown-sum" class="rsum" role="status"></div><div id="rundown"></div><div id="build" data-write></div></section>
-      <div class="stack">
+      <div class="stack show-inspector">
+        <section class="panel" id="show-selection" aria-label="Selected item"></section>
         <section class="panel" aria-labelledby="h-cues"><h2 id="h-cues"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-cue"/></svg><span id="h-cues-text">Cues</span></h2><div id="cues"></div><div id="cue-add" data-write></div></section>
-        <section class="panel" aria-labelledby="h-comments"><h2 id="h-comments"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-comment"/></svg>Comments</h2><div id="comments"></div></section>
-        <section class="panel" aria-labelledby="h-room"><h2 id="h-room"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-room"/></svg>Room</h2><div id="room"></div></section>
+        <details class="panel show-disclosure" open><summary><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-comment"/></svg>Comments</summary><div id="comments"></div></details>
+        <details class="panel show-disclosure" open><summary><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-room"/></svg>Room</summary><div id="room"></div></details>
       </div>
     </div>
   </section>
 
   <section id="screen-record" class="screen" aria-labelledby="h-record" hidden>
-    <h1 id="h-record" class="vh">Record</h1>
-    <div id="record"></div>
+    <div class="screen-heading"><h1 id="h-record" class="screen-title">Record</h1></div>
+    <div id="rec-message"></div>
+    <div id="record"><p class="empty" role="status">Loading recorder…</p></div>
+    <details id="rec-details" class="panel show-disclosure rec-details" hidden>
+      <summary><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-room"/></svg>Room and file details</summary>
+      <div id="rec-facts"></div>
+    </details>
+    <div id="rec-history"></div>
   </section>
 
   <section id="screen-rights" class="screen" aria-labelledby="h-rights" hidden>
-    <h1 id="h-rights" class="vh">Rights</h1>
-    <div id="rights"></div>
+    <div class="screen-heading"><h1 id="h-rights" class="screen-title">Rights</h1></div>
+    <div id="rights-message"></div>
+    <section id="rights" class="panel" aria-labelledby="h-rights-assets">
+      <div id="rights-tools" class="queue-tools"></div>
+      <h2 id="h-rights-assets" class="queue-heading"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-rights"/></svg>Assets</h2>
+      <div id="rights-list"><p class="empty" role="status">Loading asset rights…</p></div>
+    </section>
   </section>
 
   <section id="screen-publish" class="screen" aria-labelledby="h-publish" hidden>
-    <h1 id="h-publish" class="vh">Publish</h1>
-    <div id="publish"></div>
+    <div class="screen-heading"><h1 id="h-publish" class="screen-title">Publish</h1></div>
+    <div id="pub-message"></div>
+    <section id="publish" class="panel" aria-labelledby="h-pub-list">
+      <div id="pub-tools" class="queue-tools"></div>
+      <h2 id="h-pub-list" class="queue-heading"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-publish"/></svg>Deliverables</h2>
+      <div id="pub-list"><p class="empty" role="status">Loading deliverables…</p></div>
+    </section>
   </section>
 
   <section id="screen-activity" class="screen" aria-labelledby="h-activity" hidden>
-    <h1 id="h-activity" class="vh">Activity</h1>
-    <div id="act-head"></div>
-    <div id="act-rows"></div>
+    <div class="screen-heading">
+      <h1 id="h-activity" class="screen-title">Activity</h1>
+      <button id="act-csv" type="button" class="btn ghost" title="Download up to 500 events matching the applied filters"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-download"/></svg><span>Download CSV</span></button>
+    </div>
+    <section class="panel" aria-labelledby="h-act">
+      <details id="act-filter-panel" class="show-disclosure" open>
+        <summary><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-filter"/></svg>Filters</summary>
+        <form id="act-filters" class="queue-tools act-filters" aria-label="Filter activity" autocomplete="off">
+          <div class="act-field"><label for="act-actor">Actor</label><input id="act-actor" name="actor" type="text" list="act-actors" placeholder="Any actor"><datalist id="act-actors"></datalist></div>
+          <div class="act-field"><label for="act-action">Event</label><input id="act-action" name="action" type="text" list="act-actions" placeholder="Any event"><datalist id="act-actions"></datalist></div>
+          <div class="act-field"><label for="act-kind">Target type</label><input id="act-kind" name="kind" type="text" list="act-kinds" placeholder="Any type"><datalist id="act-kinds"></datalist></div>
+          <div class="act-field act-date"><label for="act-from">From date</label><input id="act-from" name="from" type="date" max="9999-12-31"></div>
+          <div class="act-field act-date"><label for="act-to">Through date</label><input id="act-to" name="to" type="date" max="9999-12-31"></div>
+          <div class="act-controls"><button type="submit" class="btn">Apply filters</button><button id="act-clear" type="button" class="btn ghost">Clear filters</button></div>
+        </form>
+      </details>
+      <div class="act-log-head">
+        <h2 id="h-act" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-wave"/></svg>Event log</h2>
+        <p id="act-count" role="status"></p>
+      </div>
+      <div id="act-applied"></div>
+      <div id="act-message"></div>
+      <div id="act-rows"></div>
+      <div id="act-page" class="bar" hidden><button id="act-more" type="button" class="btn ghost">Load older events</button></div>
+      <p id="act-export-status" class="vh" role="status"></p>
+    </section>
   </section>
 
   <section id="screen-scripts" class="screen" aria-labelledby="h-scripts" hidden>
-    <h1 id="h-scripts" class="vh">Scripts</h1>
+    <div class="screen-heading"><h1 id="h-scripts" class="screen-title">Scripts</h1></div>
     <div class="scripts">
       <section class="panel sc-listcol" aria-labelledby="h-sc-list">
         <h2 id="h-sc-list"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-script"/></svg>Stories</h2>
-        <div id="sc-pace"></div>
-        <div id="sc-prompter"></div>
         <div id="sc-filter"></div>
         <div id="sc-list"></div>
+        <details class="show-disclosure sc-settings">
+          <summary><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-sliders"/></svg>Reading pace and prompter</summary>
+          <div id="sc-pace"></div>
+          <div id="sc-prompter"></div>
+        </details>
       </section>
       <section class="panel sc-editcol" aria-labelledby="h-sc-edit">
         <h2 id="h-sc-edit"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-transcript"/></svg>Editor</h2>
+        <div class="sc-savebar">
+          <div id="sc-save-status" role="status"></div>
+          <div id="sc-save-action" data-write></div>
+        </div>
         <div id="sc-presence" class="presence"></div>
         <div id="sc-lease"></div>
+        <div id="sc-fields"></div>
         <div class="sc-pair">
           <div id="sc-edit"></div>
-          <div class="sc-prevcol"><h3 id="h-sc-prev">Preview: what is read</h3><div id="sc-preview" role="group" aria-labelledby="h-sc-prev"></div></div>
+          <div class="sc-prevcol"><h3 id="h-sc-prev">Live preview</h3><div id="sc-preview" role="group" aria-labelledby="h-sc-prev" tabindex="0"></div></div>
         </div>
         <p id="sc-count" class="sc-count" role="status" aria-live="polite"></p>
         <div id="sc-foot" class="sc-foot"></div>
+        <div id="sc-actions"></div>
       </section>
       <section class="panel sc-sidecol" aria-labelledby="h-sc-side">
         <h2 id="h-sc-side"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-sliders"/></svg>Story panel</h2>
@@ -161,33 +214,72 @@
   </section>
 
   <section id="screen-access" class="screen" aria-labelledby="h-access" hidden>
-    <h1 id="h-access" class="vh">Show access</h1>
-    <div id="acc-head"></div>
-    <div id="acc-rows"></div>
+    <div class="screen-heading">
+      <h1 id="h-access" class="screen-title">Show access</h1>
+      <button id="acc-add" class="btn" type="button" data-write aria-haspopup="dialog"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg>Add access</button>
+    </div>
+    <section class="panel" aria-labelledby="h-acc-list">
+      <div class="queue-tools acc-tools">
+        <div class="acc-show"><label for="acc-show">Manage show</label><select id="acc-show"></select></div>
+        <div id="acc-policy" class="acc-policy" role="status"></div>
+        <button id="acc-refresh" class="btn ghost" type="button">Refresh</button>
+      </div>
+      <div id="acc-message"></div>
+      <div class="acc-list-head">
+        <h2 id="h-acc-list" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-lock"/></svg>Permissions</h2>
+        <div id="acc-views" class="queue-filters" role="group" aria-label="Permission view">
+          <button id="acc-assigned" class="pill" type="button" aria-pressed="true">Assignments <span class="queue-count" hidden></span></button>
+          <button id="acc-people" class="pill" type="button" aria-pressed="false">People <span class="queue-count" hidden></span></button>
+        </div>
+      </div>
+      <div id="acc-rows"></div>
+      <details class="show-disclosure acc-guide">
+        <summary>What View, Edit, and Run allow</summary>
+        <dl id="acc-level-guide" class="acc-level-guide"></dl>
+      </details>
+    </section>
+    <dialog id="acc-dialog" data-write class="panel acc-dialog" aria-labelledby="h-acc-dialog">
+      <form id="acc-form">
+        <h2 id="h-acc-dialog" tabindex="-1"></h2>
+        <div id="acc-form-fields"></div>
+        <p id="acc-form-error" class="acc-form-error" role="alert" hidden></p>
+        <div class="acc-dialog-actions">
+          <button id="acc-cancel" type="button" class="btn ghost">Cancel</button>
+          <button id="acc-submit" type="submit" class="btn"></button>
+        </div>
+      </form>
+    </dialog>
   </section>
 
   <section id="screen-library" class="screen" aria-labelledby="h-library" hidden>
-    <h1 id="h-library" class="vh">Library: shots and clips</h1>
-    <div id="lib-msg"></div>
-    <section data-write class="panel lib-ingest" aria-labelledby="h-ingest"><h2 id="h-ingest"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-download"/></svg>Ingest a file</h2><div id="lib-ingest"></div></section>
-    <div class="panel lib-pick">
-      <div class="form-row">
-        <div><label for="lib-asset">Asset</label><select id="lib-asset"></select></div>
-        <span id="lib-asset-hint" class="hint"></span>
+    <div class="screen-heading">
+      <h1 id="h-library" class="screen-title">Library</h1>
+      <button type="button" class="btn ghost" id="lib-ingest-open" data-write aria-haspopup="dialog"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-download"/></svg> Ingest file</button>
+    </div>
+    <dialog id="lib-ingest-dialog" data-write class="panel lib-ingest" aria-labelledby="h-ingest">
+      <div class="lib-dialog-heading">
+        <h2 id="h-ingest"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-download"/></svg> Ingest a file</h2>
+        <form method="dialog"><button type="submit" class="btn ghost small">Close</button></form>
       </div>
+      <div id="lib-ingest"></div>
+    </dialog>
+    <div id="lib-msg"></div>
+    <div id="lib-asset-header" class="library-asset-header" hidden>
+      <button type="button" id="lib-back-results" class="btn ghost small">Back to results</button>
+      <h2 id="lib-asset-title" tabindex="-1"></h2>
+      <label class="lib-switch"><span class="vh">Switch asset</span><select id="lib-asset"></select></label>
     </div>
     <div id="lib-empty"></div>
     <div id="lib-tabs" class="lib-tabs" role="tablist" aria-label="Library views" hidden>
-      <button type="button" role="tab" id="lib-tab-find" aria-controls="lib-find" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg>Find</button>
       <button type="button" role="tab" id="lib-tab-shots" aria-controls="lib-body" aria-selected="true"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-shot"/></svg>Shots and clips</button>
       <button type="button" role="tab" id="lib-tab-words" aria-controls="lib-words" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-transcript"/></svg>Mark from transcript</button>
       <button type="button" role="tab" data-write id="lib-tab-export" aria-controls="lib-export" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-export"/></svg>Selection to export</button>
       <button type="button" role="tab" id="lib-tab-details" aria-controls="lib-details" aria-selected="false" tabindex="-1"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-tag"/></svg>Details</button>
     </div>
-    <div id="lib-find" class="cols lib" role="tabpanel" aria-labelledby="lib-tab-find" hidden>
+    <div id="lib-find" class="cols lib" role="region" aria-label="Browse library" hidden>
       <div class="stack">
-        <section class="panel" aria-labelledby="h-find"><h2 id="h-find"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg> Find</h2><div id="lib-find-form"></div></section>
-        <section class="panel" aria-labelledby="h-finds"><h2 id="h-finds"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-library"/></svg> Results</h2><div id="lib-find-state"></div><div id="lib-find-results"></div></section>
+        <section class="panel lib-search" aria-labelledby="h-finds"><h2 id="h-find" class="vh"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-search"/></svg> Find</h2><div id="lib-find-form"></div>
+          <h2 id="h-finds"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-library"/></svg> Results</h2><div id="lib-find-state"></div><div id="lib-find-results"></div></section>
       </div>
       <div class="stack" role="group" aria-label="Filters, saved searches and bins">
         <section class="panel" aria-labelledby="h-facets"><h2 id="h-facets"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-filter"/></svg> Narrow by</h2><div id="lib-find-facets"></div></section>
@@ -196,48 +288,53 @@
       </div>
     </div>
     <div id="lib-body" class="cols lib" hidden>
-      <div class="stack">
-        <div class="panel" id="lib-head"></div>
-        <section class="panel" aria-labelledby="h-player">
-          <h2 id="h-player"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-eye"/></svg>Player</h2>
-          <div class="player">
-            <div class="screenbox">
-              <video id="lib-video" preload="metadata" playsinline aria-label="Proxy of the chosen asset" hidden></video>
-              <span id="lib-overlay" class="overlay" aria-hidden="true" hidden></span>
-              <div id="lib-vmsg" class="vmsg"></div>
-            </div>
-            <div id="lib-tline" class="tline" role="img" aria-label="Timeline"><span id="lib-head-mark" class="head"></span></div>
-            <div id="lib-scale" class="tlscale" aria-hidden="true"></div>
+      <section class="panel lib-review-player" aria-labelledby="h-player">
+        <h2 id="h-player"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-eye"/></svg>Player</h2>
+        <div class="player">
+          <div class="screenbox">
+            <video id="lib-video" preload="metadata" playsinline aria-label="Proxy of the chosen asset" hidden></video>
+            <span id="lib-overlay" class="overlay" aria-hidden="true" hidden></span>
+            <div id="lib-vmsg" class="vmsg"></div>
           </div>
-          <div class="tools" role="group" aria-label="Transport">
-            <button type="button" class="btn ghost" id="lib-play" aria-keyshortcuts="K"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-take"/></svg><span id="lib-play-text">Play</span> <kbd>K</kbd></button>
-            <button type="button" class="btn ghost" id="lib-back" aria-keyshortcuts=",">&#9664; Frame <kbd>,</kbd></button>
-            <button type="button" class="btn ghost" id="lib-fwd" aria-keyshortcuts=".">Frame &#9654; <kbd>.</kbd></button>
-            <button type="button" class="btn ghost" id="lib-prev" aria-keyshortcuts="[">&#9664;&#9664; Prev shot <kbd>[</kbd></button>
-            <button type="button" class="btn ghost" id="lib-next" aria-keyshortcuts="]">Next shot <kbd>]</kbd> &#9654;&#9654;</button>
-            <button type="button" class="btn ghost small" id="lib-reload">Reload proxy</button>
-            <span class="hint" aria-hidden="true"><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> shuttle</span>
-            <span id="lib-pos" class="hint mono" role="status"></span>
-          </div>
-          <form id="lib-mark" data-write class="tools lib-mark" aria-label="Mark a range" autocomplete="off">
+          <div id="lib-tline" class="tline" role="img" aria-label="Timeline"><span id="lib-head-mark" class="head"></span></div>
+          <div id="lib-scale" class="tlscale" aria-hidden="true"></div>
+        </div>
+        <div class="tools" role="group" aria-label="Transport">
+          <button type="button" class="btn ghost" id="lib-play" aria-keyshortcuts="K"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-take"/></svg><span id="lib-play-text">Play</span> <kbd>K</kbd></button>
+          <button type="button" class="btn ghost" id="lib-back" aria-keyshortcuts=",">&#9664; Frame <kbd>,</kbd></button>
+          <button type="button" class="btn ghost" id="lib-fwd" aria-keyshortcuts=".">Frame &#9654; <kbd>.</kbd></button>
+          <button type="button" class="btn ghost" id="lib-prev" aria-keyshortcuts="[">&#9664;&#9664; Prev shot <kbd>[</kbd></button>
+          <button type="button" class="btn ghost" id="lib-next" aria-keyshortcuts="]">Next shot <kbd>]</kbd> &#9654;&#9654;</button>
+          <button type="button" class="btn ghost small" id="lib-reload">Reload proxy</button>
+          <span class="hint" aria-hidden="true"><kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> shuttle</span>
+          <span id="lib-pos" class="hint mono" role="status"></span>
+        </div>
+        <div id="lib-head"></div>
+      </section>
+      <section class="panel lib-review-mark" data-write aria-labelledby="h-lib-mark">
+        <h2 id="h-lib-mark"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-cut"/></svg>Mark a clip</h2>
+        <form id="lib-mark" data-write class="tools lib-mark" aria-label="Mark a range" autocomplete="off">
+          <div class="lib-mark-point">
             <div><label for="lib-in">In (timecode)</label><input id="lib-in" type="text" class="mono" inputmode="text" spellcheck="false" placeholder="01:00:00:00"></div>
             <button type="button" class="btn signal" id="lib-mark-in" aria-keyshortcuts="I">Mark in <kbd>I</kbd></button>
+          </div>
+          <div class="lib-mark-point">
             <div><label for="lib-out">Out (timecode)</label><input id="lib-out" type="text" class="mono" inputmode="text" spellcheck="false" placeholder="01:00:05:00"></div>
             <button type="button" class="btn signal" id="lib-mark-out" aria-keyshortcuts="O">Mark out <kbd>O</kbd></button>
-            <div class="grow"><label for="lib-name">Name (optional)</label><input id="lib-name" type="text" maxlength="200"></div>
-            <button type="submit" class="btn" id="lib-add-clip">Add clip <kbd>Enter</kbd></button>
-            <button type="button" class="btn ghost" id="lib-add-shot">Add as shot</button>
-          </form>
-          <p id="lib-mark-hint" class="note"></p>
-        </section>
-        <section class="panel" aria-labelledby="h-shots">
-          <h2 id="h-shots"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-shot"/></svg>Shots and clips</h2>
-          <div id="lib-filter" class="bar" role="group" aria-label="Filter"></div>
-          <div id="lib-detectbar" class="detect" role="group" aria-label="Detection"></div>
-          <div id="lib-list"></div>
-        </section>
-      </div>
-      <div class="stack" role="group" aria-label="Selection and span">
+          </div>
+          <div class="grow"><label for="lib-name">Name (optional)</label><input id="lib-name" type="text" maxlength="200"></div>
+          <button type="submit" class="btn" id="lib-add-clip">Add clip <kbd>Enter</kbd></button>
+          <button type="button" class="btn ghost" id="lib-add-shot">Add as shot</button>
+        </form>
+        <p id="lib-mark-hint" class="note"></p>
+      </section>
+      <section class="panel lib-review-shots" aria-labelledby="h-shots">
+        <h2 id="h-shots"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-shot"/></svg>Shots and clips</h2>
+        <div id="lib-filter" class="bar" role="group" aria-label="Filter"></div>
+        <div id="lib-detectbar" class="detect" role="group" aria-label="Detection"></div>
+        <div id="lib-list"></div>
+      </section>
+      <div class="stack lib-review-inspector" role="group" aria-label="Selection and span">
         <section class="panel" aria-labelledby="h-tray"><h2 id="h-tray"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-library"/></svg>Selection</h2><div id="lib-tray"></div></section>
         <section class="panel" aria-labelledby="h-span"><h2 id="h-span"><svg class="ic s" aria-hidden="true" focusable="false"><use href="#i-sliders"/></svg>Span</h2><div id="lib-span"></div></section>
       </div>
@@ -329,7 +426,7 @@
 </dialog>
 
 <dialog id="keys-dlg" aria-labelledby="keys-h">
-  <h2 id="keys-h">Keys</h2>
+  <h2 id="keys-h">Shortcuts</h2>
   <table class="keys">
     <caption class="vh">Keyboard shortcuts</caption>
     <thead><tr><th scope="col">Key</th><th scope="col">Does</th></tr></thead>
