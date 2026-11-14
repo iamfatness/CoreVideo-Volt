@@ -540,6 +540,15 @@ class State(Api):
     def test_unknown_show_falls_back_to_the_newest(self):
         self.assertEqual(self.state("gone")["show"]["id"], self.show)
 
+    def test_recording_assets_expose_observation_time_and_file_duration(self):
+        asset = self.store.mint_source("cv:duration-test", owner="desk", camera="Studio A")
+        self.store.add_essence(asset.id, "hi-res", "studio-a.mp4", frame_rate="25", duration_frames=150)
+        observed = "2026-11-13T20:15:00Z"
+        self.store.conn.execute("UPDATE asset SET created_at = ? WHERE id = ?", (observed, asset.id))
+        self.store.conn.commit()
+        row = next(a for a in self.state()["assets"] if a["id"] == asset.id)
+        self.assertEqual((row["createdAt"], row["frameRate"], row["durationFrames"]), (observed, "25", 150))
+
     def test_no_room_is_a_state_not_an_error(self):
         serve.ROOM = None
         s = self.state()
@@ -565,6 +574,29 @@ class State(Api):
     def test_held_take_is_refused_with_the_stable_code_the_page_switches_on(self):
         p = self.refused(409, "held", f"/api/shows/{self.show}/take")
         self.assertTrue(p["error"]["reason"])
+
+    def test_publish_state_reports_only_live_render_claims(self):
+        span = self.spans["open"]
+        self.post(f"/api/spans/{span}/publish")
+        job_key = f"publish:{span}:social"
+        self.store.conn.execute("UPDATE version SET status = 'failed' WHERE span_id = ? AND kind = 'social'", (span,))
+        self.store.conn.execute(
+            "UPDATE job SET status = 'running', lease_expires_at = ? WHERE idempotency_key = ?",
+            ("2099-01-01T00:00:00Z", job_key),
+        )
+        self.store.conn.commit()
+
+        def version_statuses():
+            row = next(s for s in self.state()["spans"] if s["id"] == span)
+            return {v["kind"]: v["status"] for v in row["versions"]}
+
+        self.assertEqual(version_statuses(), {"house": "done", "ott": "done", "social": "running"})
+        self.store.conn.execute(
+            "UPDATE job SET lease_expires_at = ? WHERE idempotency_key = ?",
+            ("2000-01-01T00:00:00Z", job_key),
+        )
+        self.store.conn.commit()
+        self.assertEqual(version_statuses()["social"], "failed")
 
     def test_state_surfaces_taking_as_the_current_item(self):
         # Production change that would fail this: omitting taking from /api/state, or leaving
@@ -665,7 +697,7 @@ class Tokens(unittest.TestCase):
     def test_scales_exist(self):
         want = {**{"space-%d" % i: px for i, px in enumerate((4, 8, 12, 16, 24, 32), 1)}, "radius-sm": "3px", "radius": "6px",
                 "fs-xs": ".75rem", "fs-sm": ".875rem", "fs-md": "1rem", "fs-lg": "1.25rem", "fs-xl": "1.75rem",
-                "rail-w": "64px", "head-h": "48px"}
+                "rail-w": "112px", "head-h": "64px"}
         for name, value in want.items():
             self.assertEqual(self.token(name), "%spx" % value if isinstance(value, int) else value, name)
 
@@ -706,7 +738,7 @@ def _node(*calls):
 class StateLanguage(unittest.TestCase):
     def test_each_state_maps_to_an_existing_icon_and_a_class(self):
         (state,) = _node(["STATE"])
-        self.assertEqual(sorted(state), sorted(["incomplete", "required", "shared", "aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "wrapped",
+        self.assertEqual(sorted(state), sorted(["incomplete", "required", "shared", "aired", "archived", "archiving", "blocked", "canair", "cleared", "done", "failed", "fresh", "hold", "killed", "locked", "next", "onair", "pending", "queued", "ready", "recording", "restoring", "running", "skipped", "stale", "taking", "uncleared", "withdrawn", "finished",
                                        "draft", "storyReady", "approved", "storyKilled", "floated", "unsaved", "editing", "yours",
                                        "threadOpen", "threadResolved", "commentGone", "unread", "mention", "reply", "tookOver"]))
         for kind, spec in state.items():
@@ -756,7 +788,7 @@ class Shell(unittest.TestCase):
     HTML = FILES['index.html']
 
     def test_ids_the_script_depends_on_survive(self):
-        for i in ('show-select', 'screens', 'workspaces', 'who', 'conn', 'token-btn', 'keys-btn', 'clock', 'main', 'banners',
+        for i in ('show-select', 'screens', 'workspaces', 'conn', 'token-btn', 'session-more', 'keys-btn', 'clock', 'main', 'banners',
                   'foot-show', 'foot-count', 'foot-version'):
             self.assertIn('id="%s"' % i, self.HTML, i)
 
@@ -1080,19 +1112,19 @@ def _fn_source(js, name, span=6000):
 @unittest.skipUnless(NODE, "node is needed to run the page's functions")
 class ScreensState(unittest.TestCase):
     def test_specs(self):
-        got = _node(*[["stateChipSpec", k] for k in ("recording", "wrapped", "fresh", "stale", "canair", "blocked")])
+        got = _node(*[["stateChipSpec", k] for k in ("recording", "finished", "fresh", "stale", "canair", "blocked")])
         self.assertEqual(got, [{"icon": "record", "word": "Recording", "cls": "st air"},
-                               {"icon": "ready", "word": "Wrapped", "cls": "st ok"},
+                               {"icon": "ready", "word": "Finished", "cls": "st ok"},
                                {"icon": "ready", "word": "Fresh", "cls": "st ok"},
                                {"icon": "alert", "word": "Stale", "cls": "st pend"},
-                               {"icon": "ready", "word": "Yes", "cls": "st ok"},
-                               {"icon": "alert", "word": "No", "cls": "st fail"}])
+                               {"icon": "ready", "word": "Can air or publish", "cls": "st ok"},
+                               {"icon": "alert", "word": "Blocked", "cls": "st fail"}])
         for spec in got:
             self.assertIn(spec["icon"], Icons.SPRITE_IDS)
 
     def test_no_loose_glyphs_left_on_these_screens(self):
         js = FILES["operator.js"]
-        for fn in ("renderRecord", "assetsTable", "renderRights", "renderPublish"):
+        for fn in ("renderRecord", "renderRights", "renderPublish"):
             src = _fn_source(js, fn)
             for ch in "✓✕⚑⚠▶":
                 self.assertNotIn(ch, src, (fn, ch))
@@ -1101,9 +1133,11 @@ class ScreensState(unittest.TestCase):
 class ScreensMarkup(unittest.TestCase):
     def test_headings_carry_icons(self):
         js = FILES["operator.js"]
-        for hid in ("h-recstart", "h-lifecycle", "h-assets", "h-assets2", "h-clips"):
+        for hid in ("h-recstart", "h-lifecycle", "h-assets"):
             i = js.index("el('h2', { id: '%s'" % hid)
             self.assertIn("icon(", js[i:i + 260], hid)
+        self.assertRegex(FILES["index.html"], r'<h2 id="h-pub-list"[^>]*>.*href="#i-publish".*</h2>')
+        self.assertRegex(FILES["index.html"], r'<h2 id="h-rights-assets"[^>]*>.*href="#i-rights".*</h2>')
 
 
 def _tokens(block):
@@ -1334,15 +1368,17 @@ class ActivityScreen(unittest.TestCase):
         body = js[js.index("function renderActivity"):js.index("function renderChrome")]
         self.assertNotIn("innerHTML", body)
         self.assertIn("scope: 'col'", body)
-        self.assertIn("icon('wave'", body)
+        self.assertIn('href="#i-wave"', html[html.index('id="screen-activity"'):html.index('id="screen-scripts"')])
         self.assertIn("download: 'volt-activity.csv'", js)   # the CSV is fetched with the token, not a plain link
 
-    def test_the_who_pill_never_renders_a_null_child(self):
-        # replaceChildren(..., null) writes the text "null": a non-admin's pill read "sam · viewer nullnull"
-        js = FILES["operator.js"]
-        body = js[js.index("const pill = $('who');"):js.index("const pill = $('who');") + 700]
-        self.assertIn(".filter(Boolean)", body)
-        self.assertNotRegex(body, r"\? el\('a'[^\n]*: null")
+    def test_admin_destinations_use_the_same_current_page_navigation(self):
+        html, js = FILES["index.html"], FILES["operator.js"]
+        rail = html[html.index('id="screens"'):html.index("</nav>")]
+        for screen in ("activity", "access"):
+            self.assertIn(f'href="#{screen}" data-screen="{screen}" data-admin hidden', rail)
+        chrome = js[js.index("function renderChrome"):js.index("function storedWorkspace")]
+        self.assertIn("const admin = canSeeAdminScreens()", chrome)
+        self.assertIn("a.setAttribute('aria-current', 'page')", chrome)
 
     def test_the_rail_accepts_activity_only_as_an_extra(self):
         got = _node(["railFor", "operator", "activity"], ["railFor", "producer", "activity"])
@@ -1362,7 +1398,7 @@ class AccessScreen(unittest.TestCase):
         self.assertNotIn("innerHTML", body)
         self.assertIn("scope: 'col'", body)
         self.assertIn("textContent", FILES["operator.js"])
-        self.assertIn("href: '#access'", js)                      # the admin's pill links to it, like Activity
+        self.assertIn('href="#access" data-screen="access"', html)
 
     def test_the_rail_accepts_access_only_as_an_extra_and_no_number_key_is_taken(self):
         got = _node(["railFor", "operator", "access"], ["screenForKey", "1"], ["screenForKey", "6"], ["screenForKey", "7"], ["screenForKey", "0"])
@@ -1383,7 +1419,7 @@ class AccessScreen(unittest.TestCase):
         got = _node(["accessSummary", []], ["accessSummary", [{"subject_kind": "user", "subject": "ann", "level": "run"}]])
         self.assertEqual((got[0]["kind"], got[0]["word"]), ("open", "Open"))
         self.assertEqual((got[1]["kind"], got[1]["word"]), ("restricted", "Restricted"))
-        self.assertIn("admin", got[1]["text"])
+        self.assertIn("admin", got[1]["text"].lower())
         self.assertIn("opens it again", got[1]["text"])
         for g in got:
             self.assertIn(g["icon"], Icons.SPRITE_IDS)
@@ -1395,6 +1431,40 @@ class AccessScreen(unittest.TestCase):
         got = _node(["accessCandidates", "user", users, groups, rows], ["accessCandidates", "group", users, groups, rows],
                     ["accessCandidates", "user", None, None, None])
         self.assertEqual(got, [["cy"], ["desk"], []])
+
+    def test_people_view_matches_server_permissions_and_keeps_the_sources(self):
+        from types import SimpleNamespace
+        from volt import access, building, users
+        from volt.store import Store
+
+        store = Store()
+        self.addCleanup(store.close)
+        show, _ = building.create_show(store, "Permissions review", None)
+        for name, role in (("operator", "operator"), ("observer", "viewer"), ("producer", "viewer"), ("admin", "admin"), ("outsider", "operator")):
+            users.add(store, name, role)
+        access.create_group(store, "studio")
+        access.set_members(store, "studio", add=["operator", "observer"])
+        access.create_group(store, "production", "operator")
+        access.set_members(store, "production", add=["producer"])
+        access.set_acl(store, show, "user", "operator", "view")
+        access.set_acl(store, show, "group", "studio", "run")
+        access.set_acl(store, show, "group", "production", "edit")
+        groups, rows, accounts = access.list_groups(store), access.list_acl(store, show), users.list_users(store)
+        restricted = _node(*[["accessForUser", user, groups, rows] for user in accounts])
+        open_show, _ = building.create_show(store, "Open review", None)
+        open_access = _node(*[["accessForUser", user, groups, []] for user in accounts])
+        for user, restricted_result, open_result in zip(accounts, restricted, open_access):
+            name = user["name"]
+            role = access.effective_role(store, name, user["role"])
+            principal = SimpleNamespace(name=name, role=role, groups=access.groups_of(store, name))
+            self.assertEqual(restricted_result["level"], access.show_level(store, principal, show))
+            self.assertEqual(open_result["level"], access.show_level(store, principal, open_show))
+            if name == "operator":
+                self.assertEqual({(r["subject_kind"], r["level"]) for r in restricted_result["sources"]}, {("user", "view"), ("group", "run")})
+            if name == "producer":
+                self.assertEqual(restricted_result["roleGroups"], ["production"])
+        disabled, = _node(["accessForUser", {"name": "operator", "role": "admin", "disabled_at": "2026-11-13"}, groups, rows])
+        self.assertIsNone(disabled["level"])
 
     def test_a_refusal_for_a_show_names_the_level_and_points_to_an_admin_without_naming_anyone(self):
         got = _node(["forbiddenShow", {"code": "forbidden_show", "reason": "run access to this show is required"}])[0]
@@ -1624,7 +1694,8 @@ class ScriptsScreenContract(unittest.TestCase):
         sec = self.section()
         save = sec[sec.index("async function scSave"):sec.index("function scOpenConflict")]
         # the stale branch opens the dialog and never touches the draft; only a successful save removes it
-        stale = save[save.index("e.code === 'stale_script'"):save.index("else { setFlash")]
+        stale = save[save.index("e.code === 'stale_script'"):save.index("} catch (err)")]
+        self.assertIn("scDraftOf(id) || sent", stale)                      # include text typed while the save was in flight
         self.assertNotIn("SC.drafts", stale)
         self.assertIn("baseRev: d.base", save)                             # a save quotes the revision the draft STARTED from
         self.assertIn("Keep mine", sec)
@@ -1647,7 +1718,7 @@ class ScriptsScreenContract(unittest.TestCase):
         for words in ("has aired", "was skipped", "was killed from air", "This story is killed. Revive it to edit.", "Editing is off. "):
             self.assertIn(words, sec)
         self.assertIn("readonly: !!reason", sec)
-        self.assertIn("'aria-describedby': reason ? 'sc-reason' : null", sec)
+        self.assertIn("'aria-describedby': reason ? 'sc-reason' : 'sc-markup'", sec)
 
     def test_the_live_count_is_a_polite_status_region_and_changes_at_most_once_a_second(self):
         self.assertRegex(self.HTML, r'<p id="sc-count"[^>]*role="status"[^>]*aria-live="polite"')
@@ -1932,7 +2003,7 @@ class CommentsUi(unittest.TestCase):
         self.assertIn('id="bell-count"', self.HTML)
         self.assertRegex(self.HTML, r'id="bell-unread" class="vh"')           # "unread" is a word for screen readers, beside the number
         self.assertIn('<span>Notifications</span>', self.HTML)                 # the button says its word, not only an icon
-        self.assertRegex(self.HTML, r'<section class="panel" aria-labelledby="h-comments">.*?id="comments"')
+        self.assertRegex(self.HTML, r'<details class="panel show-disclosure" open><summary>.*?id="comments"')
         self.assertRegex(self.HTML, r'<dialog id="notif-dlg" aria-labelledby="notif-h"')
         self.assertIn("'comments'", self.JS[self.JS.index("const SC_TABS"):self.JS.index("const SC_TABS") + 600])
         self.assertIn("$('notif-dlg').open", self.JS[self.JS.index("function anyDialog"):self.JS.index("function anyDialog") + 200])

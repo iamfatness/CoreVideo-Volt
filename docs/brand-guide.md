@@ -1,6 +1,6 @@
 # Brand guide
 
-Status: first pass. Proposals, not a locked system.
+Status: established product direction. The four-slash mark, semantic palette, and operational voice are the shared system.
 
 ## Name
 
@@ -22,7 +22,7 @@ Volt extends the CoreVideo control-room sheet. It does not invent a second produ
 | Panel | `#1C1C1C` | Surfaces |
 | Hairline | `#303030` | Borders |
 | Text | `#E2E2E2` | Primary type |
-| Muted | `#8A8A8A` | Secondary type |
+| Muted | `#A0A0A0` | Secondary type |
 | Suite blue | `#1D6DC2` | CoreVideo family actions, links, focus |
 | Signal | `#F0B429` | Volt accent. Next, selected span, publish |
 | On air | `#FF4D4D` | Only a live path. Never decoration |
@@ -68,3 +68,18 @@ A light set exists for bright rooms and is chosen with the header's Theme contro
 ## Do not
 
 Lightning photography. Sports clipart. Gradients behind the wordmark. Red as a brand color. A second blue.
+
+## Interface rules
+
+The operator application is a task surface. Apply Impeccable's Operate guidance: precision, legibility, familiar controls, and restrained brand expression. Reference: [Impeccable](https://github.com/pbakaus/impeccable), `skill/SKILL.src.md` and the polish, operate, and craft-floor references (reviewed November 9, 2026).
+
+- Keep the four-slash VOLT lockup in the header. The browser title carries the full CoreVideo Volt family name.
+- Use one system sans family. Screen titles use 1.75rem, section titles .875rem semibold, body 1rem, and supporting data .875rem. Use monospace for clocks, timecodes, and identifiers only.
+- Use the existing 4/8/12/16/24/32px spacing scale. Screen margins are 24px on desktop and 12px on phones. Section headers and comments use 16px insets.
+- Show a visible title on every screen. Keep navigation labels visible. On phones, navigation uses a horizontal strip with a visible current screen, workspace controls retain their text, and More opens secondary header controls.
+- Keep live red, next amber, action blue, and cleared green meanings consistent. Pair state color with a word or icon. Errors and destructive actions also use the existing danger treatment.
+- Give rundown titles priority over row tools. In Operator, place actions and timecode detail in the selected item panel. Keep timing columns aligned and let secondary times yield on phones. Producer retains inline actions.
+- Group On Air, Next, timing and TAKE in the Operator console. Pair TAKE with its availability and any reason it is disabled. Keep Hold and Advance, no cues on the secondary strip. On phones, the four console areas reflow to two columns.
+- Keep the existing light, dark, and Auto choices. Do not add remote fonts or component dependencies for visual polish.
+
+Future changes should be checked in both themes at phone, laptop, and wide desktop sizes, with keyboard focus and permission-limited states. Palette contrast tests live in `control/tests/test_operator_ui.py`; theme tokens live in `control/volt/session/operator/operator.css`.

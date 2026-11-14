@@ -47,7 +47,7 @@ def smoke_test(python, work, env):
             if json.loads(get(port, "/ready", "application/json")) != {"status": "ready"}:
                 raise RuntimeError("Volt reported an unexpected readiness status.")
             html = get(port, "/", "text/html")
-            if b"<title>Volt operator</title>" not in html:
+            if b'id="screen-show"' not in html or b'src="/operator/operator.js"' not in html:
                 raise RuntimeError("The root page did not serve the operator UI.")
             get(port, "/operator/theme.js", "text/javascript")
             get(port, "/operator/operator.css", "text/css")

@@ -13,7 +13,7 @@ from volt.cues import cues
 from volt import shots
 from volt.rooms import LiveError
 from volt import devices, mos_send, safety
-from volt.store import Store
+from volt.store import Store, _now
 
 SPAN_LIMIT = 200
 
@@ -41,7 +41,7 @@ def shows(store: Store, visible=None) -> list[dict]:
 def assets(store: Store) -> list[dict]:
     rows = store.conn.execute(
         """SELECT a.id, a.owner, a.show_name, a.camera, a.cleared, a.legal_hold, a.source_key,
-                  a.created_at, e.location, e.checksum, e.open, e.tier,
+                  a.created_at, e.location, e.checksum, e.open, e.tier, e.frame_rate, e.duration_frames,
                   EXISTS (SELECT 1 FROM essence p WHERE p.asset_id = a.id AND p.role = 'proxy') AS has_proxy
            FROM asset a
            LEFT JOIN essence e ON e.asset_id = a.id AND e.role = 'hi-res'
@@ -59,10 +59,11 @@ def assets(store: Store) -> list[dict]:
         cleared, held = bool(r["cleared"]), bool(r["legal_hold"])
         out.append({
             "id": r["id"], "owner": r["owner"], "show": r["show_name"], "camera": r["camera"],
-            "sourceKey": r["source_key"], "cleared": cleared, "legalHold": held,
+            "sourceKey": r["source_key"], "createdAt": r["created_at"], "cleared": cleared, "legalHold": held,
             "blockedBy": _blocked_by(cleared, held, r["tier"] in ("archived", "restoring")),
             "tier": r["tier"] or "online",
             "file": r["location"], "checksum": r["checksum"],
+            "frameRate": r["frame_rate"], "durationFrames": r["duration_frames"],
             "open": bool(r["open"]) if r["open"] is not None else False,
             "hasProxy": bool(r["has_proxy"]),
             "jobs": list(pending.get(r["id"], {}).values()),
@@ -112,10 +113,17 @@ def spans(store: Store, kinds: Optional[Sequence[str]] = PUBLISH_KINDS, include_
             rows.sort(key=lambda r: (r["tc_in"], r["id"]))
     versions: dict[str, list[dict]] = {}
     for v in store.conn.execute(
-        "SELECT id, span_id, kind, status, url, withdrawn_at FROM version ORDER BY span_id, kind"
+        """SELECT v.id, v.span_id, v.kind, v.status, v.url, v.withdrawn_at,
+                  CASE WHEN v.status != 'done' AND j.status = 'running'
+                            AND j.lease_expires_at >= ? THEN 1 ELSE 0 END AS rendering
+           FROM version v
+           LEFT JOIN job j ON j.asset_id = v.asset_id AND j.type = 'publish'
+             AND j.idempotency_key = 'publish:' || v.span_id || ':' || v.kind
+           ORDER BY v.span_id, v.kind""",
+        (_now(),),
     ).fetchall():
         versions.setdefault(v["span_id"], []).append(
-            {"id": v["id"], "kind": v["kind"], "status": v["status"],
+            {"id": v["id"], "kind": v["kind"], "status": "running" if v["rendering"] else v["status"],
              "url": None if v["withdrawn_at"] is not None else v["url"]})
     return [{
         "id": r["id"], "assetId": r["asset_id"], "kind": r["kind"], "tcIn": r["tc_in"],

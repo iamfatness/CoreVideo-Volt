@@ -42,7 +42,7 @@ from volt.store import Store, _id, _now
 SCENARIOS = ["normal", "held", "take_fail", "record_requested", "record_producing",
              "record_finalizing", "record_completed", "publish_progress", "publish_partial", "library", "export", "scripts", "find",
              "lease_held_by_other", "lease_lost", "presence_two_users", "comments_thread",
-             "signed_out_with_providers", "activity_filtered"]
+             "signed_out_with_providers", "activity_filtered", "access_matrix"]
 
 # (slug, status, as_run_in, as_run_out)
 ITEMS = [
@@ -298,15 +298,26 @@ def seed_collab(store: Store, scenario: str) -> None:
 
 
 def seed_activity(store: Store) -> None:
-    """Thirty-odd audit rows from four people over a few days, for the Activity screen's filters, paging and CSV."""
+    """An audit log with several days, detail payloads, and enough rows to page."""
     import itertools
+    from datetime import datetime, timedelta, timezone
     people = ("root", "dana", "marcus", "sam")
-    acts = (("go", "show"), ("hold", "show"), ("release", "show"), ("item_rename", "item"), ("comment_add", "comment"),
-            ("lease_acquire", "item"), ("group_create", "group"), ("show_access", "show"), ("login", "session"))
-    for n, (who, (action, kind)) in enumerate(zip(itertools.cycle(people), itertools.cycle(acts))):
-        if n >= 36:
-            break
-        store.append_audit(who, action, kind, "t%02d" % (n % 7), None)
+    acts = (("go", "show", "final-four-watch", None),
+            ("hold", "show", "final-four-watch", None), ("release", "show", "final-four-watch", None),
+            ("item_rename", "item", "game-action", None),
+            ("comment_add", "comment", "8c2b7abd-48b0-450b-a328-b0d4100650cf",
+             '{"kind":"item","target":"game-action","mentions":["dana"]}'),
+            ("lease_acquire", "item", "halftime-interview", None),
+            ("group_create", "group", "weekend-crew", None),
+            ("show_access", "show", "final-four-watch", '{"level":"edit","subject":"weekend-crew","subject_kind":"group"}'),
+            ("login", "session", None, None))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    rows = []
+    for n, (who, (action, kind, target, detail)) in enumerate(itertools.islice(zip(itertools.cycle(people), itertools.cycle(acts)), 135)):
+        row = store.append_audit(who, action, kind, target or who, detail)
+        rows.append(((now - timedelta(minutes=8 * (135 - n))).isoformat().replace("+00:00", "Z"), row))
+    store.conn.executemany("UPDATE audit SET at = ? WHERE id = ?", rows)
+    store.conn.commit()
     store.append_audit("dana", "item_rename", "item", "=HYPERLINK(\"x\")", None)   # a formula-looking target, to see the CSV neutralised
 
 
@@ -374,6 +385,20 @@ def seed(store: Store, scenario: str, media_dir=None):
         seed_collab(store, scenario)
     if scenario == "activity_filtered":
         seed_activity(store)
+    if scenario == "access_matrix":
+        from volt import access, users
+        for name, role in (("dana", "operator"), ("sam", "viewer"), ("marcus", "operator"),
+                           ("alex", "operator"), ("nina", "viewer"), ("robin", "admin")):
+            users.add(store, name, role)
+        access.create_group(store, "production-desk")
+        access.set_members(store, "production-desk", add=["dana", "sam"])
+        access.create_group(store, "weekend-crew", "operator")
+        access.set_members(store, "weekend-crew", add=["marcus", "nina"])
+        access.set_acl(store, show, "user", "dana", "view")
+        access.set_acl(store, show, "user", "alex", "edit")
+        access.set_acl(store, show, "group", "production-desk", "run")
+        access.set_acl(store, show, "group", "weekend-crew", "edit")
+        open_show(store, "Morning Brief")
 
     # The room. Take succeeds only where its cues have evidence: a lower third on air and a sender
     # producing. take_fail never shows a sender, so stream.start fails after overlay.take fires.
